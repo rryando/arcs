@@ -1,3 +1,4 @@
+import * as childProcess from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ vi.mock("@clack/prompts", () => {
   const confirm = vi.fn();
   const note = vi.fn();
   const text = vi.fn();
+  const multiselect = vi.fn();
 
   return {
     intro: vi.fn(),
@@ -18,9 +20,20 @@ vi.mock("@clack/prompts", () => {
     spinner: () => ({ start: vi.fn(), stop: vi.fn() }),
     confirm,
     text,
+    multiselect,
     __confirm: confirm,
     __note: note,
     __text: text,
+    __multiselect: multiselect,
+  };
+});
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    spawnSync: vi.fn(actual.spawnSync),
+    execSync: vi.fn(actual.execSync),
   };
 });
 
@@ -40,8 +53,12 @@ describe("OpenCode setup flow", () => {
     vi.mocked((prompts as any).__confirm).mockReset();
     vi.mocked((prompts as any).__note).mockReset();
     vi.mocked((prompts as any).__text).mockReset();
+    vi.mocked((prompts as any).__multiselect).mockReset();
     // text prompts return empty strings by default (model config)
     vi.mocked((prompts as any).__text).mockResolvedValue("");
+    vi.mocked((prompts as any).__multiselect).mockResolvedValue(["opencode"]);
+    vi.mocked(childProcess.spawnSync).mockClear();
+    vi.mocked(childProcess.execSync).mockClear();
     vi.mocked(installer.detectArcsBundleInstall).mockReset();
     vi.mocked(installer.installArcsBundle).mockReset();
     vi.mocked(installer.detectArcsBundleInstall).mockReturnValue({
@@ -209,6 +226,39 @@ describe("OpenCode setup flow", () => {
       const agents = updated.agent as Record<string, unknown>;
       const arcsAgent = agents?.["ARCS Orchestrator"] as Record<string, unknown>;
       expect(arcsAgent?.prompt).not.toBe("stale-prompt-text");
+    });
+  });
+
+  it("deploys sub-agents to Claude Code when user selects claudecode", async () => {
+    const prompts = await import("@clack/prompts");
+
+    // Mock multiselect to return ["claudecode"]
+    vi.mocked((prompts as any).__multiselect).mockResolvedValue(["claudecode"]);
+    // Mock confirm for "Deploy ARCS sub-agents to Claude Code?" to true
+    vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(true); // Deploy ARCS sub-agents to Claude Code?
+
+    // Mock spawnSync to return a mock deployment result so setup.ts parses it successfully
+    vi.mocked(childProcess.spawnSync).mockReturnValue({
+      status: 0,
+      stdout: JSON.stringify({
+        source: "mock-source",
+        destination: "mock-destination",
+        filesAdded: ["file1"],
+        filesChanged: [],
+        filesRemoved: [],
+      }),
+      stderr: "",
+    } as any);
+
+    await withTempHomeDir(async () => {
+      await runSetup("init");
+
+      // Verify that spawnSync was called with the deploy script
+      expect(childProcess.spawnSync).toHaveBeenCalledWith(
+        "node",
+        expect.arrayContaining([expect.stringContaining("deploy-claudecode-bundle.mjs")]),
+        expect.any(Object),
+      );
     });
   });
 });

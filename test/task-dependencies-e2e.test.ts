@@ -9,15 +9,13 @@
  * - Backward compatibility: tasks without dependsOn still work
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { createTask, listTasks, updateTask } from "../src/utils/task-store.js";
-import { generateDiagramFromTasks } from "../src/utils/diagram-generator.js";
 import { buildAdjacencyIndex } from "../src/retrieval/graph-builder.js";
+import { generateDiagramFromTasks } from "../src/utils/diagram-generator.js";
+import { createTask, listTasks, updateTask } from "../src/utils/task-store.js";
 import { runCommand } from "./helpers/cli-runner.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
@@ -81,7 +79,11 @@ function seedProjectWithDeps(
     createdAt: "2025-01-01T00:00:00Z",
     updatedAt: "2025-01-01T00:00:00Z",
   }));
-  writeFileSync(resolve(tasksDir, "index.json"), JSON.stringify({ tasks: normalizedTasks }), "utf-8");
+  writeFileSync(
+    resolve(tasksDir, "index.json"),
+    JSON.stringify({ tasks: normalizedTasks }),
+    "utf-8",
+  );
 
   const plansDir = resolve(projDir, "plans");
   mkdirSync(plansDir, { recursive: true });
@@ -110,8 +112,16 @@ describe("Task Store — dependency chain", () => {
 
   it("creates tasks A→B→C and persists dependsOn", async () => {
     const a = await createTask(projectDir, { title: "Task Alpha", priority: "high" });
-    const b = await createTask(projectDir, { title: "Task Beta", dependsOn: [a.id], priority: "medium" });
-    const c = await createTask(projectDir, { title: "Task Gamma", dependsOn: [b.id], priority: "low" });
+    const b = await createTask(projectDir, {
+      title: "Task Beta",
+      dependsOn: [a.id],
+      priority: "medium",
+    });
+    const c = await createTask(projectDir, {
+      title: "Task Gamma",
+      dependsOn: [b.id],
+      priority: "low",
+    });
 
     expect(a.dependsOn).toBeUndefined();
     expect(b.dependsOn).toEqual([a.id]);
@@ -146,9 +156,7 @@ describe("Task Store — cycle rejection", () => {
     const b = await createTask(projectDir, { title: "Cycle Beta", dependsOn: [a.id] });
 
     // A → B already. Now try to make B → A (cycle).
-    await expect(
-      updateTask(projectDir, { id: a.id, dependsOn: [b.id] }),
-    ).rejects.toThrow(/cycle/i);
+    await expect(updateTask(projectDir, { id: a.id, dependsOn: [b.id] })).rejects.toThrow(/cycle/i);
   });
 
   it("rejects an update that creates a longer cycle A→B→C→A", async () => {
@@ -156,9 +164,7 @@ describe("Task Store — cycle rejection", () => {
     const b = await createTask(projectDir, { title: "Long Cycle B", dependsOn: [a.id] });
     const c = await createTask(projectDir, { title: "Long Cycle C", dependsOn: [b.id] });
 
-    await expect(
-      updateTask(projectDir, { id: a.id, dependsOn: [c.id] }),
-    ).rejects.toThrow(/cycle/i);
+    await expect(updateTask(projectDir, { id: a.id, dependsOn: [c.id] })).rejects.toThrow(/cycle/i);
   });
 });
 
@@ -194,8 +200,20 @@ describe("arcs next — respects dependency order", () => {
     await withTempDataDir(async (dir) => {
       seedProjectWithDeps(dir, "deps-proj", [
         { id: "task-a", title: "Task A", status: "backlog", priority: "high" },
-        { id: "task-b", title: "Task B", status: "backlog", priority: "high", dependsOn: ["task-a"] },
-        { id: "task-c", title: "Task C", status: "backlog", priority: "high", dependsOn: ["task-b"] },
+        {
+          id: "task-b",
+          title: "Task B",
+          status: "backlog",
+          priority: "high",
+          dependsOn: ["task-a"],
+        },
+        {
+          id: "task-c",
+          title: "Task C",
+          status: "backlog",
+          priority: "high",
+          dependsOn: ["task-b"],
+        },
       ]);
 
       const result = await runCommand("next", ["deps-proj", "--json"]);
@@ -212,8 +230,20 @@ describe("arcs next — respects dependency order", () => {
     await withTempDataDir(async (dir) => {
       seedProjectWithDeps(dir, "seq-proj", [
         { id: "task-a", title: "Task A", status: "done", priority: "high" },
-        { id: "task-b", title: "Task B", status: "backlog", priority: "high", dependsOn: ["task-a"] },
-        { id: "task-c", title: "Task C", status: "backlog", priority: "high", dependsOn: ["task-b"] },
+        {
+          id: "task-b",
+          title: "Task B",
+          status: "backlog",
+          priority: "high",
+          dependsOn: ["task-a"],
+        },
+        {
+          id: "task-c",
+          title: "Task C",
+          status: "backlog",
+          priority: "high",
+          dependsOn: ["task-b"],
+        },
       ]);
 
       const result = await runCommand("next", ["seq-proj", "--json"]);
@@ -230,7 +260,13 @@ describe("arcs next — respects dependency order", () => {
       seedProjectWithDeps(dir, "seq2-proj", [
         { id: "task-a", title: "Task A", status: "done", priority: "high" },
         { id: "task-b", title: "Task B", status: "done", priority: "high", dependsOn: ["task-a"] },
-        { id: "task-c", title: "Task C", status: "backlog", priority: "high", dependsOn: ["task-b"] },
+        {
+          id: "task-c",
+          title: "Task C",
+          status: "backlog",
+          priority: "high",
+          dependsOn: ["task-b"],
+        },
       ]);
 
       const result = await runCommand("next", ["seq2-proj", "--json"]);
@@ -246,7 +282,13 @@ describe("arcs next — respects dependency order", () => {
     await withTempDataDir(async (dir) => {
       seedProjectWithDeps(dir, "blocked-proj", [
         { id: "gate", title: "Gate Task", status: "in_progress", priority: "high" },
-        { id: "blocked", title: "Blocked Task", status: "backlog", priority: "high", dependsOn: ["gate"] },
+        {
+          id: "blocked",
+          title: "Blocked Task",
+          status: "backlog",
+          priority: "high",
+          dependsOn: ["gate"],
+        },
       ]);
 
       // gate is in_progress so it should be next (it has no deps)
@@ -267,8 +309,25 @@ describe("arcs next — respects dependency order", () => {
 describe("generateDiagramFromTasks — dependency arrows", () => {
   it("emits --> arrows for dependsOn relationships", () => {
     const tasks = [
-      { id: "task-a", normalizedId: "task-a", title: "Task A", status: "backlog" as const, priority: "high" as const, createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
-      { id: "task-b", normalizedId: "task-b", title: "Task B", status: "backlog" as const, priority: "medium" as const, dependsOn: ["task-a"], createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
+      {
+        id: "task-a",
+        normalizedId: "task-a",
+        title: "Task A",
+        status: "backlog" as const,
+        priority: "high" as const,
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        id: "task-b",
+        normalizedId: "task-b",
+        title: "Task B",
+        status: "backlog" as const,
+        priority: "medium" as const,
+        dependsOn: ["task-a"],
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
     ];
 
     const { mmd, nodes } = generateDiagramFromTasks("test-plan", tasks);
@@ -283,8 +342,25 @@ describe("generateDiagramFromTasks — dependency arrows", () => {
 
   it("emits %% blocked-by: metadata for dependent tasks", () => {
     const tasks = [
-      { id: "task-a", normalizedId: "task-a", title: "Task A", status: "backlog" as const, priority: "high" as const, createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
-      { id: "task-b", normalizedId: "task-b", title: "Task B", status: "backlog" as const, priority: "medium" as const, dependsOn: ["task-a"], createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
+      {
+        id: "task-a",
+        normalizedId: "task-a",
+        title: "Task A",
+        status: "backlog" as const,
+        priority: "high" as const,
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        id: "task-b",
+        normalizedId: "task-b",
+        title: "Task B",
+        status: "backlog" as const,
+        priority: "medium" as const,
+        dependsOn: ["task-a"],
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
     ];
 
     const { mmd, nodes } = generateDiagramFromTasks("test-plan", tasks);
@@ -295,9 +371,35 @@ describe("generateDiagramFromTasks — dependency arrows", () => {
 
   it("emits arrows for a three-task chain A→B→C", () => {
     const tasks = [
-      { id: "task-a", normalizedId: "task-a", title: "Task A", status: "backlog" as const, priority: "high" as const, createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
-      { id: "task-b", normalizedId: "task-b", title: "Task B", status: "backlog" as const, priority: "medium" as const, dependsOn: ["task-a"], createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
-      { id: "task-c", normalizedId: "task-c", title: "Task C", status: "backlog" as const, priority: "low" as const, dependsOn: ["task-b"], createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
+      {
+        id: "task-a",
+        normalizedId: "task-a",
+        title: "Task A",
+        status: "backlog" as const,
+        priority: "high" as const,
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        id: "task-b",
+        normalizedId: "task-b",
+        title: "Task B",
+        status: "backlog" as const,
+        priority: "medium" as const,
+        dependsOn: ["task-a"],
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        id: "task-c",
+        normalizedId: "task-c",
+        title: "Task C",
+        status: "backlog" as const,
+        priority: "low" as const,
+        dependsOn: ["task-b"],
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
     ];
 
     const { mmd, nodes } = generateDiagramFromTasks("test-plan", tasks);
@@ -366,8 +468,24 @@ describe("Backward compatibility — tasks without dependsOn", () => {
 
   it("diagram has no --> arrows when no dependsOn exists", () => {
     const tasks = [
-      { id: "task-a", normalizedId: "task-a", title: "Task A", status: "backlog" as const, priority: "high" as const, createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
-      { id: "task-b", normalizedId: "task-b", title: "Task B", status: "backlog" as const, priority: "medium" as const, createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" },
+      {
+        id: "task-a",
+        normalizedId: "task-a",
+        title: "Task A",
+        status: "backlog" as const,
+        priority: "high" as const,
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        id: "task-b",
+        normalizedId: "task-b",
+        title: "Task B",
+        status: "backlog" as const,
+        priority: "medium" as const,
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      },
     ];
 
     const { mmd } = generateDiagramFromTasks("no-deps-plan", tasks);
