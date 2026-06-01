@@ -8,8 +8,12 @@
 import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { invalidateGraphCache } from "../retrieval/graph-invalidate.js";
-import { itemNotFound, normalizedIdCollision, taskDependencyCycleDetected, taskDependencyNotFound } from "./errors.js";
-import { detectCycle } from "./toposort.js";
+import {
+  itemNotFound,
+  normalizedIdCollision,
+  taskDependencyCycleDetected,
+  taskDependencyNotFound,
+} from "./errors.js";
 import { withLock } from "./file-lock.js";
 import { readJsonSafe } from "./json.js";
 import { normalizeIdentifier } from "./slug.js";
@@ -22,6 +26,7 @@ import {
   validateTaskStatus,
   writeJson,
 } from "./storage-utils.js";
+import { detectCycle } from "./toposort.js";
 
 // ---------------------------------------------------------------------------
 // Re-export types used by consumers
@@ -80,11 +85,7 @@ export interface UpdateTaskInput {
 // Dependency validation helpers
 // ---------------------------------------------------------------------------
 
-function validateDependsOn(
-  dependsOn: string[],
-  index: TaskIndex,
-  taskNormalizedId: string,
-): void {
+function validateDependsOn(dependsOn: string[], index: TaskIndex, taskNormalizedId: string): void {
   // Check all referenced IDs exist
   for (const depId of dependsOn) {
     if (!index.tasks.some((t) => t.normalizedId === depId || t.id === depId)) {
@@ -134,9 +135,10 @@ async function writeTaskIndex(projectDir: string, index: TaskIndex): Promise<voi
 // ---------------------------------------------------------------------------
 
 const PRIORITY_ORDER: Record<import("./storage-utils.js").TaskPriority, number> = {
-  high: 0,
-  medium: 1,
-  low: 2,
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
 };
 
 function sortByPriority(tasks: TaskMeta[]): TaskMeta[] {

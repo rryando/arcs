@@ -6,17 +6,18 @@
 export interface ToposortInput {
   id: string;
   dependsOn?: string[];
-  priority?: "high" | "medium" | "low";
+  priority?: "critical" | "high" | "medium" | "low";
 }
 
 const PRIORITY_RANK: Record<string, number> = {
-  high: 0,
-  medium: 1,
-  low: 2,
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
 };
 
 function priorityRank(p?: string): number {
-  return p !== undefined ? (PRIORITY_RANK[p] ?? 1) : 1;
+  return p !== undefined ? (PRIORITY_RANK[p] ?? 2) : 2;
 }
 
 /**
@@ -48,7 +49,9 @@ export function toposort(tasks: ToposortInput[]): string[] {
   for (const [id, deg] of inDegree) {
     if (deg === 0) queue.push(id);
   }
-  queue.sort((a, b) => priorityRank(idToTask.get(a)?.priority) - priorityRank(idToTask.get(b)?.priority));
+  queue.sort(
+    (a, b) => priorityRank(idToTask.get(a)?.priority) - priorityRank(idToTask.get(b)?.priority),
+  );
 
   const result: string[] = [];
 
@@ -64,10 +67,14 @@ export function toposort(tasks: ToposortInput[]): string[] {
     }
 
     // Sort newly available nodes by priority before inserting
-    newReady.sort((a, b) => priorityRank(idToTask.get(a)?.priority) - priorityRank(idToTask.get(b)?.priority));
+    newReady.sort(
+      (a, b) => priorityRank(idToTask.get(a)?.priority) - priorityRank(idToTask.get(b)?.priority),
+    );
     queue.push(...newReady);
     // Re-sort queue to maintain priority order
-    queue.sort((a, b) => priorityRank(idToTask.get(a)?.priority) - priorityRank(idToTask.get(b)?.priority));
+    queue.sort(
+      (a, b) => priorityRank(idToTask.get(a)?.priority) - priorityRank(idToTask.get(b)?.priority),
+    );
   }
 
   if (result.length < tasks.length) {
