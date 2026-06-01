@@ -14,6 +14,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -21,33 +23,35 @@ import { failure, success } from "../output-envelope.js";
 // project update-doc
 // ---------------------------------------------------------------------------
 
+const projectUpdateDocParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  doc: {
+    type: "string",
+    required: true,
+    positional: 1,
+    description: "Document to update",
+    enum: ["overview", "tasks", "dependencies", "knowledge"],
+  },
+  "body-file": { type: "string", description: "Path to file with new doc content" },
+  "body-stdin": { type: "boolean", description: "Read content from stdin" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project update-doc",
   description: "Update a project document",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    doc: {
-      type: "string",
-      required: true,
-      positional: 1,
-      description: "Document to update",
-      enum: ["overview", "tasks", "dependencies", "knowledge"],
-    },
-    "body-file": { type: "string", description: "Path to file with new doc content" },
-    "body-stdin": { type: "boolean", description: "Read content from stdin" },
-  },
+  params: projectUpdateDocParams,
   handler: handleProjectUpdateDoc,
 });
 
 async function handleProjectUpdateDoc(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectUpdateDocParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const doc = params.doc as ProjectDocType;
-  const bodyFile = params["body-file"] as string | undefined;
-  const bodyStdin = params["body-stdin"] as boolean | undefined;
+  const slug = params.slug;
+  const doc: ProjectDocType = params.doc;
+  const bodyFile = params["body-file"];
+  const bodyStdin = params["body-stdin"];
 
   const validDocs = Object.keys(PROJECT_DOC_FILES);
   if (!validDocs.includes(doc)) {
@@ -102,29 +106,31 @@ async function handleProjectUpdateDoc(
 // project update-status
 // ---------------------------------------------------------------------------
 
+const projectUpdateStatusParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  status: {
+    type: "string",
+    required: true,
+    positional: 1,
+    description: "New status",
+    enum: ["active", "paused", "completed", "archived"],
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project update-status",
   description: "Update a project's status",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    status: {
-      type: "string",
-      required: true,
-      positional: 1,
-      description: "New status",
-      enum: ["active", "paused", "completed", "archived"],
-    },
-  },
+  params: projectUpdateStatusParams,
   handler: handleProjectUpdateStatus,
 });
 
 async function handleProjectUpdateStatus(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectUpdateStatusParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const status = params.status as string;
+  const slug = params.slug;
+  const status = params.status;
 
   if (flags.dryRun) {
     return success({ dryRun: true, wouldUpdate: { slug, status } });
@@ -152,25 +158,27 @@ async function handleProjectUpdateStatus(
 // project update-paths
 // ---------------------------------------------------------------------------
 
+const projectUpdatePathsParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  add: { type: "string", description: "Path to add to workspace paths" },
+  remove: { type: "string", description: "Path to remove from workspace paths" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project update-paths",
   description: "Add or remove workspace paths for a project",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    add: { type: "string", description: "Path to add to workspace paths" },
-    remove: { type: "string", description: "Path to remove from workspace paths" },
-  },
+  params: projectUpdatePathsParams,
   handler: handleProjectUpdatePaths,
 });
 
 async function handleProjectUpdatePaths(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectUpdatePathsParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const addPath = params.add as string | undefined;
-  const removePath = params.remove as string | undefined;
+  const slug = params.slug;
+  const addPath = params.add;
+  const removePath = params.remove;
 
   if (!addPath && !removePath) {
     return failure(ERROR_CODES.MISSING_PARAM, "Either --add or --remove is required", {
@@ -220,28 +228,30 @@ async function handleProjectUpdatePaths(
 // project write-checkpoint
 // ---------------------------------------------------------------------------
 
+const projectWriteCheckpointParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  lastSyncedAt: { type: "string", description: "ISO timestamp of last sync" },
+  lastSyncGitCommit: { type: "string", description: "Git commit SHA of last sync" },
+  lastSyncStats: { type: "string", description: "JSON string with sync stats object" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project write-checkpoint",
   description:
     "Write sync checkpoint fields (lastSyncedAt, lastSyncGitCommit, lastSyncStats) to project meta.json",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    lastSyncedAt: { type: "string", description: "ISO timestamp of last sync" },
-    lastSyncGitCommit: { type: "string", description: "Git commit SHA of last sync" },
-    lastSyncStats: { type: "string", description: "JSON string with sync stats object" },
-  },
+  params: projectWriteCheckpointParams,
   handler: handleProjectWriteCheckpoint,
 });
 
 async function handleProjectWriteCheckpoint(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectWriteCheckpointParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const lastSyncedAt = params.lastSyncedAt as string | undefined;
-  const lastSyncGitCommit = params.lastSyncGitCommit as string | undefined;
-  const lastSyncStatsRaw = params.lastSyncStats as string | undefined;
+  const slug = params.slug;
+  const lastSyncedAt = params.lastSyncedAt;
+  const lastSyncGitCommit = params.lastSyncGitCommit;
+  const lastSyncStatsRaw = params.lastSyncStats;
 
   if (!lastSyncedAt && !lastSyncGitCommit && !lastSyncStatsRaw) {
     return failure(

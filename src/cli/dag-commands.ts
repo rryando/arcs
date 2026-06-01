@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { parseArgs } from "./arg-parser.js";
-import { type CommandDef, getCommand } from "./command-registry.js";
+import { type AnyCommandDef, getCommand } from "./command-registry.js";
 import { isLeanMode } from "./lean-output.js";
 import { render, stripTimestamps } from "./output-envelope.js";
 import "./commands/index.js";
@@ -47,7 +47,7 @@ export async function handleDagCommand(command: string, args: string[]): Promise
 
   // Delegate to registry
   const firstPositional = rest.find((a) => !a.startsWith("-"));
-  let registeredCmd: CommandDef | undefined;
+  let registeredCmd: AnyCommandDef | undefined;
   let remaining: string[];
 
   if (firstPositional) {

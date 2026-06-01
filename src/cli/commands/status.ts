@@ -4,31 +4,39 @@
 
 import { listTasks, readKnowledgeIndex, readPlanIndex } from "../../utils/project-memory.js";
 import { resolveProject } from "../../utils/project-resolver.js";
-import { type CLIResult, type CommandFlags, defineCommand } from "../command-registry.js";
+import {
+  type CLIResult,
+  type CommandFlags,
+  defineCommand,
+  type ParamDef,
+  type ParsedParams,
+} from "../command-registry.js";
 import { success } from "../output-envelope.js";
 
 // ---------------------------------------------------------------------------
 
+const statusParams = {
+  slug: {
+    type: "string",
+    positional: 0,
+    description: "Project slug or path",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "status",
   description: "Quick progress overview for a project",
-  params: {
-    slug: {
-      type: "string",
-      positional: 0,
-      description: "Project slug or path",
-    },
-  },
+  params: statusParams,
   handler: handleStatus,
 });
 
 // ---------------------------------------------------------------------------
 
 async function handleStatus(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof statusParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const rawArg = params.slug as string | undefined;
+  const rawArg = params.slug;
 
   const resolved = await resolveProject(rawArg);
   if (!resolved.ok) return resolved.result;

@@ -20,7 +20,7 @@ defineCommand({
     slug: { type: "string", required: true, positional: 0, description: "Project slug" },
   },
   handler: async (params) => {
-    const slug = params.slug as string;
+    const slug = params.slug;
     return runValidation(slug, new Set(["sourcefiles"]));
   },
 });
@@ -49,8 +49,8 @@ defineCommand({
     },
   },
   handler: async (params) => {
-    const slug = params.slug as string;
-    const sinceRaw = params.since as string;
+    const slug = params.slug;
+    const sinceRaw = params.since;
 
     const sinceIso = parseRelativeTime(sinceRaw) ?? sinceRaw;
     const sinceMs = new Date(sinceIso).getTime();

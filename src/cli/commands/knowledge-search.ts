@@ -4,37 +4,39 @@
 import { existsSync } from "node:fs";
 import { buildProjectRetrievalIndex } from "../../retrieval/index-builder.js";
 import { getProjectDir } from "../../utils/paths.js";
-import { type KnowledgeKind, readKnowledgeIndex } from "../../utils/project-memory.js";
+import { readKnowledgeIndex } from "../../utils/project-memory.js";
 import {
   type CLIResult,
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
+
+const knowledgeSearchParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  query: { type: "string", required: true, positional: 1, description: "Search query" },
+  kind: {
+    type: "string",
+    description: "Filter by kind",
+    enum: ["lesson", "gotcha", "pattern", "feature", "decision", "reference"],
+  },
+} as const satisfies Record<string, ParamDef>;
 
 defineCommand({
   path: "knowledge search",
   description: "Search knowledge entries using BM25 scoring",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    query: { type: "string", required: true, positional: 1, description: "Search query" },
-    kind: {
-      type: "string",
-      description: "Filter by kind",
-      enum: ["lesson", "gotcha", "pattern", "feature", "decision", "reference"],
-    },
-  },
+  params: knowledgeSearchParams,
   handler: handleKnowledgeSearch,
 });
 
 async function handleKnowledgeSearch(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeSearchParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const query = params.query as string;
-  const kind = params.kind as KnowledgeKind | undefined;
+  const { slug, query, kind } = params;
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
     return failure(ERROR_CODES.PROJECT_NOT_FOUND, `Project "${slug}" not found`, {

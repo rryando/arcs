@@ -24,6 +24,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -31,15 +33,17 @@ import { failure, success } from "../output-envelope.js";
 // project list
 // ---------------------------------------------------------------------------
 
+const projectListParams = {} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project list",
   description: "List all tracked projects",
-  params: {},
+  params: projectListParams,
   handler: handleProjectList,
 });
 
 async function handleProjectList(
-  _params: Record<string, unknown>,
+  _params: ParsedParams<typeof projectListParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
   const dataDir = getDataDir();
@@ -76,26 +80,28 @@ async function handleProjectList(
 // project get
 // ---------------------------------------------------------------------------
 
+const projectGetParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  doc: {
+    type: "string",
+    description: "Specific doc to retrieve",
+    enum: ["overview", "tasks", "dependencies", "knowledge"],
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project get",
   description: "Get project metadata or a specific document",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    doc: {
-      type: "string",
-      description: "Specific doc to retrieve",
-      enum: ["overview", "tasks", "dependencies", "knowledge"],
-    },
-  },
+  params: projectGetParams,
   handler: handleProjectGet,
 });
 
 async function handleProjectGet(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectGetParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const doc = params.doc as ProjectDocType | undefined;
+  const slug = params.slug;
+  const doc: ProjectDocType | undefined = params.doc;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
@@ -130,25 +136,27 @@ async function handleProjectGet(
 // project init
 // ---------------------------------------------------------------------------
 
+const projectInitParams = {
+  name: { type: "string", required: true, positional: 0, description: "Project name" },
+  description: { type: "string", required: true, description: "Project description" },
+  path: { type: "string", description: "Workspace path to associate" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project init",
   description: "Initialize a new project",
   mutation: true,
-  params: {
-    name: { type: "string", required: true, positional: 0, description: "Project name" },
-    description: { type: "string", required: true, description: "Project description" },
-    path: { type: "string", description: "Workspace path to associate" },
-  },
+  params: projectInitParams,
   handler: handleProjectInit,
 });
 
 async function handleProjectInit(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectInitParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const name = params.name as string;
-  const description = params.description as string;
-  const wsPath = params.path as string | undefined;
+  const name = params.name;
+  const description = params.description;
+  const wsPath = params.path;
 
   const slug = slugify(name);
 
@@ -307,12 +315,14 @@ async function handleProjectInit(
 // project validate
 // ---------------------------------------------------------------------------
 
+const projectValidateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "project validate",
   description: "Run structural health checks on a project",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-  },
+  params: projectValidateParams,
   handler: handleProjectValidate,
 });
 
@@ -326,10 +336,10 @@ interface ValidationIssue {
 }
 
 async function handleProjectValidate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof projectValidateParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
+  const slug = params.slug;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {

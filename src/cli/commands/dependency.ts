@@ -9,6 +9,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -16,28 +18,30 @@ import { failure, success } from "../output-envelope.js";
 // dependency add
 // ---------------------------------------------------------------------------
 
+const dependencyAddParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Source project slug" },
+  target: {
+    type: "string",
+    required: true,
+    positional: 1,
+    description: "Target project slug (dependency)",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "dependency add",
   description: "Add a dependency between two projects",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Source project slug" },
-    target: {
-      type: "string",
-      required: true,
-      positional: 1,
-      description: "Target project slug (dependency)",
-    },
-  },
+  params: dependencyAddParams,
   handler: handleDependencyAdd,
 });
 
 async function handleDependencyAdd(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof dependencyAddParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const targetSlug = params.target as string;
+  const slug = params.slug;
+  const targetSlug = params.target;
 
   if (flags.dryRun) {
     return success({ dryRun: true, wouldAdd: { slug, target: targetSlug } });
@@ -92,28 +96,30 @@ async function handleDependencyAdd(
 // dependency remove
 // ---------------------------------------------------------------------------
 
+const dependencyRemoveParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Source project slug" },
+  target: {
+    type: "string",
+    required: true,
+    positional: 1,
+    description: "Target project slug (dependency)",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "dependency remove",
   description: "Remove a dependency between two projects",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Source project slug" },
-    target: {
-      type: "string",
-      required: true,
-      positional: 1,
-      description: "Target project slug (dependency)",
-    },
-  },
+  params: dependencyRemoveParams,
   handler: handleDependencyRemove,
 });
 
 async function handleDependencyRemove(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof dependencyRemoveParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const targetSlug = params.target as string;
+  const slug = params.slug;
+  const targetSlug = params.target;
 
   if (flags.dryRun) {
     return success({ dryRun: true, wouldRemove: { slug, target: targetSlug } });
@@ -168,31 +174,33 @@ import { resolve } from "node:path";
 import { getProjectDir } from "../../utils/paths.js";
 import { PROJECT_DOC_FILES, type ProjectDocType } from "../../utils/project-documents.js";
 
+const docUpdateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  doc: {
+    type: "string",
+    required: true,
+    positional: 1,
+    description: "Document type",
+    enum: ["overview", "tasks", "dependencies", "knowledge"],
+  },
+  "body-file": { type: "string", description: "Path to file with new doc content" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "doc update",
   description: "Update a project document (alias for project update-doc)",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    doc: {
-      type: "string",
-      required: true,
-      positional: 1,
-      description: "Document type",
-      enum: ["overview", "tasks", "dependencies", "knowledge"],
-    },
-    "body-file": { type: "string", description: "Path to file with new doc content" },
-  },
+  params: docUpdateParams,
   handler: handleDocUpdate,
 });
 
 async function handleDocUpdate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof docUpdateParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const doc = params.doc as ProjectDocType;
-  const bodyFile = params["body-file"] as string | undefined;
+  const slug = params.slug;
+  const doc: ProjectDocType = params.doc;
+  const bodyFile = params["body-file"];
 
   const validDocs = Object.keys(PROJECT_DOC_FILES);
   if (!validDocs.includes(doc)) {
@@ -241,34 +249,36 @@ import { validateJson } from "../../utils/json.js";
 import { projectMetaSchema } from "../../utils/json-schemas.js";
 import { normalizeWorkspacePath } from "../../utils/workspace-match.js";
 
+const pathsUpdateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  action: {
+    type: "string",
+    required: true,
+    description: "Action to perform",
+    enum: ["add", "remove", "set"],
+  },
+  paths: {
+    type: "string",
+    required: true,
+    description: "Comma-separated list of absolute paths",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "paths update",
   description: "Update workspace paths for a project",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    action: {
-      type: "string",
-      required: true,
-      description: "Action to perform",
-      enum: ["add", "remove", "set"],
-    },
-    paths: {
-      type: "string",
-      required: true,
-      description: "Comma-separated list of absolute paths",
-    },
-  },
+  params: pathsUpdateParams,
   handler: handlePathsUpdate,
 });
 
 async function handlePathsUpdate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof pathsUpdateParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const action = params.action as "add" | "remove" | "set";
-  const pathsRaw = params.paths as string;
+  const slug = params.slug;
+  const action = params.action;
+  const pathsRaw = params.paths;
 
   const paths = pathsRaw.split(",").map((p) => p.trim());
 

@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { attemptDiagramUpdate } from "../../utils/diagram-store.js";
 import { getProjectDir } from "../../utils/paths.js";
 import { PROJECT_DOC_FILES, type ProjectDocType } from "../../utils/project-documents.js";
 import {
@@ -25,9 +26,14 @@ import {
 } from "../../utils/project-memory.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import { readStdin } from "../../utils/stdin.js";
-import { type CLIResult, type CommandFlags, defineCommand } from "../command-registry.js";
+import {
+  type CLIResult,
+  type CommandFlags,
+  defineCommand,
+  type ParamDef,
+  type ParsedParams,
+} from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
-import { attemptDiagramUpdate } from "./task.js";
 
 // ---------------------------------------------------------------------------
 // batch
@@ -76,39 +82,41 @@ function normalizeBatchOp(op: string): string {
   return op;
 }
 
+const batchParams = {
+  file: {
+    type: "string",
+    required: (params) => !params["list-ops"] && !params.stdin,
+    description: "Path to JSON file with operations",
+  },
+  stdin: { type: "boolean", required: false, description: "Read operations JSON from stdin" },
+  "list-ops": { type: "boolean", description: "List valid batch operations" },
+  "fail-fast": {
+    type: "boolean",
+    required: false,
+    description: "Abort on first operation failure",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "batch",
   description: "Run batch operations from a JSON file",
   mutation: true,
-  params: {
-    file: {
-      type: "string",
-      required: (params) => !params["list-ops"] && !params.stdin,
-      description: "Path to JSON file with operations",
-    },
-    stdin: { type: "boolean", required: false, description: "Read operations JSON from stdin" },
-    "list-ops": { type: "boolean", description: "List valid batch operations" },
-    "fail-fast": {
-      type: "boolean",
-      required: false,
-      description: "Abort on first operation failure",
-    },
-  },
+  params: batchParams,
   handler: handleBatch,
 });
 
 async function handleBatch(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof batchParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const listOps = params["list-ops"] as boolean | undefined;
+  const listOps = params["list-ops"];
   if (listOps) {
     return success({ ops: BATCH_OPS });
   }
 
-  const failFast = params["fail-fast"] as boolean | undefined;
-  const stdinFlag = params.stdin as boolean | undefined;
-  const filePath = params.file as string | undefined;
+  const failFast = params["fail-fast"];
+  const stdinFlag = params.stdin;
+  const filePath = params.file;
 
   if (!filePath && !stdinFlag) {
     return failure("missing_param", "Either --file or --stdin is required", {

@@ -10,7 +10,6 @@ import {
   createPlan,
   deletePlan,
   PLAN_STATUSES,
-  type PlanStatus,
   readPlanIndex,
   updatePlan,
 } from "../../utils/project-memory.js";
@@ -21,6 +20,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -36,34 +37,36 @@ function requireProject(slug: string): CLIResult | string {
 
 // --- plan list ---
 
+const planListParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  status: {
+    type: "string",
+    description: "Filter by status",
+    enum: ["proposed", "planned", "in_progress", "done", "archived"],
+  },
+  keywords: { type: "string", description: "Comma-separated keywords to filter by" },
+  fields: {
+    type: "string",
+    required: false,
+    description: "Comma-separated field names to include in output",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "plan list",
   description: "List plans for a project",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    status: {
-      type: "string",
-      description: "Filter by status",
-      enum: ["proposed", "planned", "in_progress", "done", "archived"],
-    },
-    keywords: { type: "string", description: "Comma-separated keywords to filter by" },
-    fields: {
-      type: "string",
-      required: false,
-      description: "Comma-separated field names to include in output",
-    },
-  },
+  params: planListParams,
   handler: handlePlanList,
 });
 
 async function handlePlanList(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof planListParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const status = params.status as PlanStatus | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
-  const fields = params.fields as string | undefined;
+  const slug = params.slug;
+  const status = params.status;
+  const keywordsRaw = params.keywords;
+  const fields = params.fields;
 
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
@@ -98,24 +101,26 @@ async function handlePlanList(
 
 // --- plan get ---
 
+const planGetParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+  body: { type: "boolean", description: "Include plan body content" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "plan get",
   description: "Get plan details",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-    body: { type: "boolean", description: "Include plan body content" },
-  },
+  params: planGetParams,
   handler: handlePlanGet,
 });
 
 async function handlePlanGet(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof planGetParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
-  const includeBody = params.body as boolean | undefined;
+  const slug = params.slug;
+  const planId = params.planId;
+  const includeBody = params.body;
 
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
@@ -144,37 +149,39 @@ async function handlePlanGet(
 
 // --- plan create ---
 
+const planCreateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  title: { type: "string", required: true, positional: 1, description: "Plan title" },
+  status: {
+    type: "string",
+    description: "Initial status (default: proposed)",
+    enum: PLAN_STATUSES,
+  },
+  summary: { type: "string", description: "Plan summary" },
+  keywords: { type: "string", description: "Comma-separated keywords" },
+  body: { type: "string", description: "Inline markdown body content" },
+  "body-file": { type: "string", description: "Path to markdown file with plan body" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "plan create",
   description: "Create a new plan",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    title: { type: "string", required: true, positional: 1, description: "Plan title" },
-    status: {
-      type: "string",
-      description: "Initial status (default: proposed)",
-      enum: [...PLAN_STATUSES],
-    },
-    summary: { type: "string", description: "Plan summary" },
-    keywords: { type: "string", description: "Comma-separated keywords" },
-    body: { type: "string", description: "Inline markdown body content" },
-    "body-file": { type: "string", description: "Path to markdown file with plan body" },
-  },
+  params: planCreateParams,
   handler: handlePlanCreate,
 });
 
 async function handlePlanCreate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof planCreateParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const title = params.title as string;
-  const status = (params.status as PlanStatus | undefined) ?? "proposed";
-  const summary = params.summary as string | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
-  const bodyInline = params.body as string | undefined;
-  const bodyFile = params["body-file"] as string | undefined;
+  const slug = params.slug;
+  const title = params.title;
+  const status = params.status ?? "proposed";
+  const summary = params.summary;
+  const keywordsRaw = params.keywords;
+  const bodyInline = params.body;
+  const bodyFile = params["body-file"];
   const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : [];
 
   const result = requireProject(slug);
@@ -227,35 +234,37 @@ async function handlePlanCreate(
 
 // --- plan update-meta ---
 
+const planUpdateMetaParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+  title: { type: "string", description: "New title" },
+  status: {
+    type: "string",
+    description: "New status",
+    enum: ["proposed", "planned", "in_progress", "done", "archived"],
+  },
+  summary: { type: "string", description: "New summary" },
+  keywords: { type: "string", description: "Comma-separated keywords" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "plan update-meta",
   description: "Update plan metadata",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-    title: { type: "string", description: "New title" },
-    status: {
-      type: "string",
-      description: "New status",
-      enum: ["proposed", "planned", "in_progress", "done", "archived"],
-    },
-    summary: { type: "string", description: "New summary" },
-    keywords: { type: "string", description: "Comma-separated keywords" },
-  },
+  params: planUpdateMetaParams,
   handler: handlePlanUpdateMeta,
 });
 
 async function handlePlanUpdateMeta(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof planUpdateMetaParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
-  const title = params.title as string | undefined;
-  const status = params.status as PlanStatus | undefined;
-  const summary = params.summary as string | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
+  const slug = params.slug;
+  const planId = params.planId;
+  const title = params.title;
+  const status = params.status;
+  const summary = params.summary;
+  const keywordsRaw = params.keywords;
   const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : undefined;
 
   const result = requireProject(slug);
@@ -285,29 +294,31 @@ async function handlePlanUpdateMeta(
 
 // --- plan update-body ---
 
+const planUpdateBodyParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+  body: { type: "string", required: false, description: "Inline markdown body content" },
+  "body-file": { type: "string", description: "Path to markdown file with plan body" },
+  "body-stdin": { type: "boolean", description: "Read body from stdin" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "plan update-body",
   description: "Update plan body content",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-    body: { type: "string", required: false, description: "Inline markdown body content" },
-    "body-file": { type: "string", description: "Path to markdown file with plan body" },
-    "body-stdin": { type: "boolean", description: "Read body from stdin" },
-  },
+  params: planUpdateBodyParams,
   handler: handlePlanUpdateBody,
 });
 
 async function handlePlanUpdateBody(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof planUpdateBodyParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
-  const bodyInline = params.body as string | undefined;
-  const bodyFile = params["body-file"] as string | undefined;
-  const bodyStdin = params["body-stdin"] as boolean | undefined;
+  const slug = params.slug;
+  const planId = params.planId;
+  const bodyInline = params.body;
+  const bodyFile = params["body-file"];
+  const bodyStdin = params["body-stdin"];
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -360,23 +371,25 @@ async function handlePlanUpdateBody(
 
 // --- plan delete ---
 
+const planDeleteParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "plan delete",
   description: "Delete a plan",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-  },
+  params: planDeleteParams,
   handler: handlePlanDelete,
 });
 
 async function handlePlanDelete(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof planDeleteParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
+  const slug = params.slug;
+  const planId = params.planId;
 
   const result = requireProject(slug);
   if (typeof result !== "string") return result;

@@ -10,7 +10,6 @@ import { getProjectDir } from "../../utils/paths.js";
 import {
   createKnowledgeEntry,
   deleteKnowledgeEntry,
-  type KnowledgeKind,
   readKnowledgeIndex,
   updateKnowledgeEntry,
 } from "../../utils/project-memory.js";
@@ -21,6 +20,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -33,7 +34,7 @@ const KIND_ENUM = [
   "feature",
   "reference",
   "decision",
-];
+] as const;
 function requireProject(slug: string): CLIResult | string {
   const dir = getProjectDir(slug);
   if (!existsSync(dir)) {
@@ -44,30 +45,32 @@ function requireProject(slug: string): CLIResult | string {
   return dir;
 }
 // --- knowledge list ---
+const knowledgeListParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  kind: { type: "string", description: "Filter by kind", enum: KIND_ENUM },
+  keywords: { type: "string", description: "Comma-separated keywords to filter by" },
+  fields: {
+    type: "string",
+    required: false,
+    description: "Comma-separated field names to include in output",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge list",
   description: "List knowledge entries for a project",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    kind: { type: "string", description: "Filter by kind", enum: KIND_ENUM },
-    keywords: { type: "string", description: "Comma-separated keywords to filter by" },
-    fields: {
-      type: "string",
-      required: false,
-      description: "Comma-separated field names to include in output",
-    },
-  },
+  params: knowledgeListParams,
   handler: handleKnowledgeList,
 });
 
 async function handleKnowledgeList(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeListParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const kind = params.kind as KnowledgeKind | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
-  const fields = params.fields as string | undefined;
+  const slug = params.slug;
+  const kind = params.kind;
+  const keywordsRaw = params.keywords;
+  const fields = params.fields;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -94,24 +97,26 @@ async function handleKnowledgeList(
   return success(entries);
 }
 // --- knowledge get ---
+const knowledgeGetParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  entryId: { type: "string", required: true, positional: 1, description: "Knowledge entry ID" },
+  body: { type: "boolean", description: "Include entry body content" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge get",
   description: "Get a knowledge entry by ID",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    entryId: { type: "string", required: true, positional: 1, description: "Knowledge entry ID" },
-    body: { type: "boolean", description: "Include entry body content" },
-  },
+  params: knowledgeGetParams,
   handler: handleKnowledgeGet,
 });
 
 async function handleKnowledgeGet(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeGetParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const entryId = params.entryId as string;
-  const includeBody = params.body as boolean | undefined;
+  const slug = params.slug;
+  const entryId = params.entryId;
+  const includeBody = params.body;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -133,39 +138,41 @@ async function handleKnowledgeGet(
   return success({ meta });
 }
 // --- knowledge create ---
+const knowledgeCreateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  title: { type: "string", required: true, positional: 1, description: "Entry title" },
+  kind: { type: "string", required: true, description: "Entry kind", enum: KIND_ENUM },
+  summary: { type: "string", description: "Entry summary" },
+  keywords: { type: "string", description: "Comma-separated keywords" },
+  body: { type: "string", description: "Inline markdown body content" },
+  "body-file": { type: "string", description: "Path to markdown file with entry body" },
+  "source-files": {
+    type: "string",
+    description:
+      'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge create",
   description: "Create a new knowledge entry",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    title: { type: "string", required: true, positional: 1, description: "Entry title" },
-    kind: { type: "string", required: true, description: "Entry kind", enum: KIND_ENUM },
-    summary: { type: "string", description: "Entry summary" },
-    keywords: { type: "string", description: "Comma-separated keywords" },
-    body: { type: "string", description: "Inline markdown body content" },
-    "body-file": { type: "string", description: "Path to markdown file with entry body" },
-    "source-files": {
-      type: "string",
-      description:
-        'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
-    },
-  },
+  params: knowledgeCreateParams,
   handler: handleKnowledgeCreate,
 });
 
 async function handleKnowledgeCreate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeCreateParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const title = params.title as string;
-  const kind = params.kind as KnowledgeKind;
-  const summary = params.summary as string | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
-  const bodyInline = params.body as string | undefined;
-  const bodyFile = params["body-file"] as string | undefined;
-  const sourceFilesRaw = params["source-files"] as string | undefined;
+  const slug = params.slug;
+  const title = params.title;
+  const kind = params.kind;
+  const summary = params.summary;
+  const keywordsRaw = params.keywords;
+  const bodyInline = params.body;
+  const bodyFile = params["body-file"];
+  const sourceFilesRaw = params["source-files"];
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -219,31 +226,33 @@ async function handleKnowledgeCreate(
   }
 }
 // --- knowledge update-meta ---
+const knowledgeUpdateMetaParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  entryId: { type: "string", required: true, positional: 1, description: "Entry ID" },
+  title: { type: "string", description: "New title" },
+  kind: { type: "string", description: "New kind", enum: KIND_ENUM },
+  summary: { type: "string", description: "New summary" },
+  keywords: { type: "string", description: "Comma-separated keywords" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge update-meta",
   description: "Update metadata of a knowledge entry",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    entryId: { type: "string", required: true, positional: 1, description: "Entry ID" },
-    title: { type: "string", description: "New title" },
-    kind: { type: "string", description: "New kind", enum: KIND_ENUM },
-    summary: { type: "string", description: "New summary" },
-    keywords: { type: "string", description: "Comma-separated keywords" },
-  },
+  params: knowledgeUpdateMetaParams,
   handler: handleKnowledgeUpdateMeta,
 });
 
 async function handleKnowledgeUpdateMeta(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeUpdateMetaParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const entryId = params.entryId as string;
-  const title = params.title as string | undefined;
-  const kind = params.kind as KnowledgeKind | undefined;
-  const summary = params.summary as string | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
+  const slug = params.slug;
+  const entryId = params.entryId;
+  const title = params.title;
+  const kind = params.kind;
+  const summary = params.summary;
+  const keywordsRaw = params.keywords;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -269,29 +278,31 @@ async function handleKnowledgeUpdateMeta(
   }
 }
 // --- knowledge update-body ---
+const knowledgeUpdateBodyParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  entryId: { type: "string", required: true, positional: 1, description: "Entry ID" },
+  body: { type: "string", required: false, description: "Inline markdown body content" },
+  "body-file": { type: "string", description: "Path to markdown file with entry body" },
+  "body-stdin": { type: "boolean", description: "Read body from stdin" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge update-body",
   description: "Update the body content of a knowledge entry",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    entryId: { type: "string", required: true, positional: 1, description: "Entry ID" },
-    body: { type: "string", required: false, description: "Inline markdown body content" },
-    "body-file": { type: "string", description: "Path to markdown file with entry body" },
-    "body-stdin": { type: "boolean", description: "Read body from stdin" },
-  },
+  params: knowledgeUpdateBodyParams,
   handler: handleKnowledgeUpdateBody,
 });
 
 async function handleKnowledgeUpdateBody(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeUpdateBodyParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const entryId = params.entryId as string;
-  const bodyInline = params.body as string | undefined;
-  const bodyFile = params["body-file"] as string | undefined;
-  const bodyStdin = params["body-stdin"] as boolean | undefined;
+  const slug = params.slug;
+  const entryId = params.entryId;
+  const bodyInline = params.body;
+  const bodyFile = params["body-file"];
+  const bodyStdin = params["body-stdin"];
   if (!bodyInline && !bodyFile && !bodyStdin) {
     return failure(
       ERROR_CODES.MISSING_PARAM,
@@ -337,33 +348,35 @@ async function handleKnowledgeUpdateBody(
   return success({ meta, body });
 }
 // --- knowledge upsert ---
+const knowledgeUpsertParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  title: { type: "string", required: true, positional: 1, description: "Entry title" },
+  kind: { type: "string", required: true, description: "Entry kind", enum: KIND_ENUM },
+  summary: { type: "string", description: "Entry summary" },
+  keywords: { type: "string", description: "Comma-separated keywords" },
+  body: { type: "string", description: "Inline markdown body content" },
+  "body-file": { type: "string", description: "Path to markdown file with entry body" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge upsert",
   description: "Create or update a knowledge entry by title (idempotent)",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    title: { type: "string", required: true, positional: 1, description: "Entry title" },
-    kind: { type: "string", required: true, description: "Entry kind", enum: KIND_ENUM },
-    summary: { type: "string", description: "Entry summary" },
-    keywords: { type: "string", description: "Comma-separated keywords" },
-    body: { type: "string", description: "Inline markdown body content" },
-    "body-file": { type: "string", description: "Path to markdown file with entry body" },
-  },
+  params: knowledgeUpsertParams,
   handler: handleKnowledgeUpsert,
 });
 
 async function handleKnowledgeUpsert(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeUpsertParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const title = params.title as string;
-  const kind = params.kind as KnowledgeKind;
-  const summary = params.summary as string | undefined;
-  const keywordsRaw = params.keywords as string | undefined;
-  const bodyInline = params.body as string | undefined;
-  const bodyFile = params["body-file"] as string | undefined;
+  const slug = params.slug;
+  const title = params.title;
+  const kind = params.kind;
+  const summary = params.summary;
+  const keywordsRaw = params.keywords;
+  const bodyInline = params.body;
+  const bodyFile = params["body-file"];
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -413,23 +426,25 @@ async function handleKnowledgeUpsert(
   }
 }
 // --- knowledge delete ---
+const knowledgeDeleteParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  entryId: { type: "string", required: true, positional: 1, description: "Entry ID" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "knowledge delete",
   description: "Delete a knowledge entry",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    entryId: { type: "string", required: true, positional: 1, description: "Entry ID" },
-  },
+  params: knowledgeDeleteParams,
   handler: handleKnowledgeDelete,
 });
 
 async function handleKnowledgeDelete(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof knowledgeDeleteParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const entryId = params.entryId as string;
+  const slug = params.slug;
+  const entryId = params.entryId;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;

@@ -21,6 +21,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -28,25 +30,27 @@ import { failure, success } from "../output-envelope.js";
 // git-log
 // ---------------------------------------------------------------------------
 
+const gitLogParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  since: { type: "string", description: "Git commit hash or ISO date to start from" },
+  limit: { type: "number", default: 20, description: "Max number of commits to return" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "git-log",
   description: "Show git commit history for a project workspace",
   mutation: false,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    since: { type: "string", description: "Git commit hash or ISO date to start from" },
-    limit: { type: "number", default: 20, description: "Max number of commits to return" },
-  },
+  params: gitLogParams,
   handler: handleGitLog,
 });
 
 async function handleGitLog(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof gitLogParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const since = params.since as string | undefined;
-  const limit = (params.limit as number) ?? 20;
+  const slug = params.slug;
+  const since = params.since;
+  const limit = params.limit;
 
   const projectDir = getProjectDir(slug);
   const metaPath = resolve(projectDir, "meta.json");
@@ -75,23 +79,25 @@ async function handleGitLog(
 // sync-agents-md
 // ---------------------------------------------------------------------------
 
+const syncAgentsMdParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  "analysis-file": { type: "string", required: true, description: "Path to JSON analysis file" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "sync-agents-md",
   description: "Regenerate AGENTS.md from analysis data",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    "analysis-file": { type: "string", required: true, description: "Path to JSON analysis file" },
-  },
+  params: syncAgentsMdParams,
   handler: handleSyncAgentsMd,
 });
 
 async function handleSyncAgentsMd(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof syncAgentsMdParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const analysisFile = params["analysis-file"] as string;
+  const slug = params.slug;
+  const analysisFile = params["analysis-file"];
 
   if (flags.dryRun) {
     return success({ dryRun: true, wouldSync: { slug, analysisFile } });
@@ -236,21 +242,23 @@ async function handleSyncAgentsMd(
 // graphify-sync
 // ---------------------------------------------------------------------------
 
+const graphifySyncParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "graphify-sync",
   description: "Re-extract codebase graph and ingest new structural knowledge",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-  },
+  params: graphifySyncParams,
   handler: handleGraphifySync,
 });
 
 async function handleGraphifySync(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof graphifySyncParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
+  const slug = params.slug;
 
   const projectDir = getProjectDir(slug);
   const metaPath = join(projectDir, "meta.json");

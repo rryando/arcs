@@ -5,33 +5,41 @@
 import { buildProjectRetrievalIndex } from "../../retrieval/index-builder.js";
 import { listTasks, readKnowledgeIndex, readPlanIndex } from "../../utils/project-memory.js";
 import { resolveProject } from "../../utils/project-resolver.js";
-import { toposort, type ToposortInput } from "../../utils/toposort.js";
+import { type ToposortInput, toposort } from "../../utils/toposort.js";
 import { deriveOperatingBrief } from "../../utils/workflow-policy.js";
-import { type CLIResult, type CommandFlags, defineCommand } from "../command-registry.js";
-import { failure, success } from "../output-envelope.js";
+import {
+  type CLIResult,
+  type CommandFlags,
+  defineCommand,
+  type ParamDef,
+  type ParsedParams,
+} from "../command-registry.js";
+import { success } from "../output-envelope.js";
 
 // ---------------------------------------------------------------------------
+
+const nextParams = {
+  slug: {
+    type: "string",
+    positional: 0,
+    description: "Project slug or path",
+  },
+} as const satisfies Record<string, ParamDef>;
 
 defineCommand({
   path: "next",
   description: "Show the next task to work on with relevant context",
-  params: {
-    slug: {
-      type: "string",
-      positional: 0,
-      description: "Project slug or path",
-    },
-  },
+  params: nextParams,
   handler: handleNext,
 });
 
 // ---------------------------------------------------------------------------
 
 async function handleNext(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof nextParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const rawArg = params.slug as string | undefined;
+  const rawArg = params.slug;
 
   const resolved = await resolveProject(rawArg);
   if (!resolved.ok) return resolved.result;

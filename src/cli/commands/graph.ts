@@ -11,6 +11,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -18,27 +20,29 @@ import { failure, success } from "../output-envelope.js";
 // related
 // ---------------------------------------------------------------------------
 
+const relatedParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  task: { type: "string", description: "Task ID to find related entities for" },
+  plan: { type: "string", description: "Plan ID to find related entities for" },
+  knowledge: { type: "string", description: "Knowledge entry ID to find related entities for" },
+  limit: { type: "number", description: "Max results to return (default 10)" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "related",
   description: "Find entities related to a task, knowledge entry, or plan via the knowledge graph",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    task: { type: "string", description: "Task ID to find related entities for" },
-    plan: { type: "string", description: "Plan ID to find related entities for" },
-    knowledge: { type: "string", description: "Knowledge entry ID to find related entities for" },
-    limit: { type: "number", description: "Max results to return (default 10)" },
-  },
+  params: relatedParams,
   handler: handleRelatedCmd,
 });
 
 async function handleRelatedCmd(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof relatedParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const taskId = params.task as string | undefined;
-  const knowledgeId = params.knowledge as string | undefined;
-  const planId = params.plan as string | undefined;
+  const slug = params.slug;
+  const taskId = params.task;
+  const knowledgeId = params.knowledge;
+  const planId = params.plan;
 
   if (!taskId && !knowledgeId && !planId) {
     return failure(ERROR_CODES.MISSING_PARAM, "One of --task, --knowledge, or --plan is required", {
@@ -56,7 +60,7 @@ async function handleRelatedCmd(
     startNodeId = `plan:${planId}`;
   }
 
-  const limit = (params.limit as number | undefined) ?? 10;
+  const limit = params.limit ?? 10;
   const results = await retrieveRelated(slug, startNodeId, { limit });
 
   return success({ related: results });
@@ -66,20 +70,22 @@ async function handleRelatedCmd(
 // graph inspect
 // ---------------------------------------------------------------------------
 
+const graphInspectParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "graph inspect",
   description: "Show knowledge graph index statistics for a project",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-  },
+  params: graphInspectParams,
   handler: handleGraphInspectCmd,
 });
 
 async function handleGraphInspectCmd(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof graphInspectParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
+  const slug = params.slug;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {

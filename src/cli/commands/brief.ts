@@ -6,10 +6,8 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { extractOverviewContent } from "../../utils/content-assembly.js";
-import { getProjectDir } from "../../utils/paths.js";
 import {
   KNOWLEDGE_AUDIENCES,
-  type KnowledgeAudience,
   listTasks,
   readKnowledgeIndex,
   readPlanIndex,
@@ -17,7 +15,7 @@ import {
 import { resolveProject } from "../../utils/project-resolver.js";
 import { deriveOperatingBrief } from "../../utils/workflow-policy.js";
 import { renderBrief } from "../brief-renderer.js";
-import { type CLIResult, type CommandFlags, defineCommand } from "../command-registry.js";
+import { defineCommand } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
 // ---------------------------------------------------------------------------
@@ -41,104 +39,94 @@ defineCommand({
       description: "Include done tasks/plans (default: false — only active items)",
     },
   },
-  handler: handleBrief,
-});
+  handler: async (params, flags) => {
+    const rawArg = params.pathOrSlug;
+    const audience = params.audience ?? "orchestrator";
+    const full = params.full;
 
-// ---------------------------------------------------------------------------
-
-async function handleBrief(
-  params: Record<string, unknown>,
-  flags: CommandFlags,
-): Promise<CLIResult> {
-  const rawArg = params.pathOrSlug as string | undefined;
-  const audience = (params.audience as KnowledgeAudience | undefined) ?? "orchestrator";
-  const full = params.full as boolean | undefined;
-
-  if (
-    params.audience &&
-    !(KNOWLEDGE_AUDIENCES as readonly string[]).includes(params.audience as string)
-  ) {
-    return failure(
-      "invalid_enum",
-      `Invalid audience "${params.audience}". Valid: ${KNOWLEDGE_AUDIENCES.join(", ")}`,
-    );
-  }
-
-  // --- Resolve project ---
-  const resolved = await resolveProject(rawArg);
-  if (!resolved.ok) return resolved.result;
-
-  const { slug, name, projectDir } = resolved;
-
-  // --- Summary from overview ---
-  const overviewPath = resolve(projectDir, "overview.md");
-  let summary = "";
-  if (existsSync(overviewPath)) {
-    const raw = await readFile(overviewPath, "utf-8");
-    const content = extractOverviewContent(raw);
-    if (content) {
-      summary = pickFirstProseParagraph(content);
+    if (params.audience && !(KNOWLEDGE_AUDIENCES as readonly string[]).includes(params.audience)) {
+      return failure(
+        "invalid_enum",
+        `Invalid audience "${params.audience}". Valid: ${KNOWLEDGE_AUDIENCES.join(", ")}`,
+      );
     }
-  }
 
-  // --- Plans ---
-  const planIndex = await readPlanIndex(projectDir);
-  const activePlans = full
-    ? planIndex.plans
-    : planIndex.plans.filter((p) => p.status !== "done" && p.status !== "archived");
+    // --- Resolve project ---
+    const resolved = await resolveProject(rawArg);
+    if (!resolved.ok) return resolved.result;
 
-  // --- Tasks ---
-  const allTasks = await listTasks(projectDir);
-  const openTasks = full
-    ? allTasks
-    : allTasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+    const { slug, name, projectDir } = resolved;
 
-  // --- Knowledge (top 5 by recency, filtered by audience) ---
-  const knowledgeIndex = await readKnowledgeIndex(projectDir);
-  const filtered = knowledgeIndex.entries.filter(
-    (e) => !e.audience || e.audience === audience || e.audience === "universal",
-  );
-  // Sort by updatedAt descending
-  filtered.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-  const topKnowledge = filtered
-    .slice(0, 5)
-    .map((e) => ({ id: e.id, title: e.title, kind: e.kind }));
+    // --- Summary from overview ---
+    const overviewPath = resolve(projectDir, "overview.md");
+    let summary = "";
+    if (existsSync(overviewPath)) {
+      const raw = await readFile(overviewPath, "utf-8");
+      const content = extractOverviewContent(raw);
+      if (content) {
+        summary = pickFirstProseParagraph(content);
+      }
+    }
 
-  const operatingBrief = deriveOperatingBrief({
-    tasks: allTasks.map((t) => ({
-      id: t.id,
-      title: t.title,
-      status: t.status,
-      planId: t.planId,
-      priority: t.priority,
-    })),
-    plans: planIndex.plans.map((p) => ({ id: p.id, title: p.title, status: p.status })),
-  });
+    // --- Plans ---
+    const planIndex = await readPlanIndex(projectDir);
+    const activePlans = full
+      ? planIndex.plans
+      : planIndex.plans.filter((p) => p.status !== "done" && p.status !== "archived");
 
-  // Top open tasks (up to 7) for markdown rendering
-  const topOpenTasks = openTasks
-    .slice(0, 7)
-    .map((t) => ({ id: t.id, title: t.title, status: t.status }));
+    // --- Tasks ---
+    const allTasks = await listTasks(projectDir);
+    const openTasks = full
+      ? allTasks
+      : allTasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
 
-  const activePlanTitles = activePlans.map((p) => p.title);
+    // --- Knowledge (top 5 by recency, filtered by audience) ---
+    const knowledgeIndex = await readKnowledgeIndex(projectDir);
+    const filtered = knowledgeIndex.entries.filter(
+      (e) => !e.audience || e.audience === audience || e.audience === "universal",
+    );
+    // Sort by updatedAt descending
+    filtered.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    const topKnowledge = filtered
+      .slice(0, 5)
+      .map((e) => ({ id: e.id, title: e.title, kind: e.kind }));
 
-  const data = {
-    slug,
-    name,
-    summary,
-    operatingBrief,
-    activePlansCount: activePlans.length,
-    activePlanTitles,
-    openTasksCount: openTasks.length,
-    topOpenTasks,
-    topKnowledge,
-  };
+    const operatingBrief = deriveOperatingBrief({
+      tasks: allTasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        planId: t.planId,
+        priority: t.priority,
+      })),
+      plans: planIndex.plans.map((p) => ({ id: p.id, title: p.title, status: p.status })),
+    });
 
-  if (!flags.json) {
-    return success(renderBrief(data));
-  }
-  return success(data);
-}
+    // Top open tasks (up to 7) for markdown rendering
+    const topOpenTasks = openTasks
+      .slice(0, 7)
+      .map((t) => ({ id: t.id, title: t.title, status: t.status }));
+
+    const activePlanTitles = activePlans.map((p) => p.title);
+
+    const data = {
+      slug,
+      name,
+      summary,
+      operatingBrief,
+      activePlansCount: activePlans.length,
+      activePlanTitles,
+      openTasksCount: openTasks.length,
+      topOpenTasks,
+      topKnowledge,
+    };
+
+    if (!flags.json) {
+      return success(renderBrief(data));
+    }
+    return success(data);
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Summary extraction
