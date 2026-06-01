@@ -3,8 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
-import { detectCycle, toposort } from "../src/utils/toposort.js";
 import type { ToposortInput } from "../src/utils/toposort.js";
+import { detectCycle, toposort } from "../src/utils/toposort.js";
 
 describe("toposort", () => {
   it("returns empty array for empty input", () => {
@@ -17,10 +17,7 @@ describe("toposort", () => {
   });
 
   it("returns tasks in dependency order", () => {
-    const tasks: ToposortInput[] = [
-      { id: "b", dependsOn: ["a"] },
-      { id: "a" },
-    ];
+    const tasks: ToposortInput[] = [{ id: "b", dependsOn: ["a"] }, { id: "a" }];
     const result = toposort(tasks);
     expect(result.indexOf("a")).toBeLessThan(result.indexOf("b"));
   });
@@ -86,10 +83,7 @@ describe("toposort", () => {
   });
 
   it("tasks without dependsOn field work the same as empty dependsOn", () => {
-    const tasks: ToposortInput[] = [
-      { id: "a", dependsOn: undefined },
-      { id: "b" },
-    ];
+    const tasks: ToposortInput[] = [{ id: "a", dependsOn: undefined }, { id: "b" }];
     expect(() => toposort(tasks)).not.toThrow();
     expect(toposort(tasks)).toHaveLength(2);
   });
@@ -97,10 +91,7 @@ describe("toposort", () => {
 
 describe("detectCycle", () => {
   it("returns null for acyclic graph", () => {
-    const tasks: ToposortInput[] = [
-      { id: "a" },
-      { id: "b", dependsOn: ["a"] },
-    ];
+    const tasks: ToposortInput[] = [{ id: "a" }, { id: "b", dependsOn: ["a"] }];
     expect(detectCycle(tasks)).toBeNull();
   });
 

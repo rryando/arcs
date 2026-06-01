@@ -44,10 +44,7 @@ export function taskDependencyCycleDetected(cyclePath: string[]): DagError {
 }
 
 export function taskDependencyNotFound(depId: string): DagError {
-  return new DagError(
-    "TASK_DEPENDENCY_NOT_FOUND",
-    `Task dependency "${depId}" does not exist.`,
-  );
+  return new DagError("TASK_DEPENDENCY_NOT_FOUND", `Task dependency "${depId}" does not exist.`);
 }
 
 export function dependencyNotFound(ids: string[]): DagError {
