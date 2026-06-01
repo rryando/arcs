@@ -5,5 +5,6 @@ export default defineConfig({
     environment: "node",
     include: ["test/**/*.test.ts"],
     maxWorkers: 1,
+    globalSetup: ["./test/helpers/global-setup.ts"],
   },
 });
