@@ -48,27 +48,29 @@ Discovery: `arcs --commands --json`. Mutating commands run directly — no token
 
 ## Graphify Sub-Flow (DEFAULT: ON when binary present)
 
-The orchestrator runs graphify directly during INIT to seed knowledge entries with structural evidence before any sub-agent reads code. This is the default path when `graphify` is on PATH; skip cleanly otherwise.
+The orchestrator runs graphify directly during INIT to produce structural **proposals** before any sub-agent reads code. Proposals are durable on the proposal-store ledger; agents enrich them into knowledge entries via the `enriching-graphify-proposals` skill. This is the default path when `graphify` is on PATH; skip cleanly otherwise.
 
-1. **Detect:** call `detectGraphify()` from `src/utils/graphify.ts`. If unavailable, log "graphify not on PATH; proceeding without graph signal" and skip steps 3–5.
+1. **Detect:** call `detectGraphify()` from `src/utils/graphify.ts`. If unavailable, log "graphify not on PATH; proceeding without graph signal" and skip steps 3–6.
 2. **Trust the gitignore guarantee:** `runExtraction()` already auto-appends `graphify-out/` to `.gitignore` via `ensureGitignoreEntry`. Do NOT redundantly check or modify `.gitignore` from agents — running extraction is sufficient.
 3. **Extract** (AST-only, no LLM API key required):
    ```bash
    graphify update <workspacePath> --force --no-cluster
    ```
    Produces `<workspacePath>/graphify-out/graph.json`.
-4. **Ingest:** call internal `ingestGraph(graphJsonPath, slug)` → up to 20 `KnowledgeProposal` records (test files filtered):
+4. **Ingest as proposals:** `arcs project init` internally calls `ingestGraph(graphJsonPath, slug)`, which writes up to 20 structural proposals to `proposals/graphify.json` (test files filtered):
    - 8 god nodes (`kind=module`, top 5% degree)
    - 8 architecture clusters (`kind=architecture`, by community or directory grouping)
    - 5 cross-module couplings (`kind=gotcha`, high-degree links across top-level dirs)
-5. **Enrich** with read-only graph queries (sub-agents may run these):
+
+   Graphify never writes directly to the knowledge surface. The init envelope returns `data.graphify.pending_enrichment: true` to signal that proposals are waiting.
+5. **Enrich** with the `enriching-graphify-proposals` skill — read `arcs proposal list <slug> --json`, decide per-proposal verdicts (keep / merge / drop), persist via `arcs proposal promote` and `arcs proposal drop`. The skill encodes the decision heuristics, output contract, and cost discipline; do not paraphrase.
+6. **Optional graph queries** for evidence during enrichment (sub-agents may run these):
    - `graphify query "entry points and main commands" --graph graphify-out/graph.json --budget 2000` → seeds for "key files" reference entries
    - `graphify query "core data flow" --graph graphify-out/graph.json --budget 2000` → seeds for "core modules" entries
    - `graphify explain "<godNodeLabel>" --graph graphify-out/graph.json` → plain-language summary for module entry bodies
    - `graphify affected "<critical-symbol>" --graph graphify-out/graph.json --depth 2` → reverse-impact map for high-risk modules
    - `graphify path "<A>" "<B>" --graph graphify-out/graph.json` → shortest dependency path for architecture entries
-6. **Hand to typed agents:** the proposals + query results go to the sub-agents listed in **Agent Dispatch** below; they merge graph evidence with code reading and return finalized knowledge entries.
-7. **Write** the entries directly: `arcs batch --file=ops.json` for one batched invocation, or repeated `arcs knowledge create` per entry.
+7. **Hand to typed agents** (in parallel) for code-grounded follow-up entries that go beyond what graphify proposals cover — see **Agent Dispatch** below.
 
 ## Content Guidelines
 
@@ -125,16 +127,21 @@ arcs project init "Foo" --description="Foo CLI tool" --path="$(pwd)" --json
 arcs project update-doc foo overview --content="..." --json
 # ... repeat for tasks, dependencies, knowledge
 
-# 4. Graphify (if available)
+# 4. Graphify (if available) — runs inside `arcs project init`
 graphify update . --force --no-cluster
-# ingestGraph produces proposals; enrich with graphify query/explain
+# ingestGraph writes proposals to proposals/graphify.json
+# init envelope: data.graphify.pending_enrichment === true → load
+# `enriching-graphify-proposals` and run the verdict loop:
+arcs proposal list foo --json
+arcs proposal promote foo <id> --title="..." --summary="..." --body-file=... --kind=module --source-files=... --json
+arcs proposal drop foo <id> --reason="..." --json
 
-# 5. Fan out typed agents (parallel)
+# 5. Fan out typed agents (parallel) for entries beyond proposal scope
 #    system-architect → architecture/module entries
 #    docs-researcher  → reference/feature entries
 #    tech-architect   → gotcha/lesson entries
 
-# 6. Write knowledge entries directly
+# 6. Write any non-proposal-derived knowledge entries directly
 arcs knowledge create foo "Tech stack: TypeScript + Node 20" --kind=architecture --summary="..." --body="..." --json
 # ... repeat per entry, or use arcs batch
 ```

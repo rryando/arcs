@@ -163,7 +163,7 @@ Between plan-level header and `flowchart TD` declaration:
 | `sort-metadata <file>` | Order metadata blocks by node ID |
 | `regenerate <file> --metadata f.json` | Full regeneration from canonical data |
 
-Preferred: `arcs diagram ready <slug> <planId>` for ready detection. Script is fallback for file-level ops.
+Preferred: `arcs diagram ready <slug> <planId>` for ready detection. The CLI returns `{ok, data: {ready, blocked, inProgress, done}}` — four disjoint arrays of node IDs that together cover every node in the diagram. The bundled `manage-diagram.mjs ready` script remains the file-level fallback (emits a bare list of ready IDs only).
 
 ## File Convention
 

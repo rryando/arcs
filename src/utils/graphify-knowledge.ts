@@ -1,98 +1,65 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { KnowledgeProposal } from "./graphify.js";
-import { getProjectDir } from "./paths.js";
+import {
+  annotateDedupCandidates,
+  computeGraphFingerprint,
+  type Proposal,
+  type ProposalsFile,
+  readProposals,
+  writeProposals,
+} from "./proposal-store.js";
 
-interface KnowledgeMetaEntry {
-  id: string;
-  normalizedId: string;
-  title: string;
-  kind: string;
-  keywords: string[];
-  summary: string;
-  sourceFiles?: Array<{ path: string; anchor?: string }>;
-  file: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface KnowledgeIndex {
-  entries: KnowledgeMetaEntry[];
-}
-
-function slugifyTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-}
-
-async function readJsonSafe<T>(filePath: string): Promise<T | undefined> {
-  try {
-    return JSON.parse(await readFile(filePath, "utf-8")) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-async function writeJson(filePath: string, data: unknown): Promise<void> {
-  await writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
-}
-
-export async function persistProposals(
+/**
+ * Convert graphify ingestion output into a `proposals/graphify.json` payload
+ * and persist it through `proposal-store.writeProposals()`.
+ *
+ * Replaces the legacy direct-write path that used to populate
+ * `knowledge/index.json` and `knowledge/<id>.md` at ingest time. Graphify
+ * proposals now sit in the proposals gate until a skill-aware host enriches
+ * them into durable knowledge entries.
+ *
+ * Merge semantics: if a proposals file already exists, proposals from the
+ * existing file with ids NOT present in the new extraction are preserved.
+ * This protects backfilled proposals (with empty structuralFacts) and any
+ * other pending entries from being clobbered when graphify re-runs. The new
+ * extraction wins on collisions — a fresh extraction produces fresher facts.
+ */
+export async function writeProposalsFile(
   slug: string,
   proposals: KnowledgeProposal[],
-): Promise<{ created: number; skipped: number }> {
-  const projectDir = getProjectDir(slug);
-  const knowledgeDir = join(projectDir, "knowledge");
-  await mkdir(knowledgeDir, { recursive: true });
+  graphJsonContent: string,
+): Promise<{ written: number; fingerprint: string; preserved: number }> {
+  // Map ingestion shape → storage shape. The storage `Proposal` adds an
+  // initially-empty `suggestedDedupCandidates`; `annotateDedupCandidates`
+  // populates it from the existing knowledge index.
+  const draft: Proposal[] = proposals.map((p) => ({
+    id: p.id,
+    kind: p.kind,
+    label: p.label,
+    structuralFacts: p.structuralFacts as unknown as Record<string, unknown>,
+    sourceFiles: p.sourceFiles,
+    suggestedDedupCandidates: [],
+  }));
 
-  const indexPath = join(knowledgeDir, "index.json");
-  const index: KnowledgeIndex = (await readJsonSafe<KnowledgeIndex>(indexPath)) ?? { entries: [] };
+  const annotated = await annotateDedupCandidates(slug, draft);
 
-  const existingIds = new Set(index.entries.map((e) => e.id));
+  // Preserve existing proposals not present in the new extraction. This
+  // protects the lossy backfill payload (structuralFacts: {}) and any other
+  // pending agent-enrichment work from being silently dropped on the next
+  // graphify-sync. New extraction wins on id collisions.
+  const existing = await readProposals(slug);
+  const newIds = new Set(annotated.map((p) => p.id));
+  const preserved = existing ? existing.proposals.filter((p) => !newIds.has(p.id)) : [];
 
-  let created = 0;
-  let skipped = 0;
+  const fingerprint = computeGraphFingerprint(graphJsonContent);
 
-  for (const proposal of proposals) {
-    const id = slugifyTitle(proposal.title);
+  const payload: ProposalsFile = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    graphFingerprint: fingerprint,
+    proposals: [...annotated, ...preserved],
+  };
 
-    if (existingIds.has(id)) {
-      skipped++;
-      continue;
-    }
+  await writeProposals(slug, payload);
 
-    const ts = new Date().toISOString();
-    const bodyFile = join("knowledge", `${id}.md`);
-
-    const meta: KnowledgeMetaEntry = {
-      id,
-      normalizedId: id,
-      title: proposal.title,
-      kind: proposal.kind,
-      keywords: proposal.keywords,
-      summary: proposal.summary,
-      sourceFiles: proposal.sourceFiles,
-      file: bodyFile,
-      createdAt: ts,
-      updatedAt: ts,
-    };
-
-    await writeJson(join(knowledgeDir, `${id}.meta.json`), meta);
-    await writeFile(
-      join(knowledgeDir, `${id}.md`),
-      `# ${proposal.title}\n\n${proposal.summary}\n`,
-      "utf-8",
-    );
-
-    index.entries.push(meta);
-    existingIds.add(id);
-    created++;
-  }
-
-  await writeJson(indexPath, index);
-
-  return { created, skipped };
+  return { written: proposals.length, fingerprint, preserved: preserved.length };
 }

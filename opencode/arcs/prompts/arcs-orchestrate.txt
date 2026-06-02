@@ -42,7 +42,7 @@ Discovery: `arcs --commands --json` (cache once per session). Batch op names are
 | List tasks | `arcs task list <slug> --json` |
 | List plans | `arcs plan list <slug> --json` |
 | Search | `arcs search <slug> "<query>" --json` |
-| Diagram ready | `arcs diagram ready <slug> <planId> --json` |
+| Diagram ready | `arcs diagram ready <slug> <planId> --json` — returns `{ready, blocked, inProgress, done}` arrays |
 | Validate | `arcs validate <slug> --json` |
 | Task transition | `arcs task transition <slug> <taskId> <status> --planId=<id> --diagramNodeId=<node> --json` |
 | Batch writes | `arcs batch --file=ops.json --json` |
@@ -200,6 +200,7 @@ Use `recommendedSurface` to pick the routing branch: `QUEUE` → EXECUTE, `PLAN`
 | External research / docs | `docs-researcher` | |
 | 2+ independent problems | parallel fan-out across typed agents | Load `dispatching-parallel-agents` |
 | Multi-step plan with independent leaves | `software-engineer` × N coordinated by orchestrator | Load `subagent-driven-development` |
+| Pending graphify enrichment after init/sync | calling agent (or sub-agent) loads `enriching-graphify-proposals` | When envelope has `pending_enrichment: true` — drives `arcs proposal list/promote/drop` |
 
 **Anti-pattern:** dispatching `software-engineer` for analysis, audit, review, debugging, or research.
 
@@ -218,7 +219,7 @@ flowchart TD
     A -->|executing pre-written plan| EP[executing-plans]
 ```
 
-### Skill Catalogue (14 surviving skills)
+### Skill Catalogue (15 surviving skills)
 
 | Skill | Load when |
 |-------|----------|
@@ -235,6 +236,7 @@ flowchart TD
 | `deep-pr-review` | GitHub PR link with "deep review" trigger |
 | `requesting-code-review` | Self-review gate at phase/feature completion |
 | `caveman-commit` | Writing git commit messages |
+| `enriching-graphify-proposals` | `arcs project init` or `arcs graphify-sync` returned `pending_enrichment: true` |
 
 > **Note:** `confidence-gate` and `verification-before-completion` have been replaced by the `devil-advocate` subagent dispatched at phase checkpoints.
 
@@ -306,11 +308,12 @@ CLI:
 3. Present summary → user confirms → `arcs project init`
 4. `arcs project update-doc × 4`
 5. Fan out (if needed): `system-architect` (architecture entries) + `docs-researcher` (tech-stack, features) + `tech-architect` (couplings, gotchas) → collect proposals → dedup → `arcs knowledge create × N`
+6. **Proposal-gate enrichment:** if `arcs project init`'s envelope returned `data.graphify.pending_enrichment === true`, load the `enriching-graphify-proposals` skill on the calling agent (or dispatch a sub-agent with that skill). The skill reads `arcs proposal list <slug> --json`, decides per-proposal verdicts (keep / merge / drop), and persists results via `arcs proposal promote` and `arcs proposal drop`. Graphify never writes directly to the knowledge surface — promotion is the only path from proposal to knowledge entry.
 
 **Constraints:**
 - Do NOT read repo to infer name/description — gather from user or T0
 - See the `init-project` skill for full category table and worked example
-- Graphify (if on PATH): `arcs project init` auto-runs extraction + seeding. Load `graphify-aware` skill on sub-agents when `graphify-out/graph.json` exists.
+- Graphify (if on PATH): `arcs project init` auto-runs extraction and writes structural proposals to `proposals/graphify.json`. When the envelope returns `pending_enrichment: true`, load `enriching-graphify-proposals` and consume via `arcs proposal list/promote/drop`. The previous direct-write knowledge ingestion has been replaced — graphify never writes directly to the knowledge surface anymore.
 
 ### BRAINSTORM Workflow
 
@@ -343,7 +346,7 @@ CLI:
 - `arcs next` is dependency-aware (topological sort) — it returns the first task whose `dependsOn` are all done. Use it as the primary task selection mechanism.
 - `arcs task transition` atomically updates task status + diagram node. MUST pass both `--planId` and `--diagramNodeId` (both required for diagram patch)
 - Sub-agents NEVER edit `.mmd` files — agents must NOT manually patch `.mmd` for status transitions. Scope changes reported back, orchestrator regenerates via `arcs diagram sort-metadata <slug> <planId> --json`
-- `arcs diagram ready` after each transition to discover newly-unblocked nodes
+- `arcs diagram ready` after each transition to discover newly-unblocked nodes — read `data.ready` (and `data.blocked` to surface what's still gated)
 - If blocked → note blocker, advance to next unblocked task
 
 **Auto-sync triggers** (any one sufficient): 3+ transitions, `lastSyncedAt` > 7 days, plan reached `done`.
@@ -355,6 +358,7 @@ CLI:
 3. Delegate to arcs-docs sub-agent with T0 context + validate output + staleness info
 4. Sub-agent: audit + repair + write checkpoints (`lastSyncedAt`, `lastSyncGitCommit`, `lastSyncStats`) via ARCS CLI
 5. Receive sync report → present to user
+6. **Proposal-gate enrichment:** if SYNC includes `arcs graphify-sync` and that command returned `data.graphify.pending_enrichment === true`, dispatch the `enriching-graphify-proposals` skill (same protocol as INIT step 6) before declaring SYNC complete. New proposals from the latest extraction must be triaged in the same session that surfaced them.
 
 **arcs-docs sub-agent covers:**
 overview.md, tasks.md, dependencies.md, knowledge.md, plans/ status, knowledge/ accuracy, .diagram.mmd diagram drift (classDef mismatch, phantom nodes), AGENTS.md staleness, sourceFiles existence. Graph recalculation includes `task_blocks_task` edges derived from `dependsOn` fields.

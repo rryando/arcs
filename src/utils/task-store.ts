@@ -48,6 +48,14 @@ export interface TaskMeta {
   planId?: string;
   dependsOn?: string[];
   sourceFiles?: import("./storage-utils.js").FileRef[];
+  /** Per-node `%% scope:` metadata for plan diagrams (paths/dirs in scope). */
+  scope?: string;
+  /** Per-node `%% acceptance:` metadata: human-readable acceptance criterion. */
+  acceptance?: string;
+  /** Per-node `%% verify:` metadata: shell command to verify task completion. */
+  verify?: string;
+  /** Per-node `%% skill:` metadata: which skill to load when executing the task. */
+  skill?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,6 +75,10 @@ export interface CreateTaskInput {
   planId?: string;
   dependsOn?: string[];
   sourceFiles?: import("./storage-utils.js").FileRef[];
+  scope?: string;
+  acceptance?: string;
+  verify?: string;
+  skill?: string;
   now?: string;
 }
 
@@ -78,6 +90,14 @@ export interface UpdateTaskInput {
   planId?: string | null;
   dependsOn?: string[] | null;
   sourceFiles?: import("./storage-utils.js").FileRef[];
+  /** Pass `null` to clear; pass string to set. */
+  scope?: string | null;
+  /** Pass `null` to clear; pass string to set. */
+  acceptance?: string | null;
+  /** Pass `null` to clear; pass string to set. */
+  verify?: string | null;
+  /** Pass `null` to clear; pass string to set. */
+  skill?: string | null;
   now?: string;
 }
 
@@ -212,6 +232,10 @@ export async function createTask(projectDir: string, input: CreateTaskInput): Pr
     ...(input.planId && { planId: input.planId }),
     ...(input.dependsOn && input.dependsOn.length > 0 && { dependsOn: input.dependsOn }),
     ...(sourceFiles && { sourceFiles }),
+    ...(input.scope && { scope: input.scope }),
+    ...(input.acceptance && { acceptance: input.acceptance }),
+    ...(input.verify && { verify: input.verify }),
+    ...(input.skill && { skill: input.skill }),
     createdAt: ts,
     updatedAt: ts,
   };
@@ -292,6 +316,34 @@ export async function updateTask(projectDir: string, input: UpdateTaskInput): Pr
       delete task.sourceFiles;
     } else {
       task.sourceFiles = sanitizeFileRefs(input.sourceFiles);
+    }
+  }
+  if (input.scope !== undefined) {
+    if (input.scope === null || input.scope === "") {
+      delete task.scope;
+    } else {
+      task.scope = input.scope;
+    }
+  }
+  if (input.acceptance !== undefined) {
+    if (input.acceptance === null || input.acceptance === "") {
+      delete task.acceptance;
+    } else {
+      task.acceptance = input.acceptance;
+    }
+  }
+  if (input.verify !== undefined) {
+    if (input.verify === null || input.verify === "") {
+      delete task.verify;
+    } else {
+      task.verify = input.verify;
+    }
+  }
+  if (input.skill !== undefined) {
+    if (input.skill === null || input.skill === "") {
+      delete task.skill;
+    } else {
+      task.skill = input.skill;
     }
   }
   task.updatedAt = nowISO(input.now);

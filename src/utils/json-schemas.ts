@@ -137,6 +137,34 @@ export const taskIndexSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// proposals/graphify.json — graphify ingestion proposals (gated, not direct-write)
+// ---------------------------------------------------------------------------
+
+export const proposalKindSchema = z.enum(["architecture", "module", "gotcha", "pattern"]);
+
+export const proposalSchema = z.object({
+  id: z.string(),
+  kind: proposalKindSchema,
+  label: z.string(),
+  // Permissive for now; T007 will tighten the structuralFacts shape.
+  structuralFacts: z.record(z.unknown()),
+  sourceFiles: z.array(fileRefSchemaLocal),
+  suggestedDedupCandidates: z.array(
+    z.object({
+      id: z.string(),
+      overlap: z.array(z.string()),
+    }),
+  ),
+});
+
+export const proposalsFileSchema = z.object({
+  version: z.literal(1),
+  generatedAt: z.string(),
+  graphFingerprint: z.string(),
+  proposals: z.array(proposalSchema),
+});
+
+// ---------------------------------------------------------------------------
 // OpenCode ARCS bundle manifest (source bundle)
 // ---------------------------------------------------------------------------
 

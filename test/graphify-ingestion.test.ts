@@ -157,7 +157,7 @@ describe("ingestGraph", () => {
     // With 8 nodes, 95th percentile filters to just the top ~1 node
     // At minimum GodNode should be detected
     expect(godProposals.length).toBeGreaterThanOrEqual(1);
-    expect(godProposals[0].title).toContain("GodNode");
+    expect(godProposals[0].label).toContain("GodNode");
     expect(result.stats.godNodes).toBeGreaterThanOrEqual(1);
     rmSync(dir, { recursive: true });
   });
@@ -183,7 +183,7 @@ describe("ingestGraph", () => {
 
     const archProposals = result.proposals.filter((p) => p.kind === "architecture");
     expect(archProposals.length).toBe(2);
-    expect(archProposals[0].title).toContain("Auth & Session Management");
+    expect(archProposals[0].label).toContain("Auth & Session Management");
     expect(result.stats.communities).toBe(2);
     rmSync(dir, { recursive: true });
   });
@@ -240,7 +240,8 @@ describe("ingestGraph", () => {
 
     const gotchaProposals = result.proposals.filter((p) => p.kind === "gotcha");
     expect(gotchaProposals.length).toBeGreaterThanOrEqual(1);
-    expect(gotchaProposals[0].title).toContain("Cross-module coupling");
+    expect(gotchaProposals[0].label).toMatch(/ServiceA.*ServiceB|ServiceB.*ServiceA/);
+    expect(gotchaProposals[0].kind).toBe("gotcha");
     expect(result.stats.crossModuleCouplings).toBeGreaterThanOrEqual(1);
     rmSync(dir, { recursive: true });
   });

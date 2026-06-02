@@ -83,11 +83,16 @@ export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): Gen
       `%% node: ${node.nodeId}`,
       `%% title: ${t.title}`,
       `%% status: ${t.status}`,
-      `%% skill: quick-dev`,
-      `%% scope: (TBD)`,
-      `%% acceptance: (TBD)`,
-      `%% verify: npm test`,
+      `%% skill: ${t.skill ?? "quick-dev"}`,
+      `%% scope: ${t.scope ?? "(TBD)"}`,
     );
+    if (t.sourceFiles && t.sourceFiles.length > 0) {
+      const filesStr = t.sourceFiles
+        .map((f) => (f.anchor ? `${f.path}:${f.anchor}` : f.path))
+        .join(", ");
+      lines.push(`%% files: ${filesStr}`);
+    }
+    lines.push(`%% acceptance: ${t.acceptance ?? "(TBD)"}`, `%% verify: ${t.verify ?? "npm test"}`);
     if (blockedBy.length > 0) {
       lines.push(`%% blocked-by: ${blockedBy.join(", ")}`);
     }
