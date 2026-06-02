@@ -361,6 +361,17 @@ arcs lint-bundle                 # Validate bundle integrity
 arcs deploy-superpowers          # Deploy to ~/.config/opencode/
 ```
 
+**What `deploy-superpowers` writes to `opencode.json`:**
+
+The bundle merges a small set of keys into your `~/.config/opencode/opencode.json`. Each merge entry has a `mode`:
+
+| Mode | Behavior | Used for |
+|------|----------|----------|
+| `overwrite` (default) | Always sets the value, even on re-deploy | Sub-agent definitions, plugin registration, `permission.external_directory` ARCS data paths |
+| `if-absent` | Only sets if the key isn't already present | User-preference keys: `model`, `small_model`, `agent.{build,plan,general,explore}.model`, `lsp` |
+
+This means: **provider/model routing and LSP enablement seed on first install but never re-stamp.** Pick `tvlk-provider/...`, `github-copilot/...`, or anything else once and re-deploys preserve your choice. Set `lsp: false` and ARCS won't flip it back on. Sub-agent prompts and skills stay maintained by the bundle.
+
 ---
 
 ## License
