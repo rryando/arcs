@@ -17,6 +17,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -24,40 +26,42 @@ import { failure, success } from "../output-envelope.js";
 // loop start
 // ---------------------------------------------------------------------------
 
+const loopStartParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  prompt: { type: "string", required: true, description: "Loop prompt text" },
+  session: { type: "string", required: true, description: "Session ID" },
+  "max-iterations": { type: "number", default: 100, description: "Maximum iteration count" },
+  "completion-promise": {
+    type: "string",
+    default: "DONE",
+    description: "Completion promise tag",
+  },
+  strategy: {
+    type: "string",
+    enum: ["continue", "reset"],
+    default: "continue",
+    description: "Loop strategy",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "loop start",
   description: "Start an iterative loop for a project session",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    prompt: { type: "string", required: true, description: "Loop prompt text" },
-    session: { type: "string", required: true, description: "Session ID" },
-    "max-iterations": { type: "number", default: 100, description: "Maximum iteration count" },
-    "completion-promise": {
-      type: "string",
-      default: "DONE",
-      description: "Completion promise tag",
-    },
-    strategy: {
-      type: "string",
-      enum: ["continue", "reset"],
-      default: "continue",
-      description: "Loop strategy",
-    },
-  },
+  params: loopStartParams,
   handler: handleLoopStart,
 });
 
 async function handleLoopStart(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof loopStartParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const prompt = params.prompt as string;
-  const session = params.session as string;
-  const maxIterations = (params["max-iterations"] as number) ?? 100;
-  const completionPromise = (params["completion-promise"] as string) ?? "DONE";
-  const strategy = (params.strategy as "continue" | "reset") ?? "continue";
+  const slug = params.slug;
+  const prompt = params.prompt;
+  const session = params.session;
+  const maxIterations = params["max-iterations"];
+  const completionPromise = params["completion-promise"];
+  const strategy = params.strategy;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
@@ -90,23 +94,25 @@ async function handleLoopStart(
 // loop cancel
 // ---------------------------------------------------------------------------
 
+const loopCancelParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  session: { type: "string", required: true, description: "Session ID to cancel" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "loop cancel",
   description: "Cancel an active loop for a project session",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    session: { type: "string", required: true, description: "Session ID to cancel" },
-  },
+  params: loopCancelParams,
   handler: handleLoopCancel,
 });
 
 async function handleLoopCancel(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof loopCancelParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const session = params.session as string;
+  const slug = params.slug;
+  const session = params.session;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
@@ -129,26 +135,28 @@ async function handleLoopCancel(
 // loop status
 // ---------------------------------------------------------------------------
 
+const loopStatusParams = {
+  slug: {
+    type: "string",
+    required: false,
+    positional: 0,
+    description: "Project slug (omit to find any active loop)",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "loop status",
   description: "Show loop status for a project or find active loop globally",
   mutation: false,
-  params: {
-    slug: {
-      type: "string",
-      required: false,
-      positional: 0,
-      description: "Project slug (omit to find any active loop)",
-    },
-  },
+  params: loopStatusParams,
   handler: handleLoopStatus,
 });
 
 async function handleLoopStatus(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof loopStatusParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string | undefined;
+  const slug = params.slug;
 
   try {
     if (slug) {
@@ -174,23 +182,25 @@ async function handleLoopStatus(
 // loop tick
 // ---------------------------------------------------------------------------
 
+const loopTickParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  session: { type: "string", required: true, description: "Session ID (must match active loop)" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "loop tick",
   description: "Atomically increment loop iteration and return updated state",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    session: { type: "string", required: true, description: "Session ID (must match active loop)" },
-  },
+  params: loopTickParams,
   handler: handleLoopTick,
 });
 
 async function handleLoopTick(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof loopTickParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const session = params.session as string;
+  const slug = params.slug;
+  const session = params.session;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {

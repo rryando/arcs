@@ -60,7 +60,7 @@ export type KnowledgeAudience = (typeof KNOWLEDGE_AUDIENCES)[number];
 export const TASK_STATUSES = ["backlog", "in_progress", "done", "cancelled"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export const TASK_PRIORITIES = ["high", "medium", "low"] as const;
+export const TASK_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 
 // ---------------------------------------------------------------------------

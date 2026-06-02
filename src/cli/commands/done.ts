@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync } from "node:fs";
-import { getProjectDir } from "../../utils/paths.js";
+import { attemptDiagramUpdate } from "../../utils/diagram-store.js";
 import {
   createKnowledgeEntry,
   getTask,
@@ -18,47 +18,50 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
-import { attemptDiagramUpdate } from "./task.js";
 
 // ---------------------------------------------------------------------------
+
+const doneParams = {
+  slug: {
+    type: "string",
+    required: true,
+    positional: 0,
+    description: "Project slug",
+  },
+  taskId: {
+    type: "string",
+    required: true,
+    positional: 1,
+    description: "Task ID to mark as done",
+  },
+  planId: { type: "string", description: "Plan ID (enables atomic diagram update)" },
+  diagramNodeId: { type: "string", description: "Diagram node ID to update (e.g. T001)" },
+  learn: { type: "string", description: "Capture a quick insight linked to this task" },
+} as const satisfies Record<string, ParamDef>;
 
 defineCommand({
   path: "done",
   description: "Mark a task as done and show the next task",
   mutation: true,
-  params: {
-    slug: {
-      type: "string",
-      required: true,
-      positional: 0,
-      description: "Project slug",
-    },
-    taskId: {
-      type: "string",
-      required: true,
-      positional: 1,
-      description: "Task ID to mark as done",
-    },
-    planId: { type: "string", description: "Plan ID (enables atomic diagram update)" },
-    diagramNodeId: { type: "string", description: "Diagram node ID to update (e.g. T001)" },
-    learn: { type: "string", description: "Capture a quick insight linked to this task" },
-  },
+  params: doneParams,
   handler: handleDone,
 });
 
 // ---------------------------------------------------------------------------
 
 async function handleDone(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof doneParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const rawSlug = params.slug as string;
-  const taskId = params.taskId as string;
-  const planIdParam = params.planId as string | undefined;
-  const diagramNodeId = params.diagramNodeId as string | undefined;
-  const learnText = params.learn as string | undefined;
+  const rawSlug = params.slug;
+  const taskId = params.taskId;
+  const planIdParam = params.planId;
+  const diagramNodeId = params.diagramNodeId;
+  const learnText = params.learn;
 
   const resolved = await resolveProject(rawSlug);
   if (!resolved.ok) return resolved.result;

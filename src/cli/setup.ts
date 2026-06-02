@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { detectGraphify } from "../utils/graphify.js";
@@ -28,12 +29,27 @@ import {
  * @param mode "init" for first-time setup, "config" for reconfiguration.
  */
 export async function runSetup(mode: "init" | "config"): Promise<void> {
-  // ── Opencode detection gate ─────────────────────────────────────────────────
+  // ── Environment detection gates ─────────────────────────────────────────────
+  let hasOpenCode = false;
+  let hasClaudeCode = false;
+
   try {
     execSync("which opencode", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+    hasOpenCode = true;
   } catch {
+    // ignore
+  }
+
+  try {
+    execSync("which claude", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+    hasClaudeCode = true;
+  } catch {
+    // ignore
+  }
+
+  if (!hasOpenCode && !hasClaudeCode) {
     p.cancel(
-      "OpenCode is not installed or not on PATH. ARCS requires OpenCode.\nInstall it from: https://opencode.ai",
+      "Neither OpenCode nor Claude Code is installed or on PATH. ARCS requires at least one of them.",
     );
     process.exit(1);
   }
@@ -43,147 +59,181 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   console.clear();
   p.intro(color.bgCyan(color.black(isInit ? " ARCS setup " : " ARCS config ")));
 
-  // ── Model configuration ───────────────────────────────────────────────────
-  const openCodeConfig = await readOpenCodeConfig();
-  const preFills = extractModelPreFills(openCodeConfig);
+  let selectedPlatforms: string[] = [];
 
-  if (openCodeConfig) {
-    p.note(
-      `Found models:\n  model: ${preFills.heavy || "(not set)"}\n  small_model: ${preFills.light || "(not set)"}`,
-      "OpenCode Config",
-    );
-  } else {
-    p.note(
-      "No opencode config found at ~/.config/opencode/opencode.json\nEnter model identifiers manually below.",
-      "OpenCode Config",
-    );
-  }
+  if (hasOpenCode && hasClaudeCode) {
+    const selected = await p.multiselect({
+      message: "Which IDE platforms would you like to configure ARCS with?",
+      options: [
+        { value: "opencode", label: "OpenCode" },
+        { value: "claudecode", label: "Claude Code" },
+      ],
+    });
 
-  // Fetch available models from authenticated providers
-  const availableModels = await getAvailableModels(preFills.heavy);
-
-  const heavyModel = await selectModel(
-    "Heavy model (reasoning, synthesis)",
-    availableModels,
-    preFills.heavy,
-  );
-
-  if (p.isCancel(heavyModel)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
-  }
-
-  p.note(
-    "Used by: software-engineer, docs-researcher, arcs-docs, oncall-ops, system-architect, plan, general",
-    "Heavy tier agents",
-  );
-
-  const standardModel = await selectModel(
-    "Standard model (general purpose)",
-    availableModels,
-    preFills.standard,
-  );
-
-  if (p.isCancel(standardModel)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
-  }
-
-  p.note("Used by: build, ARCS Orchestrator, ARCS Caveman", "Standard tier agents");
-
-  const lightModel = await selectModel(
-    "Light/fast model (read-only, exploration)",
-    availableModels,
-    preFills.light,
-  );
-
-  if (p.isCancel(lightModel)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
-  }
-
-  p.note("Used by: explore, code-reviewer, tech-architect, qa-analyst", "Light tier agents");
-
-  // T004 will wire modelConfig into agent registration calls below.
-  const modelConfig: ModelTierConfig = {
-    heavy: heavyModel as string,
-    standard: standardModel as string,
-    light: lightModel as string,
-  };
-
-  // Step 3.5e — Optional per-agent customization
-  const customizeAgents = await p.confirm({
-    message: "Customize model for individual agents?",
-    initialValue: false,
-  });
-
-  if (p.isCancel(customizeAgents)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
-  }
-
-  if (customizeAgents) {
-    // Agent tier mapping for display
-    const agentTiers: Array<{ name: string; tier: "heavy" | "standard" | "light" }> = [
-      { name: "software-engineer", tier: "heavy" },
-      { name: "docs-researcher", tier: "heavy" },
-      { name: "arcs-docs", tier: "heavy" },
-      { name: "oncall-ops", tier: "heavy" },
-      { name: "system-architect", tier: "heavy" },
-      { name: "plan", tier: "heavy" },
-      { name: "general", tier: "heavy" },
-      { name: "build", tier: "standard" },
-      { name: "explore", tier: "light" },
-      { name: "code-reviewer", tier: "light" },
-      { name: "tech-architect", tier: "light" },
-      { name: "qa-analyst", tier: "light" },
-    ];
-
-    p.note("Select a model for each agent, or keep the tier default.", "Per-Agent Customization");
-
-    const perAgent: Record<string, string> = {};
-
-    for (const agent of agentTiers) {
-      const tierModel = modelConfig[agent.tier];
-      const override = await selectModelForAgent(
-        `${agent.name} [${agent.tier}: ${tierModel}]`,
-        availableModels,
-        tierModel,
-      );
-
-      if (p.isCancel(override)) {
-        p.cancel("Setup cancelled.");
-        process.exit(0);
-      }
-
-      if (override && override !== tierModel) {
-        perAgent[agent.name] = override as string;
-      }
+    if (p.isCancel(selected)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
     }
+    selectedPlatforms = selected as string[];
+  } else if (hasOpenCode) {
+    const confirmOpenCode = await p.confirm({
+      message: "Configure ARCS with OpenCode?",
+      initialValue: true,
+    });
 
-    if (Object.keys(perAgent).length > 0) {
-      modelConfig.perAgent = perAgent;
+    if (p.isCancel(confirmOpenCode)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+    if (confirmOpenCode) {
+      selectedPlatforms.push("opencode");
+    }
+  } else if (hasClaudeCode) {
+    const confirmClaude = await p.confirm({
+      message: "Configure ARCS with Claude Code?",
+      initialValue: true,
+    });
+    if (p.isCancel(confirmClaude)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+    if (confirmClaude) {
+      selectedPlatforms.push("claudecode");
     }
   }
 
-  // ── Build config ──────────────────────────────────────────────────────────
-  const config: ArcsConfig = {
-    version: "1",
-    ides: ["opencode"],
-  };
+  const selectedOpenCode = selectedPlatforms.includes("opencode");
+  const selectedClaudeCode = selectedPlatforms.includes("claudecode");
 
-  // ── Write ARCS config ───────────────────────────────────────────────────
-  const s = p.spinner();
-  s.start("Writing configuration…");
-  writeConfig(config);
-  s.stop("Configuration saved.");
-
-  // ── Register OpenCode agent (orchestrate always enabled) ──────────────────
-  const selectedOpenCode = true;
-  const orchestrateEnabled = true;
   let opencodeAgentActive = false;
+  let claudecodeDeployed = false;
 
-  if (selectedOpenCode && orchestrateEnabled) {
+  // ── OpenCode configuration and installation flow ──────────────────────────
+  if (selectedOpenCode) {
+    // ── Model configuration ───────────────────────────────────────────────────
+    const openCodeConfig = await readOpenCodeConfig();
+    const preFills = extractModelPreFills(openCodeConfig);
+
+    if (openCodeConfig) {
+      p.note(
+        `Found models:\n  model: ${preFills.heavy || "(not set)"}\n  small_model: ${preFills.light || "(not set)"}`,
+        "OpenCode Config",
+      );
+    } else {
+      p.note(
+        "No opencode config found at ~/.config/opencode/opencode.json\nEnter model identifiers manually below.",
+        "OpenCode Config",
+      );
+    }
+
+    // Fetch available models from authenticated providers
+    const availableModels = await getAvailableModels(preFills.heavy);
+
+    const heavyModel = await selectModel(
+      "Heavy model (reasoning, synthesis)",
+      availableModels,
+      preFills.heavy,
+    );
+
+    if (p.isCancel(heavyModel)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+
+    p.note(
+      "Used by: software-engineer, docs-researcher, arcs-docs, oncall-ops, system-architect, plan, general",
+      "Heavy tier agents",
+    );
+
+    const standardModel = await selectModel(
+      "Standard model (general purpose)",
+      availableModels,
+      preFills.standard,
+    );
+
+    if (p.isCancel(standardModel)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+
+    p.note("Used by: build, ARCS Orchestrator, ARCS Caveman", "Standard tier agents");
+
+    const lightModel = await selectModel(
+      "Light/fast model (read-only, exploration)",
+      availableModels,
+      preFills.light,
+    );
+
+    if (p.isCancel(lightModel)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+
+    p.note("Used by: explore, code-reviewer, tech-architect, qa-analyst", "Light tier agents");
+
+    // T004 will wire modelConfig into agent registration calls below.
+    const modelConfig: ModelTierConfig = {
+      heavy: heavyModel as string,
+      standard: standardModel as string,
+      light: lightModel as string,
+    };
+
+    // Step 3.5e — Optional per-agent customization
+    const customizeAgents = await p.confirm({
+      message: "Customize model for individual agents?",
+      initialValue: false,
+    });
+
+    if (p.isCancel(customizeAgents)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+
+    if (customizeAgents) {
+      // Agent tier mapping for display
+      const agentTiers: Array<{ name: string; tier: "heavy" | "standard" | "light" }> = [
+        { name: "software-engineer", tier: "heavy" },
+        { name: "docs-researcher", tier: "heavy" },
+        { name: "arcs-docs", tier: "heavy" },
+        { name: "oncall-ops", tier: "heavy" },
+        { name: "system-architect", tier: "heavy" },
+        { name: "plan", tier: "heavy" },
+        { name: "general", tier: "heavy" },
+        { name: "build", tier: "standard" },
+        { name: "explore", tier: "light" },
+        { name: "code-reviewer", tier: "light" },
+        { name: "tech-architect", tier: "light" },
+        { name: "qa-analyst", tier: "light" },
+      ];
+
+      p.note("Select a model for each agent, or keep the tier default.", "Per-Agent Customization");
+
+      const perAgent: Record<string, string> = {};
+
+      for (const agent of agentTiers) {
+        const tierModel = modelConfig[agent.tier];
+        const override = await selectModelForAgent(
+          `${agent.name} [${agent.tier}: ${tierModel}]`,
+          availableModels,
+          tierModel,
+        );
+
+        if (p.isCancel(override)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        if (override && override !== tierModel) {
+          perAgent[agent.name] = override as string;
+        }
+      }
+
+      if (Object.keys(perAgent).length > 0) {
+        modelConfig.perAgent = perAgent;
+      }
+    }
+
+    // ── Register OpenCode agent (orchestrate always enabled if opencode is installed) ──────────────────
     const alreadyHasAgent = opencodeHasAgent();
     opencodeAgentActive = alreadyHasAgent;
 
@@ -229,51 +279,135 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         p.note(`${color.yellow("⊘")} Skipped OpenCode agent registration`, "OpenCode Agent");
       }
     }
-  }
 
-  if (selectedOpenCode && orchestrateEnabled && !opencodeAgentActive) {
-    p.note(
-      `${color.yellow("⊘")} Skipped bundled OpenCode ARCS Bundle install because the user declined ARCS Orchestrator registration`,
-      "OpenCode ARCS Bundle",
-    );
-  }
-
-  if (selectedOpenCode && orchestrateEnabled && opencodeAgentActive) {
-    const detection = detectArcsBundleInstall();
-
-    if (detection.state === "foreign-existing") {
-      const shouldReplace = await p.confirm({
-        message:
-          "Replace the active OpenCode ARCS bundle setup with the bundled ARCS-customized version? Future arcs config runs will keep it synced.",
-        initialValue: true,
-      });
-
-      if (p.isCancel(shouldReplace)) {
-        p.cancel("Setup cancelled.");
-        process.exit(0);
-      }
-
-      if (shouldReplace) {
-        const result = installArcsBundle({ autoConfirmReplacement: true });
-        p.note(result.summary, "OpenCode ARCS Bundle");
-      } else {
-        p.note(
-          `${color.yellow("⊘")} Skipped OpenCode bundled ARCS Bundle install`,
-          "OpenCode ARCS Bundle",
-        );
-      }
+    if (!opencodeAgentActive) {
+      p.note(
+        `${color.yellow("⊘")} Skipped bundled OpenCode ARCS Bundle install because the user declined ARCS Orchestrator registration`,
+        "OpenCode ARCS Bundle",
+      );
     } else {
-      const result = installArcsBundle({ autoConfirmReplacement: false });
-      p.note(result.summary, "OpenCode ARCS Bundle");
+      const detection = detectArcsBundleInstall();
+
+      if (detection.state === "foreign-existing") {
+        const shouldReplace = await p.confirm({
+          message:
+            "Replace the active OpenCode ARCS bundle setup with the bundled ARCS-customized version? Future arcs config runs will keep it synced.",
+          initialValue: true,
+        });
+
+        if (p.isCancel(shouldReplace)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        if (shouldReplace) {
+          const result = installArcsBundle({ autoConfirmReplacement: true });
+          p.note(result.summary, "OpenCode ARCS Bundle");
+        } else {
+          p.note(
+            `${color.yellow("⊘")} Skipped OpenCode bundled ARCS Bundle install`,
+            "OpenCode ARCS Bundle",
+          );
+        }
+      } else {
+        const result = installArcsBundle({ autoConfirmReplacement: false });
+        p.note(result.summary, "OpenCode ARCS Bundle");
+      }
+
+      // ── Apply model config to all agent entries ────────────────────────────────
+      // Runs after bundle install to overwrite hardcoded manifest models
+      // with the user's configured tier values.
+      applyAgentModelConfig(modelConfig);
     }
   }
 
-  // ── Apply model config to all agent entries ────────────────────────────────
-  // Runs after bundle install to overwrite hardcoded manifest models
-  // with the user's configured tier values.
-  if (selectedOpenCode && opencodeAgentActive) {
-    applyAgentModelConfig(modelConfig);
+  // ── Claude Code support ───────────────────────────────────────────────────
+  if (selectedClaudeCode) {
+    const shouldDeployClaude = await p.confirm({
+      message: "Deploy ARCS sub-agents to Claude Code?",
+      initialValue: true,
+    });
+
+    if (p.isCancel(shouldDeployClaude)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+
+    if (shouldDeployClaude) {
+      const sClaude = p.spinner();
+      sClaude.start("Deploying ARCS sub-agents to Claude Code…");
+
+      try {
+        const repoRoot = resolve(import.meta.dirname, "../..");
+        const scriptPath = resolve(repoRoot, "scripts/deploy-claudecode-bundle.mjs");
+
+        const proc = spawnSync("node", [scriptPath], {
+          env: {
+            ...process.env,
+            DEPLOY_DRY_RUN: "false",
+          },
+          encoding: "utf-8",
+        });
+
+        if (proc.status === 0) {
+          claudecodeDeployed = true;
+          sClaude.stop("Claude Code deployment complete.");
+
+          if (proc.stdout) {
+            try {
+              const res = JSON.parse(proc.stdout);
+              const summaryLines = [
+                `${color.green("✔")} Source: ${res.source}`,
+                `${color.green("✔")} Destination: ${res.destination}`,
+                `${color.green("✔")} Files added: ${res.filesAdded?.length || 0}`,
+                `${color.green("✔")} Files changed: ${res.filesChanged?.length || 0}`,
+                `${color.green("✔")} Files removed: ${res.filesRemoved?.length || 0}`,
+              ];
+              p.note(summaryLines.join("\n"), "Claude Code Deployment Summary");
+            } catch {
+              p.note(
+                "Successfully deployed but summary output was unparseable.",
+                "Claude Code Deployment",
+              );
+            }
+          } else {
+            p.note("Successfully deployed to Claude Code.", "Claude Code Deployment");
+          }
+        } else {
+          sClaude.stop("Claude Code deployment failed.");
+          p.note(
+            proc.stderr || "deploy-claudecode-bundle.mjs failed with non-zero exit code.",
+            "Error",
+          );
+        }
+      } catch (err) {
+        sClaude.stop("Claude Code deployment failed.");
+        p.note(err instanceof Error ? err.message : String(err), "Error");
+      }
+    } else {
+      p.note(`${color.yellow("⊘")} Skipped Claude Code deployment`, "Claude Code Agent");
+    }
   }
+
+  // ── Build config ──────────────────────────────────────────────────────────
+  const ides: string[] = [];
+  if (selectedOpenCode && opencodeAgentActive) {
+    ides.push("opencode");
+  }
+  if (claudecodeDeployed) {
+    ides.push("claudecode");
+  }
+
+  const config: ArcsConfig = {
+    version: "1",
+    ides,
+  };
+
+  // ── Write ARCS config ───────────────────────────────────────────────────
+  const sWrite = p.spinner();
+  sWrite.start("Writing configuration…");
+  writeConfig(config);
+  sWrite.stop("Configuration saved.");
 
   // ── Optional graphify installation ──────────────────────────────────────────
   await promptGraphifyInstall();

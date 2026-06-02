@@ -2,7 +2,12 @@
 // Schema-driven argument parser for ARCS CLI commands
 // ---------------------------------------------------------------------------
 
-import { type CLIResult, type CommandDef, ERROR_CODES } from "./command-registry.js";
+import {
+  type AnyCommandDef,
+  type CLIResult,
+  type CommandDef,
+  ERROR_CODES,
+} from "./command-registry.js";
 
 export interface ParsedArgs {
   params: Record<string, unknown>;
@@ -13,7 +18,7 @@ export type ParseResult = { ok: true; parsed: ParsedArgs } | { ok: false; error:
 
 const _GLOBAL_FLAGS = new Set(["--json", "--lean", "--dry-run", "--help"]);
 
-export function parseArgs(def: CommandDef, rawArgs: string[]): ParseResult {
+export function parseArgs(def: CommandDef | AnyCommandDef, rawArgs: string[]): ParseResult {
   const flags = { json: false, lean: false, dryRun: false, help: false };
   const params: Record<string, unknown> = {};
   const positionals: string[] = [];
@@ -167,7 +172,7 @@ export function parseArgs(def: CommandDef, rawArgs: string[]): ParseResult {
   return { ok: true, parsed: { params, flags } };
 }
 
-export function generateUsage(def: CommandDef): string {
+export function generateUsage(def: CommandDef | AnyCommandDef): string {
   const parts = [`Usage: arcs ${def.path}`];
   const sorted = Object.entries(def.params).sort(([, a], [, b]) => {
     if (a.positional !== undefined && b.positional !== undefined)

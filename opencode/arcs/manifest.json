@@ -46,9 +46,17 @@
       },
       {
         "path": [
+          "lsp"
+        ],
+        "value": true,
+        "mode": "if-absent"
+      },
+      {
+        "path": [
           "model"
         ],
-        "value": "github-copilot/claude-sonnet-4.6"
+        "value": "github-copilot/claude-sonnet-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -56,7 +64,8 @@
           "build",
           "model"
         ],
-        "value": "github-copilot/claude-sonnet-4.6"
+        "value": "github-copilot/claude-sonnet-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -64,7 +73,8 @@
           "plan",
           "model"
         ],
-        "value": "github-copilot/claude-opus-4.6"
+        "value": "github-copilot/claude-opus-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -72,7 +82,8 @@
           "general",
           "model"
         ],
-        "value": "github-copilot/claude-opus-4.6"
+        "value": "github-copilot/claude-opus-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -80,7 +91,8 @@
           "explore",
           "model"
         ],
-        "value": "github-copilot/claude-haiku-4.5"
+        "value": "github-copilot/claude-haiku-4.5",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -93,9 +105,11 @@
           "model": "github-copilot/claude-haiku-4.5",
           "prompt": "{file:./prompts/code-reviewer.txt}",
           "permission": {
-            "edit": "deny",
+            "edit": "allow",
             "bash": "allow",
-            "webfetch": "deny"
+            "webfetch": "allow",
+            "mcp": "allow",
+            "external_directory": { "*": "allow" }
           }
         }
       },
@@ -109,15 +123,11 @@
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "permission": {
-            "edit": "ask",
-            "bash": "ask",
+            "edit": "allow",
+            "bash": "allow",
             "webfetch": "allow",
-            "external_directory": {
-              "/tmp": "allow",
-              "/tmp/**": "allow",
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "mcp": "allow",
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/docs-researcher.txt}"
         }
@@ -132,13 +142,11 @@
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
           "permission": {
-            "edit": "ask",
-            "bash": "ask",
-            "webfetch": "deny",
-            "external_directory": {
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "edit": "allow",
+            "bash": "allow",
+            "webfetch": "allow",
+            "mcp": "allow",
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/tech-architect.txt}"
         }
@@ -155,14 +163,9 @@
           "permission": {
             "edit": "allow",
             "bash": "allow",
-            "webfetch": "deny",
+            "webfetch": "allow",
             "mcp": "allow",
-            "external_directory": {
-              "/tmp": "allow",
-              "/tmp/**": "allow",
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/software-engineer.txt}"
         }
@@ -179,16 +182,9 @@
           "permission": {
             "edit": "allow",
             "bash": "allow",
-            "webfetch": "deny",
+            "webfetch": "allow",
             "mcp": "allow",
-            "external_directory": {
-              "/tmp": "allow",
-              "/tmp/**": "allow",
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow",
-              "~/.config/opencode": "allow",
-              "~/.config/opencode/**": "allow"
-            }
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/arcs-docs.txt}"
         }
@@ -203,14 +199,11 @@
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
           "permission": {
-            "edit": "deny",
+            "edit": "allow",
             "bash": "allow",
-            "webfetch": "deny",
+            "webfetch": "allow",
             "mcp": "allow",
-            "external_directory": {
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/qa-analyst.txt}"
         }
@@ -225,16 +218,11 @@
           "mode": "subagent",
           "model": "github-copilot/claude-sonnet-4.6",
           "permission": {
-            "edit": "deny",
+            "edit": "allow",
             "bash": "allow",
-            "webfetch": "deny",
+            "webfetch": "allow",
             "mcp": "allow",
-            "external_directory": {
-              "/tmp": "allow",
-              "/tmp/**": "allow",
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/devil-advocate.txt}"
         }
@@ -249,16 +237,11 @@
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "permission": {
-            "edit": "ask",
+            "edit": "allow",
             "bash": "allow",
-            "webfetch": "deny",
+            "webfetch": "allow",
             "mcp": "allow",
-            "external_directory": {
-              "/tmp": "allow",
-              "/tmp/**": "allow",
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/oncall-ops.txt}"
         }
@@ -273,14 +256,11 @@
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "permission": {
-            "edit": "deny",
+            "edit": "allow",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
-            "external_directory": {
-              "~/.arcs": "allow",
-              "~/.arcs/**": "allow"
-            }
+            "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/system-architect.txt}"
         }
@@ -289,7 +269,8 @@
         "path": [
           "small_model"
         ],
-        "value": "github-copilot/claude-haiku-4.5"
+        "value": "github-copilot/claude-haiku-4.5",
+        "mode": "if-absent"
       }
     ]
   }

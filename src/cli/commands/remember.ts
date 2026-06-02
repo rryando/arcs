@@ -10,6 +10,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -27,22 +29,23 @@ function autoTitle(text: string): string {
   return `${text.slice(0, 50)}...`;
 }
 
+const rememberParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  text: { type: "string", required: true, positional: 1, description: "The insight to remember" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "remember",
   description: "Capture a knowledge insight with zero ceremony",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    text: { type: "string", required: true, positional: 1, description: "The insight to remember" },
-  },
+  params: rememberParams,
   handler: handleRemember,
 });
 
 async function handleRemember(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof rememberParams>,
   flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const text = params.text as string;
+  const { slug, text } = params;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {

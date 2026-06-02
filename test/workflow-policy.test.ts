@@ -250,7 +250,13 @@ describe("deriveOperatingBrief (structured)", () => {
 
   it("skips blocked backlog task and selects the ready one", () => {
     const tasks: StructuredTask[] = [
-      { id: "T080", title: "Blocked high pri", status: "backlog", priority: "high", dependsOn: ["T082"] },
+      {
+        id: "T080",
+        title: "Blocked high pri",
+        status: "backlog",
+        priority: "high",
+        dependsOn: ["T082"],
+      },
       { id: "T081", title: "Ready low pri", status: "backlog", priority: "low" },
     ];
     const plans: StructuredPlan[] = [];

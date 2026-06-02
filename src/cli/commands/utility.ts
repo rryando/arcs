@@ -10,7 +10,6 @@ import { extractOverviewContent } from "../../utils/content-assembly.js";
 import { getProjectDir } from "../../utils/paths.js";
 import {
   KNOWLEDGE_AUDIENCES,
-  type KnowledgeAudience,
   listTasks,
   readKnowledgeIndex,
   readPlanIndex,
@@ -22,6 +21,8 @@ import {
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
@@ -29,38 +30,40 @@ import { failure, success } from "../output-envelope.js";
 // context
 // ---------------------------------------------------------------------------
 
+const contextParams = {
+  pathOrSlug: {
+    type: "string",
+    positional: 0,
+    description: "Absolute path or project slug (defaults to cwd)",
+  },
+  audience: {
+    type: "string",
+    description: "Target audience for knowledge filtering (default: orchestrator)",
+    enum: ["orchestrator", "implementer", "designer"],
+  },
+  // TODO: wire task-scoped context via src/retrieval/task-scoped.ts
+  full: {
+    type: "boolean",
+    description: "Include done/cancelled tasks and done/archived plans (default: false)",
+  },
+  "no-graph": { type: "boolean", description: "Skip graph-based retrieval" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "context",
   description: "Resolve project context for a workspace path or slug",
-  params: {
-    pathOrSlug: {
-      type: "string",
-      positional: 0,
-      description: "Absolute path or project slug (defaults to cwd)",
-    },
-    audience: {
-      type: "string",
-      description: "Target audience for knowledge filtering (default: orchestrator)",
-      enum: ["orchestrator", "implementer", "designer"],
-    },
-    // TODO: wire task-scoped context via src/retrieval/task-scoped.ts
-    full: {
-      type: "boolean",
-      description: "Include done/cancelled tasks and done/archived plans (default: false)",
-    },
-    "no-graph": { type: "boolean", description: "Skip graph-based retrieval" },
-  },
+  params: contextParams,
   handler: handleContext,
 });
 
 async function handleContext(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof contextParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const rawArg = params.pathOrSlug as string | undefined;
-  const audience = (params.audience as KnowledgeAudience | undefined) ?? "orchestrator";
-  const full = params.full as boolean | undefined;
-  const _noGraph = params["no-graph"] as boolean | undefined;
+  const rawArg = params.pathOrSlug;
+  const audience = params.audience ?? "orchestrator";
+  const full = params.full;
+  const _noGraph = params["no-graph"];
 
   if (audience && !(KNOWLEDGE_AUDIENCES as readonly string[]).includes(audience)) {
     return failure(
@@ -126,26 +129,28 @@ async function handleContext(
 // search
 // ---------------------------------------------------------------------------
 
+const searchParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  query: { type: "string", required: true, positional: 1, description: "Search query" },
+  kind: { type: "string", description: "Filter results by entity kind" },
+  limit: { type: "number", default: 10, description: "Max results to return" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "search",
   description: "BM25 search across all project entities",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    query: { type: "string", required: true, positional: 1, description: "Search query" },
-    kind: { type: "string", description: "Filter results by entity kind" },
-    limit: { type: "number", default: 10, description: "Max results to return" },
-  },
+  params: searchParams,
   handler: handleSearch,
 });
 
 async function handleSearch(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof searchParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const query = params.query as string;
-  const kind = params.kind as string | undefined;
-  const limit = (params.limit as number) ?? 10;
+  const slug = params.slug;
+  const query = params.query;
+  const kind = params.kind;
+  const limit = params.limit;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
@@ -168,20 +173,22 @@ async function handleSearch(
 // agents-md
 // ---------------------------------------------------------------------------
 
+const agentsMdParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "agents-md",
   description: "Read project's AGENTS.md content",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-  },
+  params: agentsMdParams,
   handler: handleAgentsMd,
 });
 
 async function handleAgentsMd(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof agentsMdParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
+  const slug = params.slug;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
@@ -205,17 +212,19 @@ async function handleAgentsMd(
 // validate
 // ---------------------------------------------------------------------------
 
+const validateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  checks: {
+    type: "string",
+    description:
+      "Comma-separated checks to run (default: all). Valid: all, sourcefiles, status-drift, diagrams, agents-md",
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "validate",
   description: "Run health checks on a project's DAG state",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    checks: {
-      type: "string",
-      description:
-        "Comma-separated checks to run (default: all). Valid: all, sourcefiles, status-drift, diagrams, agents-md",
-    },
-  },
+  params: validateParams,
   handler: handleValidate,
 });
 
@@ -366,10 +375,10 @@ export async function runValidation(slug: string, checks: Set<CheckName>): Promi
 }
 
 async function handleValidate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof validateParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const checks = parseChecks(params.checks as string | undefined);
+  const slug = params.slug;
+  const checks = parseChecks(params.checks);
   return runValidation(slug, checks);
 }

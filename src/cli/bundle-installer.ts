@@ -25,6 +25,17 @@ export type InstallState = "absent" | "arcs-managed" | "foreign-existing";
 export interface ConfigMerge {
   path: string[];
   value: unknown;
+  /**
+   * "overwrite" (default): always set the value at `path`, clobbering any prior user value.
+   * "if-absent":           only set the value if `path` doesn't already exist in the config.
+   *
+   * Use "if-absent" for user-preference keys that the bundle wants to seed on first install
+   * but must never re-stamp on subsequent re-deploys. Concretely: provider/model routing
+   * (top-level `model`, `small_model`, `agent.<name>.model`) is user-territory once chosen.
+   * Re-stamping it broke OpenCode session naming for users whose actual provider differs
+   * from the bundle defaults — see fix(bundle): preserve user provider/model choices.
+   */
+  mode?: "overwrite" | "if-absent";
 }
 
 export interface SourceArcsBundleManifest {
@@ -171,18 +182,25 @@ export function writeInstalledArcsBundleManifest(manifest: InstalledArcsBundleMa
   writeJsonFile(arcsInstalledManifestPath(), manifest);
 }
 
-function configMergeExists(config: Record<string, unknown>, merge: ConfigMerge): boolean {
+function resolveConfigPath(
+  config: Record<string, unknown>,
+  pathParts: string[],
+): { found: true; value: unknown } | { found: false } {
   let current: unknown = config;
 
-  for (const part of merge.path) {
+  for (const part of pathParts) {
     if (typeof current !== "object" || current === null || !(part in current)) {
-      return false;
+      return { found: false };
     }
-
     current = (current as Record<string, unknown>)[part];
   }
 
-  return JSON.stringify(current) === JSON.stringify(merge.value);
+  return { found: true, value: current };
+}
+
+function configMergeExists(config: Record<string, unknown>, merge: ConfigMerge): boolean {
+  const resolved = resolveConfigPath(config, merge.path);
+  return resolved.found && JSON.stringify(resolved.value) === JSON.stringify(merge.value);
 }
 
 function hasAnyExistingInstallEvidence(sourceManifest: SourceArcsBundleManifest): boolean {
@@ -370,6 +388,10 @@ function restoreBackup(backupPath: string, destinationRelative: string): void {
   cpSync(backupPath, destination, { recursive: true });
 }
 
+function configPathExists(config: Record<string, unknown>, pathParts: string[]): boolean {
+  return resolveConfigPath(config, pathParts).found;
+}
+
 function applyConfigMerges(
   baseConfig: Record<string, unknown>,
   merges: ConfigMerge[],
@@ -377,6 +399,9 @@ function applyConfigMerges(
   const nextConfig = JSON.parse(JSON.stringify(baseConfig)) as Record<string, unknown>;
 
   for (const merge of merges) {
+    if (merge.mode === "if-absent" && configPathExists(nextConfig, merge.path)) {
+      continue;
+    }
     deepSet(nextConfig, merge.path, merge.value);
   }
 

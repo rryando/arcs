@@ -25,7 +25,7 @@ export interface StructuredTask {
   title: string;
   status: "backlog" | "in_progress" | "done" | "cancelled";
   planId?: string;
-  priority?: "low" | "medium" | "high";
+  priority?: "critical" | "high" | "medium" | "low";
   dependsOn?: string[];
 }
 
@@ -35,7 +35,7 @@ export interface StructuredPlan {
   status: "proposed" | "planned" | "in_progress" | "blocked" | "done" | "archived";
 }
 
-const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function isTaskReady(task: StructuredTask, allTasks: StructuredTask[]): boolean {
   if (!task.dependsOn || task.dependsOn.length === 0) return true;

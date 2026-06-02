@@ -2,62 +2,29 @@
 // Diagram commands — registry-based
 // ---------------------------------------------------------------------------
 
-import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { generateDiagramFromTasks } from "../../utils/diagram-generator.js";
-import { getDataDir, getProjectDir } from "../../utils/paths.js";
+import {
+  findDiagramScript,
+  resolveDiagramPath,
+  runDiagramScript,
+} from "../../utils/diagram-store.js";
+import { getProjectDir } from "../../utils/paths.js";
 import { listTasks } from "../../utils/project-memory.js";
 import {
   type CLIResult,
   type CommandFlags,
   defineCommand,
   ERROR_CODES,
+  type ParamDef,
+  type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function findDiagramScript(): string | undefined {
-  const localPath = resolve(
-    import.meta.dirname,
-    "../../../opencode/arcs/skills/to-diagram/scripts/manage-diagram.mjs",
-  );
-  if (existsSync(localPath)) return localPath;
-
-  const configPath = resolve(
-    homedir(),
-    ".config/opencode/skills/arcs/to-diagram/scripts/manage-diagram.mjs",
-  );
-  if (existsSync(configPath)) return configPath;
-
-  return undefined;
-}
-
-function resolveDiagramPath(slug: string, planId: string): string {
-  const dataDir = getDataDir();
-  return resolve(dataDir, "projects", slug, "plans", `${planId}.diagram.mmd`);
-}
-
-function runDiagramScript(
-  scriptPath: string,
-  subcommand: string,
-  diagramPath: string,
-  extraArgs: string[] = [],
-): string {
-  const argsStr = extraArgs.map((a) => `"${a}"`).join(" ");
-  return execSync(
-    `node "${scriptPath}" ${subcommand} "${diagramPath}"${argsStr ? ` ${argsStr}` : ""}`,
-    {
-      encoding: "utf-8",
-      timeout: 10000,
-    },
-  ).trim();
-}
 
 function requireScript(): CLIResult | string {
   const scriptPath = findDiagramScript();
@@ -93,22 +60,24 @@ function parseScriptOutput(output: string): unknown {
 // diagram ready
 // ---------------------------------------------------------------------------
 
+const diagramReadyParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "diagram ready",
   description: "Show ready-to-execute nodes (all dependencies done)",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-  },
+  params: diagramReadyParams,
   handler: handleDiagramReady,
 });
 
 async function handleDiagramReady(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof diagramReadyParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
+  const slug = params.slug;
+  const planId = params.planId;
 
   const diagramPath = requireDiagramFile(slug, planId);
   if (typeof diagramPath !== "string") return diagramPath;
@@ -130,22 +99,24 @@ async function handleDiagramReady(
 // diagram inspect
 // ---------------------------------------------------------------------------
 
+const diagramInspectParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", positional: 1, description: "Plan ID" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "diagram inspect",
   description: "Show diagram structure and metadata",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", positional: 1, description: "Plan ID" },
-  },
+  params: diagramInspectParams,
   handler: handleDiagramInspect,
 });
 
 async function handleDiagramInspect(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof diagramInspectParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string | undefined;
+  const slug = params.slug;
+  const planId = params.planId;
 
   const projectDir = getProjectDir(slug);
   if (!existsSync(projectDir)) {
@@ -178,22 +149,24 @@ async function handleDiagramInspect(
 // diagram validate
 // ---------------------------------------------------------------------------
 
+const diagramValidateParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "diagram validate",
   description: "Validate diagram integrity",
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-  },
+  params: diagramValidateParams,
   handler: handleDiagramValidate,
 });
 
 async function handleDiagramValidate(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof diagramValidateParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
+  const slug = params.slug;
+  const planId = params.planId;
 
   const diagramPath = requireDiagramFile(slug, planId);
   if (typeof diagramPath !== "string") return diagramPath;
@@ -215,33 +188,35 @@ async function handleDiagramValidate(
 // diagram status
 // ---------------------------------------------------------------------------
 
+const diagramStatusParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+  nodeId: { type: "string", required: true, positional: 2, description: "Node ID to update" },
+  status: {
+    type: "string",
+    required: true,
+    positional: 3,
+    description: "New status",
+    enum: ["backlog", "in_progress", "done", "blocked"],
+  },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "diagram status",
   description: "Update a diagram node's status",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-    nodeId: { type: "string", required: true, positional: 2, description: "Node ID to update" },
-    status: {
-      type: "string",
-      required: true,
-      positional: 3,
-      description: "New status",
-      enum: ["backlog", "in_progress", "done", "blocked"],
-    },
-  },
+  params: diagramStatusParams,
   handler: handleDiagramStatus,
 });
 
 async function handleDiagramStatus(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof diagramStatusParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
-  const nodeId = params.nodeId as string;
-  const status = params.status as string;
+  const slug = params.slug;
+  const planId = params.planId;
+  const nodeId = params.nodeId;
+  const status = params.status;
 
   const diagramPath = requireDiagramFile(slug, planId);
   if (typeof diagramPath !== "string") return diagramPath;
@@ -263,23 +238,25 @@ async function handleDiagramStatus(
 // diagram sort-metadata
 // ---------------------------------------------------------------------------
 
+const diagramSortMetadataParams = {
+  slug: { type: "string", required: true, positional: 0, description: "Project slug" },
+  planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "diagram sort-metadata",
   description: "Sort metadata blocks in diagram file",
   mutation: true,
-  params: {
-    slug: { type: "string", required: true, positional: 0, description: "Project slug" },
-    planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
-  },
+  params: diagramSortMetadataParams,
   handler: handleDiagramSortMetadata,
 });
 
 async function handleDiagramSortMetadata(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof diagramSortMetadataParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const slug = params.slug as string;
-  const planId = params.planId as string;
+  const slug = params.slug;
+  const planId = params.planId;
 
   const diagramPath = requireDiagramFile(slug, planId);
   if (typeof diagramPath !== "string") return diagramPath;
@@ -301,20 +278,22 @@ async function handleDiagramSortMetadata(
 // diagram show
 // ---------------------------------------------------------------------------
 
+const diagramShowParams = {
+  path: { type: "string", required: true, positional: 0, description: "Path to .mmd file" },
+} as const satisfies Record<string, ParamDef>;
+
 defineCommand({
   path: "diagram show",
   description: "Render diagram in terminal",
-  params: {
-    path: { type: "string", required: true, positional: 0, description: "Path to .mmd file" },
-  },
+  params: diagramShowParams,
   handler: handleDiagramShow,
 });
 
 async function handleDiagramShow(
-  params: Record<string, unknown>,
+  params: ParsedParams<typeof diagramShowParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
-  const path = params.path as string;
+  const path = params.path;
 
   if (!existsSync(path)) {
     return failure(ERROR_CODES.ENTITY_NOT_FOUND, `File not found: ${path}`);
@@ -344,8 +323,8 @@ defineCommand({
   mutation: true,
   errorCodes: ["project_not_found", "entity_not_found", "conflict"],
   handler: async (params, _flags) => {
-    const { slug, planId, force } = params as { slug: string; planId: string; force?: boolean };
-    const projectDir = getProjectDir(slug as string);
+    const { slug, planId, force } = params;
+    const projectDir = getProjectDir(slug);
 
     try {
       await access(projectDir);
@@ -363,7 +342,7 @@ defineCommand({
       };
     }
 
-    const diagramPath = resolveDiagramPath(slug as string, planId);
+    const diagramPath = resolveDiagramPath(slug, planId);
     if (!force) {
       try {
         await access(diagramPath);

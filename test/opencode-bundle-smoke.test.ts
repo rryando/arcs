@@ -102,22 +102,27 @@ describe("opencode ARCS bundle bundle", () => {
         {
           path: ["model"],
           value: "github-copilot/claude-sonnet-4.6",
+          mode: "if-absent",
         },
         {
           path: ["agent", "build", "model"],
           value: "github-copilot/claude-sonnet-4.6",
+          mode: "if-absent",
         },
         {
           path: ["agent", "plan", "model"],
           value: "github-copilot/claude-opus-4.6",
+          mode: "if-absent",
         },
         {
           path: ["agent", "general", "model"],
           value: "github-copilot/claude-opus-4.6",
+          mode: "if-absent",
         },
         {
           path: ["agent", "explore", "model"],
           value: "github-copilot/claude-haiku-4.5",
+          mode: "if-absent",
         },
         {
           path: ["agent", "code-reviewer"],
