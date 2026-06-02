@@ -143,6 +143,7 @@ export const taskIndexSchema = z.object({
 const configMergeSchema = z.object({
   path: z.array(z.string()),
   value: z.unknown().transform((v) => v as unknown),
+  mode: z.enum(["overwrite", "if-absent"]).optional(),
 });
 
 export const opencodeSourceManifestSchema = z.object({

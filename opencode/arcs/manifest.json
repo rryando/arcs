@@ -46,9 +46,17 @@
       },
       {
         "path": [
+          "lsp"
+        ],
+        "value": true,
+        "mode": "if-absent"
+      },
+      {
+        "path": [
           "model"
         ],
-        "value": "github-copilot/claude-sonnet-4.6"
+        "value": "github-copilot/claude-sonnet-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -56,7 +64,8 @@
           "build",
           "model"
         ],
-        "value": "github-copilot/claude-sonnet-4.6"
+        "value": "github-copilot/claude-sonnet-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -64,7 +73,8 @@
           "plan",
           "model"
         ],
-        "value": "github-copilot/claude-opus-4.6"
+        "value": "github-copilot/claude-opus-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -72,7 +82,8 @@
           "general",
           "model"
         ],
-        "value": "github-copilot/claude-opus-4.6"
+        "value": "github-copilot/claude-opus-4.6",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -80,7 +91,8 @@
           "explore",
           "model"
         ],
-        "value": "github-copilot/claude-haiku-4.5"
+        "value": "github-copilot/claude-haiku-4.5",
+        "mode": "if-absent"
       },
       {
         "path": [
@@ -257,7 +269,8 @@
         "path": [
           "small_model"
         ],
-        "value": "github-copilot/claude-haiku-4.5"
+        "value": "github-copilot/claude-haiku-4.5",
+        "mode": "if-absent"
       }
     ]
   }

@@ -329,6 +329,79 @@ describe("opencode ARCS bundle installer", () => {
     });
   });
 
+  it("preserves user-set model and small_model values across re-install (if-absent merges)", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      // Simulate a user who already configured their own provider/model routing.
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          {
+            model: "tvlk-provider/claude-sonnet-4.6",
+            small_model: "tvlk-provider/claude-haiku-4.5",
+            agent: {
+              build: { model: "tvlk-provider/claude-sonnet-4.6" },
+              plan: { model: "tvlk-provider/claude-opus-4.7" },
+              general: { model: "tvlk-provider/claude-opus-4.7" },
+              explore: { model: "tvlk-provider/claude-haiku-4.5" },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+
+      installArcsBundle({ autoConfirmReplacement: true });
+      const opencodeConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+
+      // User's provider routing must survive deploy.
+      expect(opencodeConfig.model).toBe("tvlk-provider/claude-sonnet-4.6");
+      expect(opencodeConfig.small_model).toBe("tvlk-provider/claude-haiku-4.5");
+      expect(opencodeConfig.agent.build.model).toBe("tvlk-provider/claude-sonnet-4.6");
+      expect(opencodeConfig.agent.plan.model).toBe("tvlk-provider/claude-opus-4.7");
+      expect(opencodeConfig.agent.general.model).toBe("tvlk-provider/claude-opus-4.7");
+      expect(opencodeConfig.agent.explore.model).toBe("tvlk-provider/claude-haiku-4.5");
+    });
+  });
+
+  it("seeds default model and small_model on a fresh install (no prior config)", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      installArcsBundle({ autoConfirmReplacement: true });
+      const opencodeConfig = JSON.parse(
+        readFileSync(resolve(homeDir, ".config", "opencode", "opencode.json"), "utf-8"),
+      );
+
+      // Defaults still seed when the user hasn't picked yet.
+      expect(opencodeConfig.model).toBe("github-copilot/claude-sonnet-4.6");
+      expect(opencodeConfig.small_model).toBe("github-copilot/claude-haiku-4.5");
+    });
+  });
+
+  it("enables LSP by default on a fresh install", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      installArcsBundle({ autoConfirmReplacement: true });
+      const opencodeConfig = JSON.parse(
+        readFileSync(resolve(homeDir, ".config", "opencode", "opencode.json"), "utf-8"),
+      );
+
+      expect(opencodeConfig.lsp).toBe(true);
+    });
+  });
+
+  it("preserves a user-set lsp value across re-install (e.g. disabled or custom servers)", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      // User opted out of LSP, or set a custom per-server config.
+      writeFileSync(configPath, JSON.stringify({ lsp: false }, null, 2), "utf-8");
+
+      installArcsBundle({ autoConfirmReplacement: true });
+      const opencodeConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+
+      expect(opencodeConfig.lsp).toBe(false);
+    });
+  });
+
   it("removes previously owned paths that are no longer in the source manifest", async () => {
     await withTempHomeDir(async (homeDir) => {
       const stalePath = resolve(homeDir, ".config", "opencode", "plugins", "old-superpowers.js");
