@@ -135,15 +135,30 @@ defineCommand({
       description: "Initial status",
       enum: ["backlog", "in_progress", "done", "cancelled"],
     },
+    "source-files": {
+      type: "string",
+      description: "Comma-separated source file refs (path[:anchor])",
+    },
+    scope: { type: "string", description: "Per-node %% scope: metadata for diagrams" },
+    acceptance: { type: "string", description: "Per-node %% acceptance: metadata for diagrams" },
+    verify: { type: "string", description: "Per-node %% verify: command for diagrams" },
+    skill: { type: "string", description: "Per-node %% skill: name for diagrams" },
   },
   handler: async (params, flags) => {
-    const { slug, title, planId, priority, status } = params;
+    const { slug, title, planId, priority, status, scope, acceptance, verify, skill } = params;
     const dependsOnRaw = params.dependsOn;
     const dependsOn = dependsOnRaw
       ? dependsOnRaw
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean)
+      : undefined;
+    const sourceFilesRaw = params["source-files"];
+    const sourceFiles = sourceFilesRaw
+      ? sourceFilesRaw.split(",").map((s) => {
+          const [path, anchor] = s.trim().split(":");
+          return anchor ? { path, anchor } : { path };
+        })
       : undefined;
 
     const projectDir = getProjectDir(slug);
@@ -156,7 +171,19 @@ defineCommand({
     if (flags.dryRun) {
       return success({
         dryRun: true,
-        wouldCreate: { title, slug, planId, priority, status, dependsOn },
+        wouldCreate: {
+          title,
+          slug,
+          planId,
+          priority,
+          status,
+          dependsOn,
+          ...(sourceFiles && { sourceFiles }),
+          ...(scope && { scope }),
+          ...(acceptance && { acceptance }),
+          ...(verify && { verify }),
+          ...(skill && { skill }),
+        },
       });
     }
 
@@ -167,6 +194,11 @@ defineCommand({
         ...(dependsOn && { dependsOn }),
         priority,
         status,
+        ...(sourceFiles && { sourceFiles }),
+        ...(scope && { scope }),
+        ...(acceptance && { acceptance }),
+        ...(verify && { verify }),
+        ...(skill && { skill }),
       });
       return success(task);
     } catch (err) {
@@ -259,6 +291,20 @@ defineCommand({
     },
     planId: { type: "string", description: "Associated plan ID" },
     dependsOn: { type: "string", description: "Comma-separated task IDs (empty string to clear)" },
+    "source-files": {
+      type: "string",
+      description: "Comma-separated source file refs (path[:anchor]); empty string clears",
+    },
+    scope: { type: "string", description: "Per-node %% scope: metadata (empty string clears)" },
+    acceptance: {
+      type: "string",
+      description: "Per-node %% acceptance: metadata (empty string clears)",
+    },
+    verify: {
+      type: "string",
+      description: "Per-node %% verify: command (empty string clears)",
+    },
+    skill: { type: "string", description: "Per-node %% skill: name (empty string clears)" },
   },
   handler: async (params, flags) => {
     const { slug, taskId, title, priority, planId } = params;
@@ -272,6 +318,30 @@ defineCommand({
               .map((s) => s.trim())
               .filter(Boolean)
         : undefined;
+    const sourceFilesRaw = params["source-files"];
+    const sourceFiles =
+      sourceFilesRaw !== undefined
+        ? sourceFilesRaw === ""
+          ? []
+          : sourceFilesRaw.split(",").map((s) => {
+              const [path, anchor] = s.trim().split(":");
+              return anchor ? { path, anchor } : { path };
+            })
+        : undefined;
+
+    // Empty string clears the field; non-empty sets; undefined leaves untouched.
+    const scopeUpdate =
+      params.scope !== undefined ? (params.scope === "" ? null : params.scope) : undefined;
+    const acceptanceUpdate =
+      params.acceptance !== undefined
+        ? params.acceptance === ""
+          ? null
+          : params.acceptance
+        : undefined;
+    const verifyUpdate =
+      params.verify !== undefined ? (params.verify === "" ? null : params.verify) : undefined;
+    const skillUpdate =
+      params.skill !== undefined ? (params.skill === "" ? null : params.skill) : undefined;
 
     const projectDir = getProjectDir(slug);
     if (!existsSync(projectDir)) {
@@ -283,7 +353,19 @@ defineCommand({
     if (flags.dryRun) {
       return success({
         dryRun: true,
-        wouldUpdate: { slug, taskId, title, priority, planId, dependsOn },
+        wouldUpdate: {
+          slug,
+          taskId,
+          title,
+          priority,
+          planId,
+          dependsOn,
+          ...(sourceFiles !== undefined && { sourceFiles }),
+          ...(scopeUpdate !== undefined && { scope: scopeUpdate }),
+          ...(acceptanceUpdate !== undefined && { acceptance: acceptanceUpdate }),
+          ...(verifyUpdate !== undefined && { verify: verifyUpdate }),
+          ...(skillUpdate !== undefined && { skill: skillUpdate }),
+        },
       });
     }
 
@@ -294,6 +376,11 @@ defineCommand({
         ...(priority && { priority }),
         ...(planId && { planId }),
         ...(dependsOn !== undefined && { dependsOn }),
+        ...(sourceFiles !== undefined && { sourceFiles }),
+        ...(scopeUpdate !== undefined && { scope: scopeUpdate }),
+        ...(acceptanceUpdate !== undefined && { acceptance: acceptanceUpdate }),
+        ...(verifyUpdate !== undefined && { verify: verifyUpdate }),
+        ...(skillUpdate !== undefined && { skill: skillUpdate }),
       });
       return success(task);
     } catch (err) {

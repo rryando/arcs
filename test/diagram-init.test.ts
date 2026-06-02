@@ -174,4 +174,69 @@ describe("diagram init", () => {
       expect(mmd).toMatch(/%% node: T002[\s\S]*?%% title: Bravo/);
     });
   });
+
+  it("populates per-node metadata blocks from task fields (--scope, --acceptance, --verify, --skill, --source-files)", async () => {
+    await withTempDataDir(async () => {
+      await runCommand("project init", ["testproj", "--description=Test project"]);
+      const planResult = await runCommand("plan create", [
+        "testproj",
+        "Meta Plan",
+        "--summary=s",
+        "--status=planned",
+      ]);
+      const planId = (planResult.data as { id: string }).id;
+
+      const created = await runCommand("task create", [
+        "testproj",
+        "Metadata Task",
+        `--planId=${planId}`,
+        "--scope=src/foo.ts",
+        "--acceptance=passes test X",
+        "--verify=vitest run foo.test.ts",
+        "--skill=quick-dev",
+        "--source-files=src/foo.ts:line-42",
+      ]);
+      expect(created.ok).toBe(true);
+
+      const result = await runCommand("diagram init", ["testproj", planId, "--force"]);
+      expect(result.ok).toBe(true);
+
+      const mmd = await readFile((result.data as { path: string }).path, "utf-8");
+
+      expect(mmd).toContain("%% skill: quick-dev");
+      expect(mmd).toContain("%% scope: src/foo.ts");
+      expect(mmd).toContain("%% files: src/foo.ts:line-42");
+      expect(mmd).toContain("%% acceptance: passes test X");
+      expect(mmd).toContain("%% verify: vitest run foo.test.ts");
+      // No (TBD) leakage when fields are populated
+      expect(mmd).not.toContain("%% scope: (TBD)");
+      expect(mmd).not.toContain("%% acceptance: (TBD)");
+    });
+  });
+
+  it("falls back to (TBD) for tasks without metadata fields (backward compat)", async () => {
+    await withTempDataDir(async () => {
+      await runCommand("project init", ["testproj", "--description=Test project"]);
+      const planResult = await runCommand("plan create", [
+        "testproj",
+        "Bare Plan",
+        "--summary=s",
+        "--status=planned",
+      ]);
+      const planId = (planResult.data as { id: string }).id;
+
+      // Task created with no metadata flags
+      await runCommand("task create", ["testproj", "Bare Task", `--planId=${planId}`]);
+
+      const result = await runCommand("diagram init", ["testproj", planId]);
+      const mmd = await readFile((result.data as { path: string }).path, "utf-8");
+
+      expect(mmd).toContain("%% skill: quick-dev");
+      expect(mmd).toContain("%% scope: (TBD)");
+      expect(mmd).toContain("%% acceptance: (TBD)");
+      expect(mmd).toContain("%% verify: npm test");
+      // %% files: line is omitted entirely when sourceFiles is absent
+      expect(mmd).not.toContain("%% files:");
+    });
+  });
 });

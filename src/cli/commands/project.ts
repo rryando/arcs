@@ -236,10 +236,15 @@ async function handleProjectInit(
     rootMeta.projects.push({ id: slug, name, status: "draft", dependsOn: [] });
     await writeRootMeta(dataDir, rootMeta);
 
-    // Graphify: extract code graph and seed structural knowledge (non-fatal)
+    // Graphify: extract code graph and seed structural proposals (non-fatal)
     // Only attempt if workspace looks like a real codebase (has .git or package.json)
     // Skip when ARCS_SKIP_GRAPHIFY=1 (used in tests to avoid spawning real binaries)
-    let graphify: { proposed: number; created: number; hooksHint?: string } | null = null;
+    let graphify: {
+      proposed: number;
+      pending_enrichment?: true;
+      hint?: string;
+      hooksHint?: string;
+    } | null = null;
     const graphifyWorkspace = wsPath ?? process.cwd();
     const hasGit = existsSync(resolve(graphifyWorkspace, ".git"));
     const looksLikeCodebase = hasGit || existsSync(resolve(graphifyWorkspace, "package.json"));
@@ -249,18 +254,23 @@ async function handleProjectInit(
         const { detectGraphify, runExtraction, ingestGraph } = await import(
           "../../utils/graphify.js"
         );
-        const { persistProposals } = await import("../../utils/graphify-knowledge.js");
+        const { writeProposalsFile } = await import("../../utils/graphify-knowledge.js");
         const info = detectGraphify();
         if (info.available) {
           const extraction = runExtraction(graphifyWorkspace);
           if (extraction.success) {
             const { proposals, stats } = ingestGraph(extraction.graphJsonPath, slug);
-            let created = 0;
             if (proposals.length > 0) {
-              const result = await persistProposals(slug, proposals);
-              created = result.created;
+              const graphJsonContent = await readFile(extraction.graphJsonPath, "utf-8");
+              await writeProposalsFile(slug, proposals, graphJsonContent);
+              graphify = {
+                proposed: stats.totalProposals,
+                pending_enrichment: true,
+                hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
+              };
+            } else {
+              graphify = { proposed: 0 };
             }
-            graphify = { proposed: stats.totalProposals, created };
             // Offer git hook for auto-refresh on commit
             if (hasGit) {
               graphify.hooksHint =

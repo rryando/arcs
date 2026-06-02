@@ -65,12 +65,80 @@ const diagramReadyParams = {
   planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
 } as const satisfies Record<string, ParamDef>;
 
+interface InspectNode {
+  id: string;
+  status: string;
+}
+interface InspectEdge {
+  from: string;
+  to: string;
+}
+interface InspectShape {
+  nodes: InspectNode[];
+  edges: InspectEdge[];
+}
+
+interface ReadyShape {
+  ready: string[];
+  blocked: string[];
+  inProgress: string[];
+  done: string[];
+}
+
 defineCommand({
   path: "diagram ready",
-  description: "Show ready-to-execute nodes (all dependencies done)",
+  description: "Classify diagram nodes into ready/blocked/inProgress/done buckets",
   params: diagramReadyParams,
   handler: handleDiagramReady,
 });
+
+/**
+ * Compute the four disjoint status buckets for a diagram by deriving them from
+ * `manage-diagram.mjs inspect` output (nodes + edges + statuses). The buckets
+ * partition every node in the diagram exactly once:
+ *   - done       — node.status === "done"
+ *   - inProgress — node.status === "inProgress"
+ *   - ready      — node.status === "backlog" AND every incoming dep is done
+ *   - blocked    — anything else still backlog (≥1 dep not done) OR
+ *                  explicit node.status === "blocked"
+ */
+function classifyNodes(inspect: InspectShape): ReadyShape {
+  const nodeStatus = new Map<string, string>();
+  for (const n of inspect.nodes) nodeStatus.set(n.id, n.status);
+
+  const ready: string[] = [];
+  const blocked: string[] = [];
+  const inProgress: string[] = [];
+  const done: string[] = [];
+
+  for (const node of inspect.nodes) {
+    if (node.status === "done") {
+      done.push(node.id);
+      continue;
+    }
+    if (node.status === "inProgress") {
+      inProgress.push(node.id);
+      continue;
+    }
+    if (node.status === "blocked") {
+      blocked.push(node.id);
+      continue;
+    }
+    // backlog — depends on incoming edges
+    const incoming = inspect.edges.filter((e) => e.to === node.id).map((e) => e.from);
+    const allDepsDone = incoming.every((depId) => nodeStatus.get(depId) === "done");
+    if (allDepsDone) ready.push(node.id);
+    else blocked.push(node.id);
+  }
+
+  return { ready, blocked, inProgress, done };
+}
+
+function isInspectShape(value: unknown): value is InspectShape {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as { nodes?: unknown; edges?: unknown };
+  return Array.isArray(v.nodes) && Array.isArray(v.edges);
+}
 
 async function handleDiagramReady(
   params: ParsedParams<typeof diagramReadyParams>,
@@ -86,8 +154,15 @@ async function handleDiagramReady(
   if (typeof scriptPath !== "string") return scriptPath;
 
   try {
-    const output = runDiagramScript(scriptPath, "ready", diagramPath);
-    return success(parseScriptOutput(output));
+    // Source nodes + edges + statuses from `inspect` so we can compute all four
+    // buckets in one place. The script's own `ready` subcommand only emits the
+    // bare list and is kept for direct file-level use.
+    const output = runDiagramScript(scriptPath, "inspect", diagramPath);
+    const parsed = parseScriptOutput(output);
+    if (!isInspectShape(parsed)) {
+      return failure("diagram_error", "diagram ready: inspect output missing nodes/edges arrays");
+    }
+    return success(classifyNodes(parsed));
   } catch (err) {
     const msg =
       err instanceof Error ? (err as { stderr?: string }).stderr || err.message : String(err);

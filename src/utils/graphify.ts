@@ -50,12 +50,51 @@ export type ExtractionOutcome = ExtractionResult | ExtractionError;
 
 // --- Knowledge Ingestion ---
 
+/**
+ * A graphify-derived knowledge proposal.
+ *
+ * Carries STRUCTURAL FACTS only — not prose. The calling agent (which has LLM
+ * tokens) is responsible for producing the final `title`/`summary`/`keywords`
+ * during the proposal-promote step. See plan
+ * `2026-06-02-graphify-proposal-gate-implementation-plan` §Proposal Shape.
+ *
+ * `suggestedDedupCandidates` is intentionally NOT on this type — that's
+ * computed by the proposal-store layer when proposals are written to disk,
+ * not at ingest time.
+ */
 export interface KnowledgeProposal {
-  title: string;
+  /** Stable id, e.g. "graphify-cluster-src-utils". */
+  id: string;
   kind: "architecture" | "module" | "gotcha" | "pattern";
-  summary: string;
-  keywords: string[];
+  /** Human-friendly label. Agents will write the final title. */
+  label: string;
+  structuralFacts: ProposalStructuralFacts;
   sourceFiles: Array<{ path: string; anchor?: string }>;
+}
+
+export interface ProposalStructuralFacts {
+  // --- Cluster proposals ---
+  memberCount?: number;
+  fileCount?: number;
+  /** e.g. { code: 260, document: 0 } */
+  fileTypeBreakdown?: Record<string, number>;
+  topHubs?: Array<{ label: string; file: string; in: number; out: number }>;
+  topFilesByEntityCount?: Array<{ file: string; count: number }>;
+  incomingFromOtherClusters?: number;
+  outgoingToOtherClusters?: number;
+
+  // --- God-node proposals ---
+  nodeFile?: string;
+  nodeIn?: number;
+  nodeOut?: number;
+  topCallers?: Array<{ label: string; file: string }>;
+  topCallees?: Array<{ label: string; file: string }>;
+
+  // --- Coupling proposals ---
+  couplingA?: { label: string; file: string; degree: number };
+  couplingB?: { label: string; file: string; degree: number };
+  /** Edge relation types (e.g. ["imports_from", "calls"]). */
+  relations?: string[];
 }
 
 export interface IngestionResult {
@@ -112,14 +151,21 @@ interface GraphNode {
   id: string;
   label: string;
   type: string;
+  fileType: string;
   file: string;
   community: number;
   degree: number;
+  inDegree: number;
+  outDegree: number;
 }
 
-function parseGraphJson(
-  graphPath: string,
-): { nodes: GraphNode[]; communities: GraphCommunity[] } | null {
+interface ParsedGraph {
+  nodes: GraphNode[];
+  communities: GraphCommunity[];
+  links: RawGraphLink[];
+}
+
+function parseGraphJson(graphPath: string): ParsedGraph | null {
   try {
     const raw = readFileSync(graphPath, "utf-8");
     const data: RawGraphJson = JSON.parse(raw);
@@ -128,11 +174,15 @@ function parseGraphJson(
     // Normalize links (graphify uses "links" key; older format used "edges")
     const links = data.links || data.edges || [];
 
-    // Compute degree from links
+    // Compute degree (total) plus directional in/out per node
     const degreeMap = new Map<string, number>();
+    const inMap = new Map<string, number>();
+    const outMap = new Map<string, number>();
     for (const link of links) {
       degreeMap.set(link.source, (degreeMap.get(link.source) || 0) + 1);
       degreeMap.set(link.target, (degreeMap.get(link.target) || 0) + 1);
+      outMap.set(link.source, (outMap.get(link.source) || 0) + 1);
+      inMap.set(link.target, (inMap.get(link.target) || 0) + 1);
     }
 
     // Normalize nodes
@@ -140,9 +190,12 @@ function parseGraphJson(
       id: n.id,
       label: n.label,
       type: n.type || n.file_type || "unknown",
+      fileType: n.file_type || n.type || "unknown",
       file: n.file || n.source_file || "",
       community: n.community ?? -1,
       degree: n.degree ?? degreeMap.get(n.id) ?? 0,
+      inDegree: inMap.get(n.id) ?? 0,
+      outDegree: outMap.get(n.id) ?? 0,
     }));
 
     // Use communities if available; otherwise synthesize from source_file grouping
@@ -169,7 +222,7 @@ function parseGraphJson(
       }
     }
 
-    return { nodes, communities };
+    return { nodes, communities, links };
   } catch {
     return null;
   }
@@ -212,68 +265,191 @@ export function ingestGraph(graphJsonPath: string, _slug: string): IngestionResu
     .slice(0, 8); // cap god nodes at 8 to leave room for other kinds
 
   for (const node of godNodes) {
+    // Top callers: nodes with edge → this node, ranked by their own degree.
+    const callerDegreeById = new Map<string, number>();
+    const calleeDegreeById = new Map<string, number>();
+    for (const link of graph.links) {
+      if (link.target === node.id && link.source !== node.id) {
+        const src = nodeMap.get(link.source);
+        if (src) callerDegreeById.set(src.id, src.degree);
+      }
+      if (link.source === node.id && link.target !== node.id) {
+        const tgt = nodeMap.get(link.target);
+        if (tgt) calleeDegreeById.set(tgt.id, tgt.degree);
+      }
+    }
+
+    const topCallers = [...callerDegreeById.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([id]) => {
+        const n = nodeMap.get(id);
+        return n ? { label: n.label, file: n.file } : null;
+      })
+      .filter((x): x is { label: string; file: string } => x !== null);
+
+    const topCallees = [...calleeDegreeById.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([id]) => {
+        const n = nodeMap.get(id);
+        return n ? { label: n.label, file: n.file } : null;
+      })
+      .filter((x): x is { label: string; file: string } => x !== null);
+
     proposals.push({
-      title: `High-connectivity module: ${node.label}`,
+      id: makeProposalId("graphify-god", `${node.label}-${node.file}`),
       kind: "module",
-      summary: `${node.label} has degree ${node.degree}, making it a central hub in the codebase graph.`,
-      keywords: [node.label.toLowerCase(), node.type, "high-connectivity"],
+      label: node.label,
+      structuralFacts: {
+        nodeFile: node.file,
+        nodeIn: node.inDegree,
+        nodeOut: node.outDegree,
+        topCallers,
+        topCallees,
+      },
       sourceFiles: [{ path: node.file }],
     });
   }
 
-  // Community clusters (sorted by size desc, top 8)
-  const communities = [...(graph.communities || [])]
-    .sort((a, b) => b.nodes.length - a.nodes.length)
-    .slice(0, 8);
+  // Community clusters (sorted by size desc, top 8). Drop document-only clusters.
+  const allCommunities = [...(graph.communities || [])].sort(
+    (a, b) => b.nodes.length - a.nodes.length,
+  );
 
-  for (const community of communities) {
-    const memberFiles = community.nodes
-      .map((id) => nodeMap.get(id)?.file)
-      .filter((f): f is string => !!f);
-    const uniqueFiles = [...new Set(memberFiles)];
+  // Build community-membership map for cross-cluster degree calculations.
+  const communityIdByNode = new Map<string, number>();
+  for (const c of allCommunities) {
+    for (const nodeId of c.nodes) communityIdByNode.set(nodeId, c.id);
+  }
+
+  const survivingCommunities: GraphCommunity[] = [];
+  for (const community of allCommunities) {
+    const members = community.nodes.map((id) => nodeMap.get(id)).filter((n): n is GraphNode => !!n);
+    if (members.length === 0) continue;
+    // Filtering rule: drop the cluster if EVERY member has file_type === "document".
+    const hasNonDocument = members.some((m) => m.fileType !== "document");
+    if (!hasNonDocument) continue;
+    survivingCommunities.push(community);
+    if (survivingCommunities.length >= 8) break;
+  }
+
+  for (const community of survivingCommunities) {
+    const members = community.nodes.map((id) => nodeMap.get(id)).filter((n): n is GraphNode => !!n);
+
+    // memberCount, fileCount, fileTypeBreakdown
+    const memberCount = members.length;
+    const fileSet = new Set<string>();
+    const fileTypeBreakdown: Record<string, number> = {};
+    const fileEntityCount = new Map<string, number>();
+    for (const m of members) {
+      if (m.file) fileSet.add(m.file);
+      const ft = m.fileType || "unknown";
+      fileTypeBreakdown[ft] = (fileTypeBreakdown[ft] || 0) + 1;
+      if (m.file) {
+        fileEntityCount.set(m.file, (fileEntityCount.get(m.file) || 0) + 1);
+      }
+    }
+
+    // topHubs: top 3 by in+out
+    const topHubs = [...members]
+      .sort((a, b) => b.inDegree + b.outDegree - (a.inDegree + a.outDegree))
+      .slice(0, 3)
+      .filter((m) => m.inDegree + m.outDegree > 0)
+      .map((m) => ({ label: m.label, file: m.file, in: m.inDegree, out: m.outDegree }));
+
+    // topFilesByEntityCount: top 3
+    const topFilesByEntityCount = [...fileEntityCount.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([file, count]) => ({ file, count }));
+
+    // Cross-cluster degree: count links where one endpoint is in this community
+    // and the other endpoint is in a DIFFERENT community.
+    const memberIds = new Set(community.nodes);
+    let incoming = 0;
+    let outgoing = 0;
+    for (const link of graph.links) {
+      const srcInCluster = memberIds.has(link.source);
+      const tgtInCluster = memberIds.has(link.target);
+      if (srcInCluster === tgtInCluster) continue; // same-side or both-out → ignore
+      // Only count edges where the OTHER endpoint belongs to some community
+      // (otherwise it's not "another cluster", just stray nodes).
+      const otherId = srcInCluster ? link.target : link.source;
+      const otherCommunity = communityIdByNode.get(otherId);
+      if (otherCommunity === undefined || otherCommunity === community.id) continue;
+      if (srcInCluster) outgoing++;
+      else incoming++;
+    }
+
+    const uniqueFiles = [...fileSet];
     proposals.push({
-      title: `Architecture cluster: ${community.label}`,
+      id: makeProposalId("graphify-cluster", community.label),
       kind: "architecture",
-      summary:
-        community.summary ||
-        `Cluster containing ${community.nodes.length} related entities in ${community.label}.`,
-      keywords: [community.label.toLowerCase(), "cluster", "architecture"],
+      label: community.label,
+      structuralFacts: {
+        memberCount,
+        fileCount: uniqueFiles.length,
+        fileTypeBreakdown,
+        topHubs,
+        topFilesByEntityCount,
+        incomingFromOtherClusters: incoming,
+        outgoingToOtherClusters: outgoing,
+      },
       sourceFiles: uniqueFiles.map((p) => ({ path: p })),
     });
   }
 
-  // Cross-module coupling: find links between different top-level directories where at least one node is high-degree
-  const crossModule: Array<{ a: GraphNode; b: GraphNode; combinedDegree: number }> = [];
-  const rawContent = readFileSync(graphJsonPath, "utf-8");
-  const rawData = JSON.parse(rawContent) as RawGraphJson;
-  const allLinks = rawData.links || rawData.edges || [];
-  for (const link of allLinks) {
+  // Cross-module coupling: links between different top-level dirs where at least one is god.
+  type CouplingCandidate = {
+    a: GraphNode;
+    b: GraphNode;
+    relations: Set<string>;
+    combinedDegree: number;
+  };
+  const couplingByKey = new Map<string, CouplingCandidate>();
+  for (const link of graph.links) {
     const nodeA = nodeMap.get(link.source);
     const nodeB = nodeMap.get(link.target);
     if (!nodeA || !nodeB || !nodeA.file || !nodeB.file) continue;
-    // Skip test files — test↔source coupling is expected, not interesting
     if (isTestFile(nodeA.file) || isTestFile(nodeB.file)) continue;
-    const dirA = nodeA.file.split("/").slice(0, 2).join("/"); // top-level module dir
+    const dirA = nodeA.file.split("/").slice(0, 2).join("/");
     const dirB = nodeB.file.split("/").slice(0, 2).join("/");
-    if (dirA && dirB && dirA !== dirB && (nodeA.degree > threshold || nodeB.degree > threshold)) {
-      crossModule.push({ a: nodeA, b: nodeB, combinedDegree: nodeA.degree + nodeB.degree });
+    if (!dirA || !dirB || dirA === dirB) continue;
+    if (nodeA.degree <= threshold && nodeB.degree <= threshold) continue;
+
+    const [first, second] =
+      nodeA.id < nodeB.id ? ([nodeA, nodeB] as const) : ([nodeB, nodeA] as const);
+    const key = `${first.id}|${second.id}`;
+    const existing = couplingByKey.get(key);
+    if (existing) {
+      if (link.relation) existing.relations.add(link.relation);
+    } else {
+      couplingByKey.set(key, {
+        a: first,
+        b: second,
+        relations: new Set(link.relation ? [link.relation] : []),
+        combinedDegree: first.degree + second.degree,
+      });
     }
   }
-  // Sort by combined degree, deduplicate, take top 5
-  crossModule.sort((a, b) => b.combinedDegree - a.combinedDegree);
-  const seen = new Set<string>();
-  for (const { a, b } of crossModule) {
-    const key = [a.id, b.id].sort().join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
+
+  const couplings = [...couplingByKey.values()]
+    .sort((x, y) => y.combinedDegree - x.combinedDegree)
+    .slice(0, 5);
+
+  for (const { a, b, relations } of couplings) {
     proposals.push({
-      title: `Cross-module coupling: ${a.label} ↔ ${b.label}`,
+      id: makeProposalId("graphify-coupling", `${a.label}-${b.label}`),
       kind: "gotcha",
-      summary: `High-connectivity entities ${a.label} (${a.file}) and ${b.label} (${b.file}) are linked across module boundaries.`,
-      keywords: [a.label.toLowerCase(), b.label.toLowerCase(), "coupling", "cross-module"],
+      label: `${a.label} ↔ ${b.label}`,
+      structuralFacts: {
+        couplingA: { label: a.label, file: a.file, degree: a.degree },
+        couplingB: { label: b.label, file: b.file, degree: b.degree },
+        relations: [...relations],
+      },
       sourceFiles: [{ path: a.file }, { path: b.file }],
     });
-    if (proposals.filter((p) => p.kind === "gotcha").length >= 5) break;
   }
 
   // Cap at 20
@@ -283,11 +459,24 @@ export function ingestGraph(graphJsonPath: string, _slug: string): IngestionResu
     proposals: capped,
     stats: {
       godNodes: godNodes.length,
-      communities: communities.length,
+      communities: survivingCommunities.length,
       crossModuleCouplings: capped.filter((p) => p.kind === "gotcha").length,
       totalProposals: capped.length,
     },
   };
+}
+
+/**
+ * Slugify a label suffix and prefix it. Stable, lowercase, dash-separated.
+ * E.g. makeProposalId("graphify-cluster", "src/utils") → "graphify-cluster-src-utils".
+ */
+function makeProposalId(prefix: string, suffix: string): string {
+  const slug = suffix
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return slug ? `${prefix}-${slug}` : prefix;
 }
 
 // --- Graph Query ---

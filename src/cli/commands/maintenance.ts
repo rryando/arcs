@@ -273,7 +273,7 @@ async function handleGraphifySync(
   }
 
   const { detectGraphify, runExtraction, ingestGraph } = await import("../../utils/graphify.js");
-  const { persistProposals } = await import("../../utils/graphify-knowledge.js");
+  const { writeProposalsFile } = await import("../../utils/graphify-knowledge.js");
 
   const info = detectGraphify();
   if (!info.available) {
@@ -287,17 +287,26 @@ async function handleGraphifySync(
   }
 
   const { proposals, stats } = ingestGraph(extraction.graphJsonPath, slug);
-  let created = 0;
+  let graphify:
+    | { proposed: number; pending_enrichment?: true; hint?: string }
+    | { proposed: number };
   if (proposals.length > 0) {
-    const result = await persistProposals(slug, proposals);
-    created = result.created;
+    const { readFile } = await import("node:fs/promises");
+    const graphJsonContent = await readFile(extraction.graphJsonPath, "utf-8");
+    await writeProposalsFile(slug, proposals, graphJsonContent);
+    graphify = {
+      proposed: proposals.length,
+      pending_enrichment: true,
+      hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
+    };
+  } else {
+    graphify = { proposed: 0 };
   }
 
   return success({
     workspace,
     graphJsonPath: extraction.graphJsonPath,
     stats,
-    proposed: proposals.length,
-    created,
+    graphify,
   });
 }

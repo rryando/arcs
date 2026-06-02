@@ -35,7 +35,7 @@ Discovery: \`arcs --commands --json\` (cache once per session). Batch op names a
 | List tasks | \`arcs task list <slug> --json\` |
 | List plans | \`arcs plan list <slug> --json\` |
 | Search | \`arcs search <slug> "<query>" --json\` |
-| Diagram ready | \`arcs diagram ready <slug> <planId> --json\` |
+| Diagram ready | \`arcs diagram ready <slug> <planId> --json\` — returns \`{ready, blocked, inProgress, done}\` arrays |
 | Validate | \`arcs validate <slug> --json\` |
 | Task transition | \`arcs task transition <slug> <taskId> <status> --planId=<id> --diagramNodeId=<node> --json\` |
 | Batch writes | \`arcs batch --file=ops.json --json\` |
@@ -336,7 +336,7 @@ CLI:
 - \`arcs next\` is dependency-aware (topological sort) — it returns the first task whose \`dependsOn\` are all done. Use it as the primary task selection mechanism.
 - \`arcs task transition\` atomically updates task status + diagram node. MUST pass both \`--planId\` and \`--diagramNodeId\` (both required for diagram patch)
 - Sub-agents NEVER edit \`.mmd\` files — agents must NOT manually patch \`.mmd\` for status transitions. Scope changes reported back, orchestrator regenerates via \`arcs diagram sort-metadata <slug> <planId> --json\`
-- \`arcs diagram ready\` after each transition to discover newly-unblocked nodes
+- \`arcs diagram ready\` after each transition to discover newly-unblocked nodes — read \`data.ready\` (and \`data.blocked\` to surface what's still gated)
 - If blocked → note blocker, advance to next unblocked task
 
 **Auto-sync triggers** (any one sufficient): 3+ transitions, \`lastSyncedAt\` > 7 days, plan reached \`done\`.

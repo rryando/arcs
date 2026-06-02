@@ -259,15 +259,51 @@ function formatDiff(d: Rec): string {
 }
 
 function formatDiagramReady(d: unknown): string {
-  const items = Array.isArray(d) ? d : ((d as Rec).ready ?? (d as Rec).nodes ?? []);
-  const arr = items as (string | Rec)[];
+  // New envelope: { ready, blocked, inProgress, done } — render all four buckets.
+  // Legacy fallbacks (bare list, { nodes }) preserved for forward compat with
+  // any cached/streaming consumer.
   const lines: string[] = [];
-  lines.push("## Ready Nodes");
-  lines.push("");
-  for (const node of arr) {
-    const id = typeof node === "string" ? node : ((node as Rec).id ?? (node as Rec).nodeId);
-    lines.push(`- ${id}`);
+  const renderBucket = (label: string, items: unknown): void => {
+    const arr = Array.isArray(items) ? items : [];
+    lines.push(`### ${label} (${arr.length})`);
+    if (arr.length === 0) {
+      lines.push("- _none_");
+    } else {
+      for (const node of arr) {
+        const id = typeof node === "string" ? node : ((node as Rec).id ?? (node as Rec).nodeId);
+        lines.push(`- ${id}`);
+      }
+    }
+    lines.push("");
+  };
+
+  if (Array.isArray(d)) {
+    lines.push("## Ready Nodes");
+    lines.push("");
+    for (const node of d) {
+      const id = typeof node === "string" ? node : ((node as Rec).id ?? (node as Rec).nodeId);
+      lines.push(`- ${id}`);
+    }
+    return lines.join("\n").trimEnd();
   }
+
+  const rec = (d ?? {}) as Rec;
+  if (Array.isArray(rec.nodes)) {
+    lines.push("## Ready Nodes");
+    lines.push("");
+    for (const node of rec.nodes as (string | Rec)[]) {
+      const id = typeof node === "string" ? node : ((node as Rec).id ?? (node as Rec).nodeId);
+      lines.push(`- ${id}`);
+    }
+    return lines.join("\n").trimEnd();
+  }
+
+  lines.push("## Diagram Status");
+  lines.push("");
+  renderBucket("Ready", rec.ready);
+  renderBucket("In Progress", rec.inProgress);
+  renderBucket("Blocked", rec.blocked);
+  renderBucket("Done", rec.done);
   return lines.join("\n").trimEnd();
 }
 

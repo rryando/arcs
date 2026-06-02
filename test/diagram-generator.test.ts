@@ -103,3 +103,95 @@ describe("generateDiagramFromTasks — dependency edges", () => {
     expect(t1).toBeLessThan(t2);
   });
 });
+
+describe("generateDiagramFromTasks — per-node metadata propagation", () => {
+  it("uses (TBD) defaults when metadata fields absent — backward compat", () => {
+    const tasks = [makeTask({ id: "task-a", title: "Task A" })];
+    const { mmd } = generateDiagramFromTasks("plan-default", tasks);
+
+    expect(mmd).toContain("%% skill: quick-dev");
+    expect(mmd).toContain("%% scope: (TBD)");
+    expect(mmd).toContain("%% acceptance: (TBD)");
+    expect(mmd).toContain("%% verify: npm test");
+    // No %% files: line when sourceFiles absent
+    expect(mmd).not.toContain("%% files:");
+  });
+
+  it("populates metadata fields from task record", () => {
+    const tasks = [
+      makeTask({
+        id: "task-a",
+        title: "Task A",
+        skill: "code-agent",
+        scope: "src/foo.ts",
+        acceptance: "passes test X",
+        verify: "vitest run foo.test.ts",
+        sourceFiles: [{ path: "src/foo.ts", anchor: "line-42" }],
+      }),
+    ];
+    const { mmd } = generateDiagramFromTasks("plan-meta", tasks);
+
+    expect(mmd).toContain("%% skill: code-agent");
+    expect(mmd).toContain("%% scope: src/foo.ts");
+    expect(mmd).toContain("%% files: src/foo.ts:line-42");
+    expect(mmd).toContain("%% acceptance: passes test X");
+    expect(mmd).toContain("%% verify: vitest run foo.test.ts");
+  });
+
+  it("emits multiple sourceFiles as comma-separated path[:anchor] pairs", () => {
+    const tasks = [
+      makeTask({
+        id: "task-a",
+        title: "Task A",
+        sourceFiles: [{ path: "src/foo.ts" }, { path: "src/bar.ts", anchor: "fn-baz" }],
+      }),
+    ];
+    const { mmd } = generateDiagramFromTasks("plan-files", tasks);
+    expect(mmd).toContain("%% files: src/foo.ts, src/bar.ts:fn-baz");
+  });
+
+  it("preserves canonical metadata order (skill, scope, files, acceptance, verify)", () => {
+    const tasks = [
+      makeTask({
+        id: "task-a",
+        title: "Task A",
+        skill: "tdd",
+        scope: "src/x.ts",
+        acceptance: "x works",
+        verify: "x test",
+        sourceFiles: [{ path: "src/x.ts" }],
+      }),
+    ];
+    const { mmd } = generateDiagramFromTasks("plan-order", tasks);
+
+    const skillIdx = mmd.indexOf("%% skill: tdd");
+    const scopeIdx = mmd.indexOf("%% scope: src/x.ts");
+    const filesIdx = mmd.indexOf("%% files: src/x.ts");
+    const accIdx = mmd.indexOf("%% acceptance: x works");
+    const verIdx = mmd.indexOf("%% verify: x test");
+
+    expect(skillIdx).toBeGreaterThan(-1);
+    expect(skillIdx).toBeLessThan(scopeIdx);
+    expect(scopeIdx).toBeLessThan(filesIdx);
+    expect(filesIdx).toBeLessThan(accIdx);
+    expect(accIdx).toBeLessThan(verIdx);
+  });
+
+  it("mixes populated and (TBD) when only some fields present", () => {
+    const tasks = [
+      makeTask({
+        id: "task-a",
+        title: "Task A",
+        scope: "src/foo.ts",
+        // skill, acceptance, verify, sourceFiles intentionally omitted
+      }),
+    ];
+    const { mmd } = generateDiagramFromTasks("plan-mixed", tasks);
+
+    expect(mmd).toContain("%% skill: quick-dev"); // default
+    expect(mmd).toContain("%% scope: src/foo.ts"); // populated
+    expect(mmd).toContain("%% acceptance: (TBD)"); // default
+    expect(mmd).toContain("%% verify: npm test"); // default
+    expect(mmd).not.toContain("%% files:"); // omitted entirely
+  });
+});
