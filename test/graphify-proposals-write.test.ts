@@ -121,4 +121,85 @@ describe("writeProposalsFile", () => {
       expect(a.fingerprint).not.toBe(b.fingerprint);
     });
   });
+
+  it("preserves existing proposals not present in the new extraction (merge semantics)", async () => {
+    await withTempDataDir(async () => {
+      seedProject();
+
+      // First sync: writes 2 proposals.
+      await writeProposalsFile(
+        SLUG,
+        [
+          makeProposal({ id: "graphify-cluster-old-a", label: "old-a" }),
+          makeProposal({ id: "graphify-cluster-old-b", label: "old-b" }),
+        ],
+        '{"nodes":[]}',
+      );
+
+      // Simulate a backfill or an agent decision that left a proposal pending
+      // with a different id than what graphify will produce next time.
+      const before = await readProposals(SLUG);
+      expect(before?.proposals.map((p) => p.id).sort()).toEqual([
+        "graphify-cluster-old-a",
+        "graphify-cluster-old-b",
+      ]);
+
+      // Second sync: graphify produces ONE proposal that collides with old-a
+      // and one new proposal old-b is gone from this extraction.
+      const result = await writeProposalsFile(
+        SLUG,
+        [
+          makeProposal({ id: "graphify-cluster-old-a", label: "old-a-fresh" }),
+          makeProposal({ id: "graphify-cluster-new-c", label: "new-c" }),
+        ],
+        '{"nodes":[{"id":"changed"}]}',
+      );
+
+      expect(result.written).toBe(2);
+      expect(result.preserved).toBe(1); // old-b survived
+
+      const after = await readProposals(SLUG);
+      const ids = after?.proposals.map((p) => p.id).sort();
+      // old-a (refreshed), old-b (preserved), new-c (added) — three total.
+      expect(ids).toEqual([
+        "graphify-cluster-new-c",
+        "graphify-cluster-old-a",
+        "graphify-cluster-old-b",
+      ]);
+      // Collision winner: the new extraction. old-a should now have label "old-a-fresh".
+      const oldA = after?.proposals.find((p) => p.id === "graphify-cluster-old-a");
+      expect(oldA?.label).toBe("old-a-fresh");
+    });
+  });
+
+  it("preserves backfill-shaped proposals (empty structuralFacts) across re-sync", async () => {
+    await withTempDataDir(async () => {
+      seedProject();
+
+      // Simulate the post-backfill state: lossy proposals with empty facts.
+      await writeProposalsFile(
+        SLUG,
+        [
+          makeProposal({
+            id: "graphify-cluster-backfilled",
+            label: "backfilled",
+            structuralFacts: {},
+          }),
+        ],
+        "backfill",
+      );
+
+      // Next graphify-sync produces a different proposal entirely.
+      await writeProposalsFile(
+        SLUG,
+        [makeProposal({ id: "graphify-cluster-fresh", label: "fresh" })],
+        '{"nodes":[]}',
+      );
+
+      const after = await readProposals(SLUG);
+      const ids = after?.proposals.map((p) => p.id).sort();
+      // Backfilled proposal survived — agent enrichment work is not lost.
+      expect(ids).toEqual(["graphify-cluster-backfilled", "graphify-cluster-fresh"]);
+    });
+  });
 });

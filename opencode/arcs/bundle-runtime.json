@@ -18,6 +18,9 @@
       "review-template.md",
       "graphify-diff.md"
     ],
+    "enriching-graphify-proposals": [
+      "SKILL.md"
+    ],
     "executing-plans": [
       "SKILL.md"
     ],

@@ -166,6 +166,7 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     "onboarding-session",
     "arcs-sync",
     "using-git-worktrees",
+    "enriching-graphify-proposals",
   ];
 
   // Skills that are host-specific, formatting-only, or special-purpose (not routed by orchestrator)
@@ -208,6 +209,7 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
       "finishing-a-development-branch",
       "dispatching-parallel-agents",
       "subagent-driven-development",
+      "enriching-graphify-proposals",
     ];
     for (const skill of supportSkills) {
       expect(ORCHESTRATE_PROMPT_TEXT).toContain(skill);
