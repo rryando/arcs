@@ -341,10 +341,10 @@ function formatContext(d: Rec): string {
   lines.push("");
   if (d.operatingBrief) {
     const ob = d.operatingBrief as Rec;
-    lines.push("**Current Focus:** " + (ob.currentFocus ?? ""));
-    lines.push("**Surface:** " + (ob.recommendedSurface ?? ""));
-    if (ob.why) lines.push("**Why:** " + ob.why);
-    if (ob.nextAction) lines.push("**Next:** " + ob.nextAction);
+    lines.push(`**Current Focus:** ${ob.currentFocus ?? ""}`);
+    lines.push(`**Surface:** ${ob.recommendedSurface ?? ""}`);
+    if (ob.why) lines.push(`**Why:** ${ob.why}`);
+    if (ob.nextAction) lines.push(`**Next:** ${ob.nextAction}`);
     lines.push("");
   }
   if (Array.isArray(d.tasks) && d.tasks.length > 0) {

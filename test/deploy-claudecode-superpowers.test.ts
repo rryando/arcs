@@ -206,7 +206,10 @@ describe("deploy-claudecode-bundle", () => {
 
       expect(existsSync(resolve(configRoot, "skills/arcs-brainstorming/SKILL.md"))).toBe(true);
       expect(
-        readFileSync(resolve(configRoot, "skills/arcs-to-diagram/scripts/manage-diagram.mjs"), "utf-8"),
+        readFileSync(
+          resolve(configRoot, "skills/arcs-to-diagram/scripts/manage-diagram.mjs"),
+          "utf-8",
+        ),
       ).toBe("console.log('diagram cli');\n");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
@@ -230,9 +233,9 @@ describe("deploy-claudecode-bundle", () => {
       expect(proc.status).toBe(0);
       const result = JSON.parse(proc.stdout) as DeployResult;
       expect(result.filesAdded).toContain(".claude/skills/arcs-brainstorming/SKILL.md");
-      expect(
-        existsSync(resolve(projectRoot, ".claude/skills/arcs-to-diagram/SKILL.md")),
-      ).toBe(true);
+      expect(existsSync(resolve(projectRoot, ".claude/skills/arcs-to-diagram/SKILL.md"))).toBe(
+        true,
+      );
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

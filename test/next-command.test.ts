@@ -171,7 +171,7 @@ describe("arcs next", () => {
   });
 
   it("returns error for unknown project slug", async () => {
-    await withTempDataDir(async (dir) => {
+    await withTempDataDir(async (_dir) => {
       // dir already has empty meta.json from withTempDataDir
       const result = await runCommand("next", ["unknown-proj", "--json"]);
       expect(result.ok).toBe(false);

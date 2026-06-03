@@ -34,7 +34,7 @@ function parseRelativeTime(input: string): string | null {
   if (!match) return null;
   const [, num, unit] = match;
   const ms = { m: 60_000, h: 3_600_000, d: 86_400_000 }[unit!]!;
-  return new Date(Date.now() - parseInt(num!) * ms).toISOString();
+  return new Date(Date.now() - parseInt(num!, 10) * ms).toISOString();
 }
 
 defineCommand({

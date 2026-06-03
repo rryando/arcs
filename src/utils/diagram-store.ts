@@ -32,7 +32,10 @@ export interface DiagramUpdateResult {
  */
 export function findDiagramScript(): string | undefined {
   const candidates = [
-    resolve(import.meta.dirname, "../../opencode/arcs/skills/to-diagram/scripts/manage-diagram.mjs"),
+    resolve(
+      import.meta.dirname,
+      "../../opencode/arcs/skills/to-diagram/scripts/manage-diagram.mjs",
+    ),
     resolve(homedir(), ".config/opencode/skills/arcs/to-diagram/scripts/manage-diagram.mjs"),
     resolve(homedir(), ".claude/skills/arcs-to-diagram/scripts/manage-diagram.mjs"),
   ];
