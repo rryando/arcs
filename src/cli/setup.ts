@@ -10,6 +10,8 @@ import {
   type ArcsConfig,
   extractModelPreFills,
   getAvailableModels,
+  getClaudeCodeModels,
+  readClaudeCodeCurrentModel,
   type ModelTierConfig,
   type ProviderModels,
   readOpenCodeConfig,
@@ -357,6 +359,49 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     }
 
     if (shouldDeployClaude) {
+      // ── Model selection for Claude Code ───────────────────────────────────
+      const currentClaudeModel = await readClaudeCodeCurrentModel();
+      const claudeAvailableModels = getClaudeCodeModels(currentClaudeModel);
+
+      p.note(
+        "ARCS agents are grouped into three tiers.\n" +
+          "  Heavy  — reasoning & synthesis (software-engineer, arcs-docs, oncall-ops…)\n" +
+          "  Standard — orchestration (arcs-orchestrate, devil-advocate…)\n" +
+          "  Light  — read-only exploration (code-reviewer, tech-architect, qa-analyst…)\n\n" +
+          'Use "inherit" to delegate model choice to Claude Code defaults.',
+        "Claude Code Model Tiers",
+      );
+
+      const claudeHeavyModel = await selectModel(
+        "Heavy model (reasoning, synthesis)",
+        claudeAvailableModels,
+        currentClaudeModel || "claude-opus-4-7",
+      );
+      if (p.isCancel(claudeHeavyModel)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
+      const claudeStandardModel = await selectModel(
+        "Standard model (orchestration)",
+        claudeAvailableModels,
+        currentClaudeModel || "claude-sonnet-4-6",
+      );
+      if (p.isCancel(claudeStandardModel)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
+      const claudeLightModel = await selectModel(
+        "Light/fast model (read-only, exploration)",
+        claudeAvailableModels,
+        currentClaudeModel || "claude-haiku-4-5",
+      );
+      if (p.isCancel(claudeLightModel)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
       const sClaude = p.spinner();
       sClaude.start("Deploying ARCS sub-agents to Claude Code…");
 
@@ -368,6 +413,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           env: {
             ...process.env,
             DEPLOY_DRY_RUN: "false",
+            DEPLOY_MODEL_HEAVY: claudeHeavyModel as string,
+            DEPLOY_MODEL_STANDARD: claudeStandardModel as string,
+            DEPLOY_MODEL_LIGHT: claudeLightModel as string,
           },
           encoding: "utf-8",
         });
@@ -382,6 +430,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
               const summaryLines = [
                 `${color.green("✔")} Source: ${res.source}`,
                 `${color.green("✔")} Destination: ${res.destination}`,
+                `${color.green("✔")} Heavy: ${color.cyan(res.modelConfig?.heavy || "inherit")}  |  Standard: ${color.cyan(res.modelConfig?.standard || "inherit")}  |  Light: ${color.cyan(res.modelConfig?.light || "inherit")}`,
                 `${color.green("✔")} Files added: ${res.filesAdded?.length || 0}`,
                 `${color.green("✔")} Files changed: ${res.filesChanged?.length || 0}`,
                 `${color.green("✔")} Files removed: ${res.filesRemoved?.length || 0}`,

@@ -371,4 +371,61 @@ describe("deploy-claudecode-bundle", () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("applies DEPLOY_MODEL_* tier env vars to compiled agent frontmatter", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-models-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_MODEL_HEAVY: "claude-opus-4-5",
+        DEPLOY_MODEL_STANDARD: "claude-sonnet-4-5",
+        DEPLOY_MODEL_LIGHT: "claude-haiku-3-5",
+      });
+
+      expect(proc.status).toBe(0);
+      const result = JSON.parse(proc.stdout) as DeployResult & {
+        modelConfig: { heavy: string; standard: string; light: string };
+      };
+      expect(result.modelConfig.heavy).toBe("claude-opus-4-5");
+      expect(result.modelConfig.standard).toBe("claude-sonnet-4-5");
+      expect(result.modelConfig.light).toBe("claude-haiku-3-5");
+
+      // software-engineer is heavy tier
+      const seContent = readFileSync(resolve(configRoot, "agents/software-engineer.md"), "utf-8");
+      expect(seContent).toContain("model: claude-opus-4-5");
+
+      // devil-advocate is standard tier
+      const daContent = readFileSync(resolve(configRoot, "agents/devil-advocate.md"), "utf-8");
+      expect(daContent).toContain("model: claude-sonnet-4-5");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults to 'inherit' for all tiers when DEPLOY_MODEL_* env vars are not set", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-models-default-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(0);
+      const seContent = readFileSync(resolve(configRoot, "agents/software-engineer.md"), "utf-8");
+      expect(seContent).toContain("model: inherit");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

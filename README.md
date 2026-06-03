@@ -53,7 +53,12 @@ npm install -g @rryando/arcs
 arcs init
 ```
 
-Registers `arcs` CLI, creates `~/.arcs/`, deploys agents + skills to `~/.config/opencode/`.
+Registers `arcs` CLI, creates `~/.arcs/`, and runs an interactive TUI wizard that:
+- Detects **OpenCode** and/or **Claude Code** on PATH
+- Selects which platforms to configure (or both)
+- For **OpenCode**: picks heavy / standard / light model tiers from authenticated providers
+- For **Claude Code**: picks heavy / standard / light model tiers from the full Claude model list (opus / sonnet / haiku families), pre-filled from `~/.claude/settings.json`
+- Deploys agents + skills to the appropriate config directories
 
 **2. Init Existing Project to arcs**
 
@@ -89,6 +94,7 @@ Or select **ARCS Orchestrator** in OpenCode for full automation.
 |------|----------|-------|
 | [Node.js](https://nodejs.org/) v18+ | Yes | Runtime |
 | [OpenCode](https://opencode.ai/) | Recommended | Agent host (orchestrator + sub-agents) |
+| [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host — `arcs init` deploys ARCS sub-agents with full model-tier selection |
 | [graphify](https://github.com/safishamsi/graphify) | No | Optional AST-based codebase knowledge extraction |
 
 ---
@@ -362,7 +368,7 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Vitest suite (832 tests) |
+| `npm test` | Vitest suite (~824 tests) |
 | `npm run typecheck` | Type check without emit |
 | `npm run lint` | Biome lint + format |
 

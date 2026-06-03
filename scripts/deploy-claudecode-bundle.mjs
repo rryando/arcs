@@ -67,6 +67,33 @@ const destination = scope === "project" ? projectRoot : configRoot;
 const DEFAULT_AGENT = "arcs-orchestrate";
 const SKILL_PREFIX = "arcs-";
 
+// ---------------------------------------------------------------------------
+// Model tier configuration
+// ---------------------------------------------------------------------------
+// Env vars: DEPLOY_MODEL_HEAVY, DEPLOY_MODEL_STANDARD, DEPLOY_MODEL_LIGHT
+// Each defaults to "inherit" if unset.
+const tierModels = {
+  heavy: process.env.DEPLOY_MODEL_HEAVY || "inherit",
+  standard: process.env.DEPLOY_MODEL_STANDARD || "inherit",
+  light: process.env.DEPLOY_MODEL_LIGHT || "inherit",
+};
+
+/** Maps each agent stem to a tier. Falls back to "standard". */
+const agentTierMap = {
+  "software-engineer": "heavy",
+  "docs-researcher": "heavy",
+  "arcs-docs": "heavy",
+  "oncall-ops": "heavy",
+  "system-architect": "heavy",
+  general: "heavy",
+  "arcs-orchestrate": "standard",
+  "arcs-orchestrate-caveman": "standard",
+  "devil-advocate": "standard",
+  "code-reviewer": "light",
+  "tech-architect": "light",
+  "qa-analyst": "light",
+};
+
 const agentMetadata = {
   "software-engineer": {
     name: "Software Engineer",
@@ -191,6 +218,9 @@ function buildAgentSources() {
       model: "inherit",
     };
 
+    const tier = agentTierMap[stem] || "standard";
+    const model = tierModels[tier];
+
     const toolsArray = meta.tools.split(",").map((t) => t.trim());
     const toolsYaml = `[${toolsArray.map((t) => `"${t}"`).join(", ")}]`;
 
@@ -198,7 +228,7 @@ function buildAgentSources() {
       "---",
       `name: ${meta.name}`,
       `description: ${meta.description}`,
-      `model: ${meta.model}`,
+      `model: ${model}`,
       `tools: ${toolsYaml}`,
       "---",
       "",
@@ -396,6 +426,7 @@ function main() {
     dryRun,
     source: bundleRoot,
     destination,
+    modelConfig: tierModels,
     filesAdded,
     filesChanged,
     filesRemoved,

@@ -121,6 +121,76 @@ export interface ProviderModels {
   models: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code model list
+// ---------------------------------------------------------------------------
+
+/**
+ * Curated list of Claude models supported by Claude Code, grouped by family.
+ * Derived from the Claude Code binary (latest-first within each family).
+ * Aliases (opus/sonnet/haiku) are listed first as shortcuts.
+ */
+const CLAUDE_CODE_MODELS: ProviderModels[] = [
+  {
+    provider: "claude (aliases)",
+    models: ["opus", "sonnet", "haiku"],
+  },
+  {
+    provider: "claude-opus",
+    models: [
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-opus-4-5",
+      "claude-opus-4-1",
+      "claude-opus-4-0",
+    ],
+  },
+  {
+    provider: "claude-sonnet",
+    models: ["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-0", "claude-sonnet-3-7"],
+  },
+  {
+    provider: "claude-haiku",
+    models: ["claude-haiku-4-5", "claude-haiku-3-5"],
+  },
+];
+
+/**
+ * Reads ~/.claude/settings.json and returns the currently configured model
+ * (or empty string if unset / file missing).
+ */
+export async function readClaudeCodeCurrentModel(): Promise<string> {
+  try {
+    const settingsPath = join(homedir(), ".claude", "settings.json");
+    const content = await readFile(settingsPath, "utf-8");
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return typeof parsed.model === "string" ? parsed.model : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Returns the curated Claude Code model list, sorted so the family matching
+ * `currentModel` appears first.
+ */
+export function getClaudeCodeModels(currentModel: string): ProviderModels[] {
+  const family = currentModel.includes("opus")
+    ? "claude-opus"
+    : currentModel.includes("sonnet")
+      ? "claude-sonnet"
+      : currentModel.includes("haiku")
+        ? "claude-haiku"
+        : "";
+
+  if (!family) return CLAUDE_CODE_MODELS;
+
+  return [
+    ...CLAUDE_CODE_MODELS.filter((g) => g.provider === family),
+    ...CLAUDE_CODE_MODELS.filter((g) => g.provider !== family),
+  ];
+}
+
 /**
  * Reads ~/.local/share/opencode/auth.json to get authenticated provider names,
  * then runs `opencode models <provider>` for each to get available models.
