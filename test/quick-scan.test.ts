@@ -54,12 +54,17 @@ describe("quickScan", () => {
     initGitRepo(tmpDir);
     addCommit(tmpDir, "Initial commit");
 
+    // Capture the default branch name (modern git → "main", older → "master").
+    const defaultBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: tmpDir })
+      .toString()
+      .trim();
+
     // Create a feature branch
     execSync("git checkout -b feat/add-login", { cwd: tmpDir, stdio: "pipe" });
     addCommit(tmpDir, "feat: add login page", "login.ts");
 
-    // Go back to main-like branch (default may be 'master' or 'main')
-    execSync("git checkout -b main", { cwd: tmpDir, stdio: "pipe" });
+    // Go back to the default branch (it already exists from `git init`)
+    execSync(`git checkout ${defaultBranch}`, { cwd: tmpDir, stdio: "pipe" });
 
     const result = quickScan(tmpDir);
     // feat/add-login should be in branches (main is excluded)
