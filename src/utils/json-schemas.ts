@@ -171,7 +171,7 @@ export const proposalsFileSchema = z.object({
 const configMergeSchema = z.object({
   path: z.array(z.string()),
   value: z.unknown().transform((v) => v as unknown),
-  mode: z.enum(["overwrite", "if-absent"]).optional(),
+  mode: z.enum(["overwrite", "if-absent", "merge"]).optional(),
 });
 
 export const opencodeSourceManifestSchema = z.object({

@@ -367,6 +367,49 @@ describe("opencode ARCS bundle installer", () => {
     });
   });
 
+  it("preserves provider config from JSONC files with comments", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      // Simulate a user config with JSONC comments (common in opencode.json)
+      const jsoncContent = `{
+  "provider": {
+    "my-provider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "My Provider",
+      "options": {
+        "baseURL": "https://my-llm-proxy.example.com/v1",
+        // persist API key across sessions
+        "apiKey": "{env:MY_LLM_KEY}"
+      },
+      "models": {
+        "claude-opus-4.7": {
+          "name": "claude-opus-4.7"
+        }
+      }
+    }
+  },
+  "model": "my-provider/claude-opus-4.7",
+  "small_model": "my-provider/claude-haiku-4.5"
+}`;
+      mkdirSync(resolve(homeDir, ".config", "opencode"), { recursive: true });
+      writeFileSync(configPath, jsoncContent, "utf-8");
+
+      installArcsBundle({ autoConfirmReplacement: true });
+      const opencodeConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+
+      // Provider config must survive even when source file has JSONC comments.
+      expect(opencodeConfig.provider).toBeDefined();
+      expect(opencodeConfig.provider["my-provider"]).toBeDefined();
+      expect(opencodeConfig.provider["my-provider"].npm).toBe("@ai-sdk/openai-compatible");
+      expect(opencodeConfig.provider["my-provider"].options.baseURL).toBe(
+        "https://my-llm-proxy.example.com/v1",
+      );
+      // if-absent merges should not overwrite existing model
+      expect(opencodeConfig.model).toBe("my-provider/claude-opus-4.7");
+      expect(opencodeConfig.small_model).toBe("my-provider/claude-haiku-4.5");
+    });
+  });
+
   it("seeds default model and small_model on a fresh install (no prior config)", async () => {
     await withTempHomeDir(async (homeDir) => {
       installArcsBundle({ autoConfirmReplacement: true });
@@ -377,6 +420,44 @@ describe("opencode ARCS bundle installer", () => {
       // Defaults still seed when the user hasn't picked yet.
       expect(opencodeConfig.model).toBe("github-copilot/claude-sonnet-4.6");
       expect(opencodeConfig.small_model).toBe("github-copilot/claude-haiku-4.5");
+    });
+  });
+
+  it("merge-mode agent definitions preserve user model but add new bundle keys", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      // User already has code-reviewer with their own model choice
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          {
+            agent: {
+              "code-reviewer": {
+                model: "my-provider/claude-sonnet-4.6",
+                description: "My custom description",
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+
+      installArcsBundle({ autoConfirmReplacement: true });
+      const opencodeConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+
+      // User's model choice must survive merge
+      expect(opencodeConfig.agent["code-reviewer"].model).toBe("my-provider/claude-sonnet-4.6");
+      // User's custom description also survives (existing scalars preserved)
+      expect(opencodeConfig.agent["code-reviewer"].description).toBe("My custom description");
+      // Bundle adds keys the user didn't have
+      expect(opencodeConfig.agent["code-reviewer"].prompt).toBe(
+        "{file:./prompts/code-reviewer.txt}",
+      );
+      expect(opencodeConfig.agent["code-reviewer"].mode).toBe("subagent");
+      // Permission object gets merged in from bundle
+      expect(opencodeConfig.agent["code-reviewer"].permission).toBeDefined();
     });
   });
 

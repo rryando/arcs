@@ -250,18 +250,24 @@ export function applyAgentModelConfig(modelConfig: ModelTierConfig): void {
   if (!existsSync(configFile)) return;
 
   const config = readJsonFile(configFile);
+
+  // Set top-level model routing from tier picks
+  config.model = modelConfig.standard || modelConfig.heavy;
+  config.small_model = modelConfig.light;
+
   const agents = config.agent as Record<string, Record<string, unknown>> | undefined;
-  if (!agents) return;
+  if (agents) {
+    for (const [name, entry] of Object.entries(agents)) {
+      if (typeof entry !== "object" || entry === null) continue;
 
-  for (const [name, entry] of Object.entries(agents)) {
-    if (typeof entry !== "object" || entry === null) continue;
-
-    const tier = AGENT_TIER_MAP[name];
-    if (tier) {
-      entry.model = resolveAgentModel(name, tier, modelConfig);
+      const tier = AGENT_TIER_MAP[name];
+      if (tier) {
+        entry.model = resolveAgentModel(name, tier, modelConfig);
+      }
     }
+
+    config.agent = agents;
   }
 
-  config.agent = agents;
   writeJsonFile(configFile, config);
 }

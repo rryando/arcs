@@ -2,7 +2,7 @@ import { accessSync, constants, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { readJsonSafeSync } from "../utils/json.js";
+import { readJsonSafeSync, stripJsonComments } from "../utils/json.js";
 import { cliConfigSchema } from "../utils/json-schemas.js";
 import { ensureDataDir, getDataDir } from "../utils/paths.js";
 
@@ -89,7 +89,7 @@ export async function readOpenCodeConfig(): Promise<unknown | null> {
   try {
     const filePath = join(homedir(), ".config", "opencode", "opencode.json");
     const content = await readFile(filePath, "utf-8");
-    return JSON.parse(content);
+    return JSON.parse(stripJsonComments(content));
   } catch {
     return null;
   }

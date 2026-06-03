@@ -126,6 +126,7 @@ describe("opencode ARCS bundle bundle", () => {
             mode: "subagent",
             model: "github-copilot/claude-haiku-4.5",
           }),
+          mode: "merge",
         },
         {
           path: ["agent", "code-reviewer"],
@@ -133,6 +134,7 @@ describe("opencode ARCS bundle bundle", () => {
             mode: "subagent",
             model: "github-copilot/claude-haiku-4.5",
           }),
+          mode: "merge",
         },
         {
           path: ["agent", "docs-researcher"],
@@ -140,6 +142,7 @@ describe("opencode ARCS bundle bundle", () => {
             mode: "subagent",
             model: "github-copilot/claude-opus-4.6",
           }),
+          mode: "merge",
         },
         {
           path: ["agent", "tech-architect"],
@@ -147,6 +150,7 @@ describe("opencode ARCS bundle bundle", () => {
             mode: "subagent",
             model: "github-copilot/claude-haiku-4.5",
           }),
+          mode: "merge",
         },
       ]),
     );

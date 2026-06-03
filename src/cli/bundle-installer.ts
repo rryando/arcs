@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
-import { readJsonSafeSync, validateJson } from "../utils/json.js";
+import { readJsonSafeSync, stripJsonComments, validateJson } from "../utils/json.js";
 import {
   opencodeInstalledManifestSchema,
   opencodeSourceManifestSchema,
@@ -28,6 +28,12 @@ export interface ConfigMerge {
   /**
    * "overwrite" (default): always set the value at `path`, clobbering any prior user value.
    * "if-absent":           only set the value if `path` doesn't already exist in the config.
+   * "merge":               deep-merge object values — bundle adds/updates keys but never
+   *                        deletes user-owned keys. Scalars within the merged object that
+   *                        already exist in user config are preserved (treated as if-absent
+   *                        at the leaf level). Use for agent definitions where the bundle
+   *                        owns `prompt`, `description`, `permission` shape but the user
+   *                        owns `model`.
    *
    * Use "if-absent" for user-preference keys that the bundle wants to seed on first install
    * but must never re-stamp on subsequent re-deploys. Concretely: provider/model routing
@@ -35,7 +41,7 @@ export interface ConfigMerge {
    * Re-stamping it broke OpenCode session naming for users whose actual provider differs
    * from the bundle defaults — see fix(bundle): preserve user provider/model choices.
    */
-  mode?: "overwrite" | "if-absent";
+  mode?: "overwrite" | "if-absent" | "merge";
 }
 
 export interface SourceArcsBundleManifest {
@@ -104,7 +110,12 @@ export interface InstallResult {
 }
 
 function readJsonFile(path: string): Record<string, unknown> {
-  return readJsonSafeSync<Record<string, unknown>>(path) ?? {};
+  try {
+    const raw = readFileSync(path, "utf-8");
+    return JSON.parse(stripJsonComments(raw)) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function writeJsonFile(path: string, data: object): void {
@@ -392,6 +403,41 @@ function configPathExists(config: Record<string, unknown>, pathParts: string[]):
   return resolveConfigPath(config, pathParts).found;
 }
 
+/**
+ * Recursively merge `source` into `target`. Existing scalar values in target
+ * are preserved (user-owned). New keys from source are added. Nested objects
+ * are recursively merged.
+ */
+function deepMergeObjects(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  for (const key of Object.keys(source)) {
+    const sourceVal = source[key];
+    const targetVal = target[key];
+
+    if (
+      typeof sourceVal === "object" &&
+      sourceVal !== null &&
+      !Array.isArray(sourceVal) &&
+      typeof targetVal === "object" &&
+      targetVal !== null &&
+      !Array.isArray(targetVal)
+    ) {
+      // Both are plain objects — recurse
+      target[key] = deepMergeObjects(
+        targetVal as Record<string, unknown>,
+        sourceVal as Record<string, unknown>,
+      );
+    } else if (!(key in target)) {
+      // Key doesn't exist in target — add it
+      target[key] = sourceVal;
+    }
+    // Key exists in target with a scalar/array value — preserve user's value
+  }
+  return target;
+}
+
 function applyConfigMerges(
   baseConfig: Record<string, unknown>,
   merges: ConfigMerge[],
@@ -402,6 +448,28 @@ function applyConfigMerges(
     if (merge.mode === "if-absent" && configPathExists(nextConfig, merge.path)) {
       continue;
     }
+
+    if (merge.mode === "merge") {
+      const resolved = resolveConfigPath(nextConfig, merge.path);
+      if (
+        resolved.found &&
+        typeof resolved.value === "object" &&
+        resolved.value !== null &&
+        !Array.isArray(resolved.value) &&
+        typeof merge.value === "object" &&
+        merge.value !== null &&
+        !Array.isArray(merge.value)
+      ) {
+        // Deep-merge: preserve user keys, add bundle keys
+        deepMergeObjects(
+          resolved.value as Record<string, unknown>,
+          merge.value as Record<string, unknown>,
+        );
+        continue;
+      }
+      // Path doesn't exist or isn't an object — fall through to deepSet (seed it)
+    }
+
     deepSet(nextConfig, merge.path, merge.value);
   }
 

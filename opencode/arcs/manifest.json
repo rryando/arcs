@@ -43,7 +43,8 @@
             "~/.config/opencode": "allow",
             "~/.config/opencode/**": "allow"
           }
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -103,7 +104,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/graph-explorer.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -122,7 +124,8 @@
             "mcp": "allow",
             "external_directory": { "*": "allow" }
           }
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -141,7 +144,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/docs-researcher.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -160,7 +164,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/tech-architect.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -179,7 +184,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/software-engineer.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -198,7 +204,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/arcs-docs.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -217,7 +224,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/qa-analyst.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -236,7 +244,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/devil-advocate.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -255,7 +264,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/oncall-ops.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
@@ -274,7 +284,8 @@
             "external_directory": { "*": "allow" }
           },
           "prompt": "{file:./prompts/system-architect.txt}"
-        }
+        },
+        "mode": "merge"
       },
       {
         "path": [
