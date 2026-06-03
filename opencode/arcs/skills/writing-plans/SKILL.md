@@ -163,7 +163,7 @@ arcs plan create <slug> --title="YYYY-MM-DD <feature> Implementation Plan" --sum
 
 ## Execution Handoff
 
-> "Plan complete and saved to arcs project plan `<planId>` in project `<slug>`. Ready to execute?"
+> "Plan complete and saved via `arcs plan get <slug> <planId>` in project `<slug>`. Ready to execute?"
 
 - **Subagents available** → REQUIRED: use `arcs:subagent-driven-development`
 - **No subagents** → use `arcs:executing-plans`

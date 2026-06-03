@@ -34,6 +34,7 @@ const projectUpdateDocParams = {
   },
   "body-file": { type: "string", description: "Path to file with new doc content" },
   "body-stdin": { type: "boolean", description: "Read content from stdin" },
+  content: { type: "string", required: false, description: "Inline document content" },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -52,6 +53,7 @@ async function handleProjectUpdateDoc(
   const doc: ProjectDocType = params.doc;
   const bodyFile = params["body-file"];
   const bodyStdin = params["body-stdin"];
+  const inlineContent = params.content;
 
   const validDocs = Object.keys(PROJECT_DOC_FILES);
   if (!validDocs.includes(doc)) {
@@ -66,14 +68,18 @@ async function handleProjectUpdateDoc(
     return failure(ERROR_CODES.PROJECT_NOT_FOUND, `Project "${slug}" not found`);
   }
 
-  if (!bodyFile && !bodyStdin) {
-    return failure(ERROR_CODES.MISSING_PARAM, "Either --body-file or --body-stdin is required", {
-      param: "body-file",
-    });
+  if (!bodyFile && !inlineContent && !bodyStdin) {
+    return failure(
+      ERROR_CODES.MISSING_PARAM,
+      "Either --body-file, --content, or --body-stdin is required",
+      {
+        param: "body-file",
+      },
+    );
   }
 
   if (flags.dryRun) {
-    return success({ dryRun: true, wouldUpdate: { slug, doc, bodyFile } });
+    return success({ dryRun: true, wouldUpdate: { slug, doc, bodyFile, inlineContent } });
   }
 
   let content: string;
@@ -82,6 +88,8 @@ async function handleProjectUpdateDoc(
       return failure(ERROR_CODES.ENTITY_NOT_FOUND, `Body file not found: ${bodyFile}`);
     }
     content = readFileSync(bodyFile, "utf-8");
+  } else if (inlineContent !== undefined) {
+    content = inlineContent;
   } else {
     // Read from stdin
     const chunks: Buffer[] = [];

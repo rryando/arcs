@@ -151,6 +151,11 @@ async function handleBatch(
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     op.op = normalizeBatchOp(op.op);
+    // Unwrap nested params format: {op, params:{...}} → flat {op, ...}
+    if (op.params && typeof op.params === "object") {
+      Object.assign(op, op.params);
+      delete op.params;
+    }
     try {
       switch (op.op) {
         case "task-transition": {
@@ -294,8 +299,8 @@ async function handleBatch(
         }
         case "doc-update": {
           const projectDir = getProjectDir(op.slug);
-          const docType = op.docType as ProjectDocType;
-          const content = op.content as string;
+          const docType = (op.doc ?? op.docType) as ProjectDocType;
+          const content = (op.content ?? op.body) as string;
           if (!docType || !content) throw new Error("docType and content required");
           const docFile = PROJECT_DOC_FILES[docType];
           if (!docFile) throw new Error(`Unknown doc type: ${docType}`);

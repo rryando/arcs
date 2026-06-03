@@ -46,11 +46,22 @@ Discovery: `arcs --commands --json` (cache once per session). Batch op names are
 | Validate | `arcs validate <slug> --json` |
 | Task transition | `arcs task transition <slug> <taskId> <status> --planId=<id> --diagramNodeId=<node> --json` |
 | Batch writes | `arcs batch --file=ops.json --json` |
+| Update doc (inline) | `arcs project update-doc <slug> <doc> --content="..." --json` |
 | Create task | `arcs task create <slug> <title> --priority=medium --planId=<id> --dependsOn=id1,id2 --json` |
 | Create knowledge | `arcs knowledge create <slug> <title> --kind=<kind> --summary="..." --body="..." --source-files="src/foo.ts:anchor" --json` |
 | Create plan | `arcs plan create <slug> <title> --summary="..." --status=planned --json` |
 | Update plan meta | `arcs plan update-meta <slug> <planId> [--status=proposed\|planned\|in_progress\|done\|archived] --json` |
 | Role-targeted context | `arcs context <slug> --audience=<role> --lean --json` |
+
+**Batch op format** (flat structure — fields at top level, NOT nested under `params`):
+```json
+{"op":"task-create",     "slug":"<slug>","title":"...","priority":"medium","planId":"..."}
+{"op":"task-transition", "slug":"<slug>","taskId":"...","status":"done"}
+{"op":"knowledge-create","slug":"<slug>","title":"...","kind":"lesson","summary":"...","body":"..."}
+{"op":"doc-update",      "slug":"<slug>","doc":"overview","content":"..."}
+{"op":"plan-create",     "slug":"<slug>","title":"...","summary":"...","status":"planned"}
+```
+Valid ops: `task-create`, `task-transition`, `task-update`, `task-delete`, `knowledge-create`, `knowledge-update-meta`, `knowledge-update-body`, `knowledge-delete`, `plan-create`, `plan-update-meta`, `plan-delete`, `doc-update`
 
 ## Master Routing
 

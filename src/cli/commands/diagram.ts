@@ -300,7 +300,8 @@ async function handleDiagramStatus(
   if (typeof scriptPath !== "string") return scriptPath;
 
   try {
-    const output = runDiagramScript(scriptPath, "status", diagramPath, [nodeId, status]);
+    const scriptStatus = status === "in_progress" ? "inProgress" : status;
+    const output = runDiagramScript(scriptPath, "status", diagramPath, [nodeId, scriptStatus]);
     return success(parseScriptOutput(output));
   } catch (err) {
     const msg =

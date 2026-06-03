@@ -80,7 +80,7 @@ Discovery: `arcs --commands --json`
 
 ## Loop Tools
 
-- `arcs loop start <slug> --prompt="..." --max-iterations=50 --json` — self-referential dev loop
+- `arcs loop start <slug> --prompt="..." --session="<session-id>" --max-iterations=50 --json` — self-referential dev loop (--session is required; use a unique stable ID per agent session, e.g. a UUID or timestamp string)
 - `arcs loop cancel <slug> --json` — cancel active loop
 - `arcs loop status <slug> --json` — inspect loop state
 
