@@ -350,7 +350,7 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Vitest suite (67 files, 744 tests) |
+| `npm test` | Vitest suite (824 tests) |
 | `npm run typecheck` | Type check without emit |
 | `npm run lint` | Biome lint + format |
 
@@ -368,10 +368,11 @@ The bundle merges a small set of keys into your `~/.config/opencode/opencode.jso
 
 | Mode | Behavior | Used for |
 |------|----------|----------|
-| `overwrite` (default) | Always sets the value, even on re-deploy | Sub-agent definitions, plugin registration, `permission.external_directory` ARCS data paths |
+| `overwrite` (default) | Always sets the value, even on re-deploy | Plugin registration |
 | `if-absent` | Only sets if the key isn't already present | User-preference keys: `model`, `small_model`, `agent.{build,plan,general}.model`, `lsp` |
+| `merge` | Deep-merge: adds new keys, never overwrites existing user values | Sub-agent definitions, `permission.external_directory` |
 
-This means: **provider/model routing and LSP enablement seed on first install but never re-stamp.** Pick `tvlk-provider/...`, `github-copilot/...`, or anything else once and re-deploys preserve your choice. Set `lsp: false` and ARCS won't flip it back on. Sub-agent prompts and skills stay maintained by the bundle.
+This means: **your config is always respected.** Provider/model routing seeds on first install but never re-stamps. Sub-agent definitions get new fields (prompt paths, descriptions) on re-deploy but your model overrides survive. JSONC comments in `opencode.json` are supported.
 
 ---
 
