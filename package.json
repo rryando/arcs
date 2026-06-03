@@ -1,6 +1,6 @@
 {
   "name": "@rryando/arcs",
-  "version": "3.2.5",
+  "version": "3.2.6",
   "description": "ARCS — DAG-based task orchestration for AI agents. Persistent workflow continuity via graph-structured context.",
   "type": "module",
   "main": "dist/index.js",
@@ -39,7 +39,6 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "postinstall": "node scripts/arcs-init.mjs",
     "init": "node dist/index.js init",
     "lint": "biome check src/ test/",
     "lint:fix": "biome check --fix src/ test/",
