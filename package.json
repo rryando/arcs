@@ -58,6 +58,5 @@
     "vite": "^6.4.1",
     "vitest": "^3.2.4",
     "@types/bun": "latest"
-  },
-  "private": true
+  }
 }
