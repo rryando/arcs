@@ -53,6 +53,7 @@ describe("checked-in opencode bundle pruning", () => {
       "prompts/code-reviewer.txt",
       "prompts/devil-advocate.txt",
       "prompts/docs-researcher.txt",
+      "prompts/graph-explorer.txt",
       "prompts/oncall-ops.txt",
       "prompts/qa-analyst.txt",
       "prompts/software-engineer.txt",

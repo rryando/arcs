@@ -120,9 +120,11 @@ describe("opencode ARCS bundle bundle", () => {
           mode: "if-absent",
         },
         {
-          path: ["agent", "explore", "model"],
-          value: "github-copilot/claude-haiku-4.5",
-          mode: "if-absent",
+          path: ["agent", "graph-explorer"],
+          value: expect.objectContaining({
+            mode: "subagent",
+            model: "github-copilot/claude-haiku-4.5",
+          }),
         },
         {
           path: ["agent", "code-reviewer"],

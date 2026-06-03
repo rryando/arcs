@@ -72,6 +72,7 @@ function curatedBundlePayloadFiles(): string[] {
     "prompts/code-reviewer.txt",
     "prompts/devil-advocate.txt",
     "prompts/docs-researcher.txt",
+    "prompts/graph-explorer.txt",
     "prompts/oncall-ops.txt",
     "prompts/qa-analyst.txt",
     "prompts/software-engineer.txt",
@@ -307,7 +308,8 @@ describe("opencode ARCS bundle installer", () => {
           general: {
             model: "github-copilot/claude-opus-4.6",
           },
-          explore: {
+          "graph-explorer": {
+            mode: "subagent",
             model: "github-copilot/claude-haiku-4.5",
           },
           "code-reviewer": {
