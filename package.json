@@ -1,6 +1,6 @@
 {
   "name": "@rryando/arcs",
-  "version": "3.2.4",
+  "version": "3.2.5",
   "description": "ARCS — DAG-based task orchestration for AI agents. Persistent workflow continuity via graph-structured context.",
   "type": "module",
   "main": "dist/index.js",
@@ -56,6 +56,8 @@
     "@types/node": "^22.15.3",
     "typescript": "^5.8.3",
     "vite": "^6.4.1",
-    "vitest": "^3.2.4"
-  }
+    "vitest": "^3.2.4",
+    "@types/bun": "latest"
+  },
+  "private": true
 }

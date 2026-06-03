@@ -234,6 +234,7 @@ All commands: `arcs <command> [args] --json`. Output: `{ok, data}` on success, `
 | Command | Purpose |
 |---------|---------|
 | `arcs project init` | Register current directory as a project |
+| `arcs project update-doc <slug> <doc> --content="..."` | Update a project doc inline |
 | `arcs project list` | List all tracked projects |
 | `arcs context [slug]` | Full context assembly (audience-targeted) |
 | `arcs search <slug> "<query>"` | BM25 + graph-scored search across DAG |
@@ -256,6 +257,15 @@ All commands: `arcs <command> [args] --json`. Output: `{ok, data}` on success, `
 | `--help` | Per-command usage |
 
 Full command discovery: `arcs --commands --json`.
+
+> **Batch op format** — fields at top level, NOT nested under `params`:
+> ```json
+> {"op":"task-create",    "slug":"<slug>","title":"...","priority":"medium","planId":"..."}
+> {"op":"task-transition","slug":"<slug>","taskId":"...","status":"done"}
+> {"op":"doc-update",     "slug":"<slug>","doc":"overview","content":"..."}
+> {"op":"knowledge-create","slug":"<slug>","title":"...","kind":"lesson","summary":"...","body":"..."}
+> ```
+> Nested `{op, params:{...}}` format is also accepted (unwrapped automatically).
 
 ---
 
@@ -291,6 +301,8 @@ The orchestrator dispatches specialist sub-agents with scoped prompts:
 | **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries |
 | **arcs-docs** | DAG health, knowledge curation | SYNC workflow |
 
+| `arcs enriching-graphify-proposals` | Triage auto-extracted structural proposals |
+
 ### Skills (loaded per-dispatch)
 
 | Category | Skills |
@@ -298,7 +310,7 @@ The orchestrator dispatches specialist sub-agents with scoped prompts:
 | **Work mode** (pick one) | `quick-dev`, `code-agent`, `test-driven-development`, `brainstorming` |
 | **Lifecycle** | `writing-plans`, `executing-plans`, `subagent-driven-development` |
 | **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
-| **Tooling** | `to-diagram`, `init-project`, `caveman-commit` |
+| **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-graphify-proposals` |
 
 ---
 
@@ -350,7 +362,7 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Vitest suite (824 tests) |
+| `npm test` | Vitest suite (832 tests) |
 | `npm run typecheck` | Type check without emit |
 | `npm run lint` | Biome lint + format |
 

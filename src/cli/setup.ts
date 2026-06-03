@@ -1,8 +1,10 @@
 import { execSync, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { detectGraphify } from "../utils/graphify.js";
+import { PACKAGE_ROOT } from "../utils/paths.js";
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
   type ArcsConfig,
@@ -23,6 +25,21 @@ import {
 // ---------------------------------------------------------------------------
 // TUI Wizard
 // ---------------------------------------------------------------------------
+
+/**
+ * Reads the ARCS package version from package.json.
+ * Returns an empty string if it cannot be read.
+ */
+function readVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, "package.json"), "utf-8")) as {
+      version: string;
+    };
+    return pkg.version;
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Runs the interactive setup wizard.
@@ -57,7 +74,13 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   const isInit = mode === "init";
 
   console.clear();
-  p.intro(color.bgCyan(color.black(isInit ? " ARCS setup " : " ARCS config ")));
+  const version = readVersion();
+  const versionSuffix = version ? ` v${version} ` : " ";
+  p.intro(
+    color.bgCyan(
+      color.black(isInit ? ` ARCS setup ${versionSuffix}` : ` ARCS config ${versionSuffix}`),
+    ),
+  );
 
   let selectedPlatforms: string[] = [];
 
