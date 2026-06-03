@@ -33,6 +33,7 @@ const preservedOutputFiles = new Set([
   "prompts/code-reviewer.txt",
   "prompts/docs-researcher.txt",
   "prompts/devil-advocate.txt",
+  "prompts/graph-explorer.txt",
   // Orchestrator prompt files — generated from src/cli/arcs-orchestrate*.ts during
   // bundle build (see generateOrchestratorPrompts() below). TS modules remain the
   // canonical source; these .txt files are committed mirrors so the bundle is

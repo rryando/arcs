@@ -282,6 +282,7 @@ The orchestrator dispatches specialist sub-agents with scoped prompts:
 
 | Sub-Agent | Role | When |
 |-----------|------|------|
+| **graph-explorer** | DAG-first knowledge + code exploration | EXPLORE — any "where is X / what depends on Y" query |
 | **software-engineer** | Writes code, runs tests | EXECUTE — bounded tasks |
 | **system-architect** | Module boundaries, plan creation | BRAINSTORM — design-open |
 | **tech-architect** | Deep analysis, trade-offs | Analysis without edits |
@@ -368,7 +369,7 @@ The bundle merges a small set of keys into your `~/.config/opencode/opencode.jso
 | Mode | Behavior | Used for |
 |------|----------|----------|
 | `overwrite` (default) | Always sets the value, even on re-deploy | Sub-agent definitions, plugin registration, `permission.external_directory` ARCS data paths |
-| `if-absent` | Only sets if the key isn't already present | User-preference keys: `model`, `small_model`, `agent.{build,plan,general,explore}.model`, `lsp` |
+| `if-absent` | Only sets if the key isn't already present | User-preference keys: `model`, `small_model`, `agent.{build,plan,general}.model`, `lsp` |
 
 This means: **provider/model routing and LSP enablement seed on first install but never re-stamp.** Pick `tvlk-provider/...`, `github-copilot/...`, or anything else once and re-deploys preserve your choice. Set `lsp: false` and ARCS won't flip it back on. Sub-agent prompts and skills stay maintained by the bundle.
 

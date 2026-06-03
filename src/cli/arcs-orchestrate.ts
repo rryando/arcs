@@ -75,7 +75,7 @@ flowchart TD
 Before acting, state: (1) detected intent, (2) workflow plan, (3) assumptions.
 
 ### Clarification Discipline
-- Gather context FIRST (T0 + explore sub-agent). Questions come AFTER.
+- Gather context FIRST (T0 + graph-explorer sub-agent). Questions come AFTER.
 - Challenge before accepting: "What breaks without this? Who is blocked?" If answer is hypothetical, push back.
 - Ask only when 2+ materially divergent irreversible paths exist. One question, 2-4 numbered options.
 - Trivial ambiguities → decide and declare, don't ask.
@@ -161,7 +161,7 @@ Use \`recommendedSurface\` to pick the routing branch: \`QUEUE\` → EXECUTE, \`
 
 | Agent | Use when | Core skills it loads |
 |-------|----------|---------------------|
-| \`explore\` | Codebase reads, file/symbol search, DAG body fetches, "where does X live", quick recon | none (read-only) |
+| \`graph-explorer\` | Codebase reads, knowledge graph queries, DAG body fetches, "where does X live", "what depends on Y", quick recon — DAG first, file-system fallback | none (read-only) |
 | \`software-engineer\` | Implementation: write code, run tests, ship features, follow plan tasks | quick-dev, code-agent, test-driven-development, executing-plans, finishing-a-development-branch |
 | \`system-architect\` | Module boundaries, plan creation, migration design, cross-project structure, diagram-as-execution-map authoring | brainstorming, writing-plans, to-diagram, dispatching-parallel-agents |
 | \`tech-architect\` | Deep analysis without edits, refactor guidance, trade-off evaluation, structural root-cause | brainstorming, writing-plans |
@@ -177,8 +177,8 @@ Use \`recommendedSurface\` to pick the routing branch: \`QUEUE\` → EXECUTE, \`
 
 | Situation | Primary agent | Notes |
 |-----------|--------------|-------|
-| Codebase read / "where is X" | \`explore\` | Default for any T1+ read |
-| DAG body read beyond T0 | \`explore\` | Pass \`arcs <get> --body --json\` calls |
+| Codebase read / "where is X" | \`graph-explorer\` | DAG first (arcs search/related/context), file-system fallback |
+| DAG body read beyond T0 | \`graph-explorer\` | Pass \`arcs <get> --body --json\` calls |
 | INIT — repo analysis (architecture) | \`system-architect\` | Owns architecture knowledge entries |
 | INIT — repo analysis (tech stack, features) | \`docs-researcher\` | Owns reference + feature entries |
 | BRAINSTORM scoping | \`system-architect\` (design open) or \`tech-architect\` (analysis-heavy) | |
@@ -219,7 +219,7 @@ flowchart TD
 | \`quick-dev\` | Bounded change, API known, rename/refactor/extract/config nudge |
 | \`code-agent\` | 50–90% clear, 1–2 open decisions resolvable by repo inspection |
 | \`test-driven-development\` | Any feature or bugfix where a failing test can be written first |
-| \`brainstorming\` | Design open, scope ambiguous, must explore before plan |
+| \`brainstorming\` | Design open, scope ambiguous, requires discovery work before plan |
 | \`writing-plans\` | Have a spec, need a structured multi-step plan |
 | \`executing-plans\` | Plan exists, execute tasks in separate session with checkpoints |
 | \`subagent-driven-development\` | Multi-step plan with independent tasks in current session |
@@ -368,7 +368,7 @@ Gaps: [anything needing attention]
 
 ### EXPLORE Workflow
 
-T0 orient → dispatch \`explore\` sub-agent per question → if durable discovery: \`arcs knowledge create\` → report findings.
+T0 orient → dispatch \`graph-explorer\` sub-agent per question → if durable discovery: \`arcs knowledge create\` → report findings.
 
 ### MULTI Workflow
 

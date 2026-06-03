@@ -88,11 +88,21 @@
       {
         "path": [
           "agent",
-          "explore",
-          "model"
+          "graph-explorer"
         ],
-        "value": "github-copilot/claude-haiku-4.5",
-        "mode": "if-absent"
+        "value": {
+          "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context before falling back to file-system tools. Replaces vanilla explore for ARCS projects.",
+          "mode": "subagent",
+          "model": "github-copilot/claude-haiku-4.5",
+          "permission": {
+            "edit": "allow",
+            "bash": "allow",
+            "webfetch": "allow",
+            "mcp": "allow",
+            "external_directory": { "*": "allow" }
+          },
+          "prompt": "{file:./prompts/graph-explorer.txt}"
+        }
       },
       {
         "path": [
