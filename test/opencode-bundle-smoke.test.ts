@@ -96,6 +96,7 @@ describe("opencode ARCS bundle bundle", () => {
       { source: "prompts/code-reviewer.txt", destination: "prompts/code-reviewer.txt" },
       { source: "prompts/docs-researcher.txt", destination: "prompts/docs-researcher.txt" },
       { source: "prompts/devil-advocate.txt", destination: "prompts/devil-advocate.txt" },
+      { source: "prompts/graph-explorer.txt", destination: "prompts/graph-explorer.txt" },
     ]);
     expect(manifest.config.requiredMerges).toEqual(
       expect.arrayContaining([

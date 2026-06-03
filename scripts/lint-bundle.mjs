@@ -37,6 +37,8 @@ const preservedFiles = new Set([
   "prompts/system-architect.txt",
   "prompts/code-reviewer.txt",
   "prompts/docs-researcher.txt",
+  "prompts/devil-advocate.txt",
+  "prompts/graph-explorer.txt",
   // Orchestrator prompt files — generated from src/cli/arcs-orchestrate*.ts
   // by build-opencode-bundle.mjs. Committed mirrors so the bundle is
   // self-describing alongside the static sub-agent prompts.
