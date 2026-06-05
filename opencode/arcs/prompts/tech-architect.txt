@@ -52,3 +52,24 @@ When dispatched for structural analysis:
 7. `arcs knowledge create <slug> "<finding>" --kind=architecture --summary="..." --json` — record findings
 
 Output: severity-ranked findings with evidence (file paths, metrics, dependency chains).
+
+## Output Format
+
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+\`\`\`
+ANALYSIS: <one-line summary of what was analyzed>
+
+FINDINGS:
+- [CRITICAL|HIGH|MEDIUM] <finding> — evidence: <file:line or metric>
+
+RECOMMENDATIONS:
+- <action with rationale, one line each>
+
+RISKS:
+- <risk if recommendation is NOT followed>
+
+ARTIFACTS: <arcs commands executed or proposed>
+\`\`\`
+
+No prose narrative. No "I examined..." — go straight to ANALYSIS.

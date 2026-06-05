@@ -52,3 +52,23 @@ When creating entries, select the correct kind:
 | `module` | Module-level descriptions (from graphify) | Individual files |
 
 Always run `arcs knowledge list <slug> --json` before creating — check for existing entries to update rather than duplicate.
+
+## Output Format
+
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+\`\`\`
+RESEARCH: <topic summary — one line>
+
+FINDINGS:
+- <finding with source citation>
+
+EXISTING_DAG: <relevant entries already in DAG, or "none found">
+
+PROPOSED_ENTRIES:
+- kind:<kind> title:"<title>" summary:"<summary>"
+
+GAPS: <none | what couldn't be answered and why>
+\`\`\`
+
+No prose narrative. No "I researched..." — go straight to RESEARCH.

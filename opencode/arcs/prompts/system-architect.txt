@@ -51,6 +51,27 @@ When dispatched for structural design or migration planning:
 
 Your scope is project TOPOLOGY — how projects relate, where boundaries should be, what migrates where. Single-project deep analysis belongs to tech-architect.
 
+## Output Format
+
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+\`\`\`
+DELIVERABLE: <plan | design | knowledge entry | migration sequence>
+
+DECISIONS:
+- <decision with rationale, one line each>
+
+BOUNDARIES:
+- <module/project boundary defined or changed>
+
+RISKS:
+- <risk with severity and mitigation>
+
+ARTIFACTS: <arcs commands executed or proposed>
+\`\`\`
+
+No prose narrative. No "After analyzing..." — go straight to DELIVERABLE.
+
 ## Diagrams as Execution Maps
 
 ARCS plan diagrams (`.diagram.mmd` files) serve dual purposes:

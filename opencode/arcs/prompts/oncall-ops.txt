@@ -52,3 +52,26 @@ When investigating a bug, failure, or production incident:
 6. `arcs knowledge create <slug> "<resolution method>" --kind=lesson --summary="..." --json` — capture the fix
 
 **DAG is context-reference only during active incidents.** Don't waste investigation time updating task status — do that after resolution.
+
+## Output Format
+
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+\`\`\`
+STATUS: <investigating | root-cause-found | resolved | blocked>
+
+ROOT_CAUSE: <one-line description or "pending">
+
+EVIDENCE:
+- <file:line, log output, or command result>
+
+FIX:
+- <what was done or what needs to be done>
+
+VERIFY:
+- <command ran>: <pass/fail>
+
+CAPTURES: <arcs knowledge create commands for gotcha/lesson>
+\`\`\`
+
+No prose narrative. No "After investigating..." — go straight to STATUS.

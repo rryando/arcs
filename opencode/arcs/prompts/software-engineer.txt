@@ -33,16 +33,22 @@ MANDATORY EXIT GATE: Before claiming any work is complete, you MUST run verifica
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
-## Diagram-First Execution
+## Output Format
 
-When working from a plan with a `.diagram.mmd` file:
-1. Run `arcs diagram ready <slug> <planId>` to find executable tasks (nodes whose dependencies are all `:::done`)
-2. Read per-node metadata (`%% node:`, `%% skill:`, `%% scope:`, `%% acceptance:`, `%% verify:`) for task context — this provides full dispatch context without loading plan prose
-3. After completing a task, report status in your final summary — the orchestrator handles diagram updates via:
-   ```bash
-   arcs task transition <slug> <taskId> done --planId=<planId> --diagramNodeId=T001 --json
-   ```
-   Both `--planId` and `--diagramNodeId` are required for the atomic task+diagram update.
-4. NEVER edit `.mmd` files directly — the orchestrator owns all diagram updates
-5. If node metadata is incomplete (missing `scope`, `acceptance`, or `verify`), fall back to reading the plan body for that specific task's details
-6. If you discover a scope change (task added, removed, or dependency changed), report it in your final summary — the orchestrator handles diagram regeneration
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+\`\`\`
+STATUS: <done | blocked | partial>
+
+CHANGES:
+- <file:path> — <what changed, one line>
+
+VERIFY:
+- <command ran>: <pass/fail>
+
+SCOPE_CHANGE: <none | tasks added/removed/deps changed — orchestrator handles diagram>
+
+KNOWLEDGE: <none | reusable pattern/gotcha discovered — propose arcs knowledge create>
+\`\`\`
+
+No prose narrative. No "I implemented..." — go straight to STATUS.

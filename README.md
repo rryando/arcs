@@ -179,10 +179,11 @@ flowchart TD
 
 The orchestrator:
 1. **Orients** — calls `arcs brief` for the T0 routing envelope (~1 KB)
-2. **Classifies** — detects intent (INIT / BRAINSTORM / EXECUTE / SYNC)
-3. **Routes** — delegates to specialist sub-agents with scoped prompts
-4. **Executes** — `arcs next` picks dependency-safe tasks; sub-agents implement them
-5. **Advances** — `arcs done` completes tasks, automatically unblocking dependents
+2. **Classifies** — detects intent (INIT / BRAINSTORM / EXECUTE / SYNC / EXPLORE)
+3. **Delegates** — dispatches specialist sub-agents in parallel when possible
+4. **Consumes** — parses structured sub-agent output (STATUS, CHANGES, VERIFY)
+5. **Persists** — writes to DAG: task transitions, knowledge captures, plan updates
+6. **Advances** — `arcs done` completes tasks, automatically unblocking dependents
 
 ### T0 Routing Envelope (the operating brief)
 
@@ -294,20 +295,33 @@ Queries: `arcs search` uses BM25 for text + graph traversal (weighted BFS) for r
 
 ## Sub-Agents
 
-The orchestrator dispatches specialist sub-agents with scoped prompts:
+The orchestrator is **delegation-first** — it never reads code, runs tests, or explores. It dispatches specialist sub-agents with scoped prompts and consumes their structured (non-prose) output:
 
 | Sub-Agent | Role | When |
 |-----------|------|------|
-| **graph-explorer** | DAG-first knowledge + code exploration | EXPLORE — any "where is X / what depends on Y" query |
+| **graph-explorer** | DAG-first knowledge + code exploration | Any "where is X / what depends on Y" query |
 | **software-engineer** | Writes code, runs tests | EXECUTE — bounded tasks |
 | **system-architect** | Module boundaries, plan creation | BRAINSTORM — design-open |
 | **tech-architect** | Deep analysis, trade-offs | Analysis without edits |
 | **oncall-ops** | Debugging, log triage, bisect | Bugs, test failures |
 | **code-reviewer** | Pre-merge review | PR review, phase gates |
-| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries |
+| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries (mandatory) |
 | **arcs-docs** | DAG health, knowledge curation | SYNC workflow |
+| **docs-researcher** | External research, documentation | INIT tech-stack scan |
+| **qa-analyst** | Convention audits, compliance | Read-only audits |
 
-| `arcs enriching-graphify-proposals` | Triage auto-extracted structural proposals |
+All sub-agents return **structured output** (not prose) for token-efficient orchestrator consumption:
+
+```
+STATUS: done
+CHANGES:
+- src/foo.ts — added validation
+VERIFY:
+- vitest run test/foo.test.ts: pass
+KNOWLEDGE: none
+```
+
+The orchestrator parses STATUS/VERDICT first, extracts KNOWLEDGE/CAPTURES for DAG persistence, and routes SCOPE_CHANGE to diagram regeneration.
 
 ### Skills (loaded per-dispatch)
 
@@ -368,7 +382,7 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Vitest suite (~824 tests) |
+| `npm test` | Vitest suite (~833 tests) |
 | `npm run typecheck` | Type check without emit |
 | `npm run lint` | Biome lint + format |
 

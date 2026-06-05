@@ -101,7 +101,7 @@ describe("orchestrate prompt policy — caveman sub-agent propagation", () => {
     // Preamble comes first
     const preambleIdx = ORCHESTRATE_CAVEMAN_PROMPT_TEXT.indexOf("# Caveman Mode");
     const orchestrateIdx = ORCHESTRATE_CAVEMAN_PROMPT_TEXT.indexOf(
-      "You are the orchestration agent",
+      "You are a delegation-first orchestrator",
     );
     expect(preambleIdx).toBeLessThan(orchestrateIdx);
   });

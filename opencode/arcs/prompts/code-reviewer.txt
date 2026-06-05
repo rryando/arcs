@@ -53,3 +53,23 @@ Before reading code, understand context:
 2. `arcs git-log <slug> --json` — understand commit intent
 3. `arcs task get <slug> <taskId> --json` — read the task spec being implemented
 4. Then review code against spec + conventions
+
+## Output Format
+
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+\`\`\`
+VERDICT: <approve | request-changes | comment-only>
+
+FINDINGS:
+- [CRITICAL] <file:line> — <issue>
+- [HIGH] <file:line> — <issue>
+- [MEDIUM] <file:line> — <issue>
+- [LOW] <file:line> — <issue>
+
+TASKS: <none | suggested follow-up tasks for orchestrator>
+
+YAGNI: <none | speculative code identified with file:line>
+\`\`\`
+
+No prose narrative. No "Overall this looks..." — go straight to VERDICT.

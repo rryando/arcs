@@ -122,3 +122,35 @@ When working with plans that have `.diagram.mmd` files:
 5. **Scope changes:** For topology changes (task added/removed/dependency changed), report the change back to the orchestrator — the orchestrator regenerates via `arcs diagram sort-metadata <slug> <planId> --json`
 6. **Ownership:** Only the orchestrator/coordinator writes to `.mmd` files. Implementation sub-agents NEVER edit diagrams.
 7. **Fallback:** If node metadata is incomplete (missing `scope` or `acceptance`), read the plan body for that task's details
+
+## Output Format
+
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+For SYNC operations, return:
+```
+SYNC_REPORT:
+  staleness: <N days, M commits>
+  knowledge: <created:N updated:N>
+  tasks: <transitioned:N>
+  plans: <updated:N>
+  docs: <updated:N>
+  diagrams: <drifted:N repaired:N>
+
+MUTATIONS:
+- <arcs command executed and result>
+
+GAPS: <none | issues needing orchestrator attention>
+```
+
+For other operations (knowledge curation, diagram work):
+```
+STATUS: <done | partial | blocked>
+
+MUTATIONS:
+- <arcs command executed and result>
+
+FINDINGS: <none | issues discovered during work>
+```
+
+No prose narrative. No "I completed the sync..." — go straight to the structured report.

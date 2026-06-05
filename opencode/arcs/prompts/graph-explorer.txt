@@ -107,8 +107,18 @@ All commands support `--json` for machine-readable output. Reads return `{ok, da
 
 ## Output Format
 
-Return a structured answer:
-1. **Answer** — direct response to the question
-2. **Evidence** — DAG entry IDs or file:line citations
-3. **Fallback used** — if file-system tools were needed, state why the DAG was insufficient
-4. **Proposed captures** — any `arcs knowledge create` commands for durable findings
+Your output is consumed by the orchestrator (an LLM), not a human. Be structured and terse.
+
+```
+ANSWER: <direct response — facts only, no filler>
+
+EVIDENCE:
+- <DAG entry ID or file:line citation>
+- <DAG entry ID or file:line citation>
+
+FALLBACK: <none | reason DAG was insufficient>
+
+CAPTURES: <none | proposed arcs knowledge create commands>
+```
+
+Omit FALLBACK/CAPTURES if none. No prose preamble. No "I found that..." — go straight to ANSWER.

@@ -74,10 +74,28 @@
       {
         "path": [
           "agent",
+          "build",
+          "temperature"
+        ],
+        "value": 0,
+        "mode": "if-absent"
+      },
+      {
+        "path": [
+          "agent",
           "plan",
           "model"
         ],
         "value": "github-copilot/claude-opus-4.6",
+        "mode": "if-absent"
+      },
+      {
+        "path": [
+          "agent",
+          "plan",
+          "temperature"
+        ],
+        "value": 0.5,
         "mode": "if-absent"
       },
       {
@@ -92,12 +110,22 @@
       {
         "path": [
           "agent",
+          "general",
+          "temperature"
+        ],
+        "value": 0.3,
+        "mode": "if-absent"
+      },
+      {
+        "path": [
+          "agent",
           "graph-explorer"
         ],
         "value": {
           "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context before falling back to file-system tools. Replaces vanilla explore for ARCS projects.",
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
+          "temperature": 0,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -118,6 +146,7 @@
           "description": "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
+          "temperature": 0.5,
           "prompt": "{file:./prompts/code-reviewer.txt}",
           "permission": {
             "edit": "allow",
@@ -138,6 +167,7 @@
           "description": "Handles documentation writing, research synthesis, OCR-adjacent extraction, and document-heavy analysis tasks.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
+          "temperature": 0.4,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -158,6 +188,7 @@
           "description": "Architecture and analysis specialist. Deep structural reasoning, refactor guidance, trade-off evaluation, and root cause analysis without making hasty edits.",
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
+          "temperature": 0.4,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -178,6 +209,7 @@
           "description": "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, executing-plans, finishing-a-development-branch, and aesthetic skills as needed.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
+          "temperature": 0,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -198,6 +230,7 @@
           "description": "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
+          "temperature": 0.1,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -218,6 +251,7 @@
           "description": "Quality enforcement specialist. Proactive code audits, review dispatch, convention compliance.",
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
+          "temperature": 0.3,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -238,6 +272,7 @@
           "description": "Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
           "mode": "subagent",
           "model": "github-copilot/claude-sonnet-4.6",
+          "temperature": 0.7,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -258,6 +293,7 @@
           "description": "Debugging and diagnosis specialist. Finds root causes through systematic investigation, log triage, bisect, and performance profiling.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
+          "temperature": 0.1,
           "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -278,6 +314,7 @@
           "description": "Architecture and design specialist. Module boundaries, dependency graphs, migration strategies, and cross-project design decisions.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
+          "temperature": 0.5,
           "permission": {
             "edit": "allow",
             "bash": "allow",
