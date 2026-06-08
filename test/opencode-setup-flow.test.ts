@@ -58,7 +58,20 @@ describe("OpenCode setup flow", () => {
     vi.mocked((prompts as any).__text).mockResolvedValue("");
     vi.mocked((prompts as any).__multiselect).mockResolvedValue(["opencode"]);
     vi.mocked(childProcess.spawnSync).mockClear();
-    vi.mocked(childProcess.execSync).mockClear();
+    const actualChildProcess =
+      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(childProcess.execSync).mockReset();
+    // Simulate opencode being installed/on PATH so the environment-detection
+    // gate in runSetup() passes regardless of the host (CI has neither binary).
+    vi.mocked(childProcess.execSync).mockImplementation(((cmd: any, ...rest: any[]) => {
+      if (typeof cmd === "string" && cmd.includes("which opencode")) {
+        return "/usr/local/bin/opencode\n" as any;
+      }
+      if (typeof cmd === "string" && cmd.includes("which claude")) {
+        return "/usr/local/bin/claude\n" as any;
+      }
+      return (actualChildProcess.execSync as any)(cmd, ...rest);
+    }) as any);
     vi.mocked(installer.detectArcsBundleInstall).mockReset();
     vi.mocked(installer.installArcsBundle).mockReset();
     vi.mocked(installer.detectArcsBundleInstall).mockReturnValue({
