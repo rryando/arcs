@@ -54,11 +54,12 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
-
+      # Build before test: scripts/arcs-cli.mjs imports from dist/.
       - name: Build (incl. opencode bundle)
         run: npm run build:opencode-bundle
+
+      - name: Test
+        run: npm test
 
       - name: Lint opencode bundle
         run: node scripts/lint-bundle.mjs
