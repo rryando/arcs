@@ -1,0 +1,105 @@
+name: Release
+
+# Manual, deliberate publishes. Pick the semver bump from the Actions UI.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump level"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry-run:
+        description: "Dry run (build + pack, no publish or push)"
+        required: false
+        default: false
+        type: boolean
+
+# Never run two releases at once.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Bump & Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the version commit + tag, create the release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      # --- Quality gate: a release must pass everything CI checks ---
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build (incl. opencode bundle)
+        run: npm run build:opencode-bundle
+
+      - name: Lint opencode bundle
+        run: node scripts/lint-bundle.mjs
+
+      # --- Version bump ---
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        run: |
+          NEW_VERSION=$(npm version ${{ github.event.inputs.bump }} -m "chore(release): %s")
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${NEW_VERSION}"
+
+      # --- Publish ---
+      - name: Publish to npm (dry run)
+        if: ${{ github.event.inputs.dry-run == 'true' }}
+        run: npm publish --access public --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        if: ${{ github.event.inputs.dry-run != 'true' }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # --- Push commit + tag, cut GitHub release (skipped on dry run) ---
+      - name: Push version commit and tag
+        if: ${{ github.event.inputs.dry-run != 'true' }}
+        run: git push --follow-tags origin HEAD:${{ github.ref_name }}
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry-run != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.version }}
+          name: ${{ steps.bump.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
