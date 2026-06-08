@@ -299,7 +299,7 @@ The orchestrator is **delegation-first** — it never reads code, runs tests, or
 
 | Sub-Agent | Role | When |
 |-----------|------|------|
-| **graph-explorer** | DAG-first knowledge + code exploration | Any "where is X / what depends on Y" query |
+| **graph-explorer** | DAG-first knowledge + code exploration + graphify graph traversal | Any "where is X / what depends on Y" query |
 | **software-engineer** | Writes code, runs tests | EXECUTE — bounded tasks |
 | **system-architect** | Module boundaries, plan creation | BRAINSTORM — design-open |
 | **tech-architect** | Deep analysis, trade-offs | Analysis without edits |
@@ -369,6 +369,16 @@ When [graphify](https://github.com/safishamsi/graphify) is on PATH, ARCS auto-ex
 | God nodes | 8 | Highest-connectivity modules |
 | Clusters | 8 | Directory-based module boundaries |
 | Couplings | 5 | Cross-module dependency links |
+
+### Graph-Explorer Integration
+
+The `graph-explorer` sub-agent uses graphify as **Step 5** in its query protocol — after ARCS DAG queries (Steps 1–4) but before any file-system fallback. When `graphify-out/graph.json` exists, the agent can:
+
+- **Query** — BFS/DFS traversal from matching nodes (`graphify query "..."`)
+- **Path** — shortest path between two concepts (call chains, dependency paths)
+- **Explain** — node neighborhood: all connections, relations, and source locations
+
+This provides fine-grained structural answers (individual call chains, coupling paths, function neighborhoods) that are richer than ARCS knowledge entries without resorting to grep/find.
 
 ---
 
