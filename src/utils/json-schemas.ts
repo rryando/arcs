@@ -49,14 +49,16 @@ export type RootMetaJson = z.infer<typeof rootMetaSchema>;
 // Per-project meta.json
 // ---------------------------------------------------------------------------
 
-export const syncStatsSchema = z.object({
-  docsUpdated: z.number().int().min(0),
-  knowledgeEntriesCreated: z.number().int().min(0),
-  knowledgeEntriesUpdated: z.number().int().min(0),
-  tasksTransitioned: z.number().int().min(0),
-  plansUpdated: z.number().int().min(0),
-  diagramsDrifted: z.number().int().min(0),
-});
+export const syncStatsSchema = z
+  .object({
+    docsUpdated: z.number().int().min(0).optional(),
+    knowledgeEntriesCreated: z.number().int().min(0).optional(),
+    knowledgeEntriesUpdated: z.number().int().min(0).optional(),
+    tasksTransitioned: z.number().int().min(0).optional(),
+    plansUpdated: z.number().int().min(0).optional(),
+    diagramsDrifted: z.number().int().min(0).optional(),
+  })
+  .passthrough();
 
 export type SyncStats = z.infer<typeof syncStatsSchema>;
 
