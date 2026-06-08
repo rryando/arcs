@@ -10,6 +10,7 @@ vi.mock("@clack/prompts", () => {
   const note = vi.fn();
   const text = vi.fn();
   const multiselect = vi.fn();
+  const select = vi.fn();
 
   return {
     intro: vi.fn(),
@@ -18,13 +19,23 @@ vi.mock("@clack/prompts", () => {
     cancel: vi.fn(),
     isCancel: () => false,
     spinner: () => ({ start: vi.fn(), stop: vi.fn() }),
+    log: {
+      info: vi.fn(),
+      success: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      step: vi.fn(),
+      message: vi.fn(),
+    },
     confirm,
     text,
     multiselect,
+    select,
     __confirm: confirm,
     __note: note,
     __text: text,
     __multiselect: multiselect,
+    __select: select,
   };
 });
 
