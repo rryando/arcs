@@ -59,9 +59,13 @@ describe("proposal-store", () => {
         const proposalsDir = join(dir, "proposals");
         mkdirSync(proposalsDir, { recursive: true });
         // Missing required fields (proposals, graphFingerprint, generatedAt)
-        writeFileSync(join(proposalsDir, "graphify.json"), JSON.stringify({ version: 1 }), "utf-8");
+        writeFileSync(
+          join(proposalsDir, "codegraph.json"),
+          JSON.stringify({ version: 1 }),
+          "utf-8",
+        );
 
-        await expect(readProposals(SLUG)).rejects.toThrow(/proposals|graphify\.json/i);
+        await expect(readProposals(SLUG)).rejects.toThrow(/proposals|codegraph\.json/i);
       });
     });
 
@@ -77,6 +81,45 @@ describe("proposal-store", () => {
         expect(result?.proposals[0]?.id).toBe("graphify-cluster-src-utils");
       });
     });
+
+    it("falls back to legacy proposals/graphify.json when codegraph.json is absent", async () => {
+      await withTempDataDir(async () => {
+        const dir = seedProject();
+        const proposalsDir = join(dir, "proposals");
+        mkdirSync(proposalsDir, { recursive: true });
+        // Seed only the legacy file — simulates a project created before the rename.
+        writeFileSync(
+          join(proposalsDir, "graphify.json"),
+          JSON.stringify(makeFile([makeProposal({ id: "legacy" })]), null, 2),
+          "utf-8",
+        );
+
+        const result = await readProposals(SLUG);
+        expect(result?.proposals).toHaveLength(1);
+        expect(result?.proposals[0]?.id).toBe("legacy");
+      });
+    });
+
+    it("removeProposal migrates a legacy file forward to codegraph.json", async () => {
+      await withTempDataDir(async () => {
+        const dir = seedProject();
+        const proposalsDir = join(dir, "proposals");
+        mkdirSync(proposalsDir, { recursive: true });
+        writeFileSync(
+          join(proposalsDir, "graphify.json"),
+          JSON.stringify(makeFile([makeProposal({ id: "a" }), makeProposal({ id: "b" })]), null, 2),
+          "utf-8",
+        );
+
+        const removed = await removeProposal(SLUG, "a");
+        expect(removed).toBe(true);
+
+        // The surviving proposal is now readable and the write landed on the new path.
+        expect(existsSync(join(proposalsDir, "codegraph.json"))).toBe(true);
+        const after = await readProposals(SLUG);
+        expect(after?.proposals.map((p) => p.id)).toEqual(["b"]);
+      });
+    });
   });
 
   describe("writeProposals", () => {
@@ -89,7 +132,7 @@ describe("proposal-store", () => {
         const payload = makeFile([makeProposal()]);
         await writeProposals(SLUG, payload);
 
-        const target = join(proposalsDir, "graphify.json");
+        const target = join(proposalsDir, "codegraph.json");
         expect(existsSync(target)).toBe(true);
 
         const raw = await readFile(target, "utf-8");
@@ -117,7 +160,7 @@ describe("proposal-store", () => {
 
         // No leftover lock file
         const dir = getProjectDir(SLUG);
-        expect(existsSync(join(dir, "proposals", "graphify.json.lock"))).toBe(false);
+        expect(existsSync(join(dir, "proposals", "codegraph.json.lock"))).toBe(false);
       });
     });
   });

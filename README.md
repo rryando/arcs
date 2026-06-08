@@ -96,7 +96,7 @@ Or select **ARCS Orchestrator** in OpenCode for full automation.
 | [Node.js](https://nodejs.org/) v18+ | Yes | Runtime |
 | [OpenCode](https://opencode.ai/) | Recommended | Agent host (orchestrator + sub-agents) |
 | [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host — `arcs init` deploys ARCS sub-agents with full model-tier selection |
-| [graphify](https://github.com/safishamsi/graphify) | No | Optional AST-based codebase knowledge extraction |
+| [codegraph](https://github.com/colbymchenry/codegraph) | No | Optional code-intelligence: per-project index, MCP-based exploration, structural knowledge extraction |
 
 ---
 
@@ -300,7 +300,7 @@ The orchestrator is **delegation-first** — it never reads code, runs tests, or
 
 | Sub-Agent | Role | When |
 |-----------|------|------|
-| **graph-explorer** | DAG-first knowledge + code exploration + graphify graph traversal | Any "where is X / what depends on Y" query |
+| **graph-explorer** | DAG-first knowledge + code exploration via codegraph MCP tools | Any "where is X / what depends on Y" query |
 | **software-engineer** | Writes code, runs tests | EXECUTE — bounded tasks |
 | **system-architect** | Module boundaries, plan creation | BRAINSTORM — design-open |
 | **tech-architect** | Deep analysis, trade-offs | Analysis without edits |
@@ -331,7 +331,7 @@ The orchestrator parses STATUS/VERDICT first, extracts KNOWLEDGE/CAPTURES for DA
 | **Work mode** (pick one) | `quick-dev`, `code-agent`, `test-driven-development`, `brainstorming` |
 | **Lifecycle** | `writing-plans`, `executing-plans`, `subagent-driven-development` |
 | **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
-| **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-graphify-proposals` |
+| **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-codegraph-proposals` |
 
 ---
 
@@ -361,25 +361,27 @@ The orchestrator parses STATUS/VERDICT first, extracts KNOWLEDGE/CAPTURES for DA
 
 ---
 
-## Graphify (Optional)
+## Codegraph (Optional)
 
-When [graphify](https://github.com/safishamsi/graphify) is on PATH, ARCS auto-extracts structural knowledge during INIT and SYNC:
+When [codegraph](https://github.com/colbymchenry/codegraph) is on PATH, ARCS builds a per-project index (`codegraph index`) during INIT and SYNC and auto-extracts structural knowledge proposals:
 
 | Category | Cap | What |
 |----------|-----|------|
-| God nodes | 8 | Highest-connectivity modules |
-| Clusters | 8 | Directory-based module boundaries |
+| God nodes | 8 | Highest-connectivity symbols (ranked by callers + callees / impact) |
+| Clusters | 8 | Directory-based module boundaries (pseudo-communities) |
 | Couplings | 5 | Cross-module dependency links |
+
+Codegraph is CLI-driven (Node ≥18 — no extra runtime), self-contained, 100% local, and auto-syncs its index via its own file watcher. All features degrade gracefully when the binary is absent.
 
 ### Graph-Explorer Integration
 
-The `graph-explorer` sub-agent uses graphify as **Step 5** in its query protocol — after ARCS DAG queries (Steps 1–4) but before any file-system fallback. When `graphify-out/graph.json` exists, the agent can:
+The `graph-explorer` sub-agent uses codegraph's **MCP tools** as **Step 5** in its query protocol — after ARCS DAG queries (Steps 1–4) but before any file-system fallback. When a `.codegraph/` index exists, the agent answers structural questions with near-zero file reads via:
 
-- **Query** — BFS/DFS traversal from matching nodes (`graphify query "..."`)
-- **Path** — shortest path between two concepts (call chains, dependency paths)
-- **Explain** — node neighborhood: all connections, relations, and source locations
+- **`codegraph_explore`** — primary: "how does X work" / "how does X reach Y" / survey an area, returning verbatim source grouped by file plus a relationship map
+- **`codegraph_search` / `codegraph_node`** — locate a symbol / fetch its full source
+- **`codegraph_callers` / `codegraph_callees` / `codegraph_impact`** — walk call flow and blast radius before edits
 
-This provides fine-grained structural answers (individual call chains, coupling paths, function neighborhoods) that are richer than ARCS knowledge entries without resorting to grep/find.
+This provides fine-grained structural answers (individual call chains, coupling paths, symbol neighborhoods) that are richer than ARCS knowledge entries without resorting to grep/find.
 
 ---
 

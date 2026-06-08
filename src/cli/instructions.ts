@@ -37,6 +37,20 @@ function _deepSet(obj: Record<string, unknown>, keys: string[], value: unknown):
   current[keys[keys.length - 1]] = value;
 }
 
+/**
+ * Ensure the codegraph MCP server entry exists in an opencode config (mutates
+ * in place). Idempotent: only sets/overwrites the `codegraph` key under `mcp`,
+ * preserving any sibling MCP entries the user may have configured.
+ */
+function ensureCodegraphMcpEntry(config: Record<string, unknown>): void {
+  const mcp =
+    typeof config.mcp === "object" && config.mcp !== null && !Array.isArray(config.mcp)
+      ? (config.mcp as Record<string, unknown>)
+      : {};
+  mcp.codegraph = { type: "local", command: ["codegraph", "serve", "--mcp"], enabled: true };
+  config.mcp = mcp;
+}
+
 // ---------------------------------------------------------------------------
 // Agent Model Resolution
 // ---------------------------------------------------------------------------
@@ -224,6 +238,8 @@ export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteRes
   existing.agent = orderedAgents;
   // Set ARCS Orchestrator as the startup default agent (Caveman is opt-in via Tab)
   existing.default_agent = ARCS_AGENT_KEY;
+  // Inject the codegraph MCP server so graph-explorer can call mcp__codegraph__*
+  ensureCodegraphMcpEntry(existing);
   writeJsonFile(configFile, existing);
 
   return {

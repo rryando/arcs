@@ -1,17 +1,17 @@
 ---
-name: enriching-graphify-proposals
-description: Use when `arcs project init` or `arcs graphify-sync` returns `pending_enrichment: true` — drives the per-proposal verdict loop (keep/drop/merge) and produces agent-authored knowledge entries from raw graphify proposals.
+name: enriching-codegraph-proposals
+description: Use when `arcs project init` or `arcs codegraph-sync` returns `pending_enrichment: true` — drives the per-proposal verdict loop (keep/drop/merge) and produces agent-authored knowledge entries from raw codegraph proposals.
 ---
 
-# Skill: enriching-graphify-proposals
+# Skill: enriching-codegraph-proposals
 
 ## When
 
-The CLI surfaced raw graphify proposals and is waiting for an agent to turn them into real knowledge entries. Mandatory triggers:
+The CLI surfaced raw codegraph proposals and is waiting for an agent to turn them into real knowledge entries. Mandatory triggers:
 
-- `arcs project init` returned `graphify.pending_enrichment: true` in its JSON envelope.
-- `arcs graphify-sync` returned `pending_enrichment: true`.
-- User said "enrich the proposals", "process the graphify queue", "promote the pending proposals", or similar.
+- `arcs project init` returned `codegraph.pending_enrichment: true` in its JSON envelope.
+- `arcs codegraph-sync` returned `pending_enrichment: true`.
+- User said "enrich the proposals", "process the codegraph queue", "promote the pending proposals", or similar.
 
 > **Read-write skill.** This skill mutates the DAG via `arcs proposal promote/drop`. Self-score ≥80% via `confidence-gate` before each promote.
 
@@ -75,7 +75,7 @@ Use `arcs proposal promote --merge-with=<existing-id>` when:
 - `suggestedDedupCandidates` lists an existing knowledge entry whose `kind` matches the proposal's natural kind, AND
 - The proposal adds genuinely new structural facts the existing entry does not already document (e.g. precise degree numbers, additional top hubs, cross-module edges, fileCount).
 
-The agent appends a `## From graphify analysis` section to the existing entry — it does NOT replace prior body content. Treat the existing entry as the spine; the merge adds a graph-evidence rib.
+The agent appends a `## From codegraph analysis` section to the existing entry — it does NOT replace prior body content. Treat the existing entry as the spine; the merge adds a graph-evidence rib.
 
 ## Enrichment Output Contract
 

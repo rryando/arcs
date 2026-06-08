@@ -234,7 +234,7 @@ Auto-layer signals (announce, don't ask):
 - 2+ independent sub-problems → `subagent-driven-development`
 - GitHub PR + "deep review" → `deep-pr-review` on `code-reviewer`
 
-Full catalogue (14 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-graphify-proposals
+Full catalogue (14 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals
 
 Support skills (layered on work-mode): receiving-code-review, auditing-a-feature, finishing-a-development-branch, dispatching-parallel-agents
 
@@ -250,7 +250,7 @@ Support skills (layered on work-mode): receiving-code-review, auditing-a-feature
 3. Present summary → user confirms → `arcs project init`
 4. `arcs project update-doc × 4`
 5. Fan out: `system-architect` + `docs-researcher` + `tech-architect` → dedup → `arcs knowledge create × N`
-6. If `data.graphify.pending_enrichment === true` → load `enriching-graphify-proposals`
+6. If `data.codegraph.pending_enrichment === true` → load `enriching-codegraph-proposals`
 
 ### BRAINSTORM Workflow
 1. Challenge: "What breaks? Who is blocked?" Apply YAGNI.
@@ -276,7 +276,7 @@ Constraints: Sub-agents must NOT manually patch .mmd for status transitions — 
 1. T0 → `arcs validate <slug> --json`
 2. Delegate to arcs-docs sub-agent with T0 + validate output + staleness
 3. Sub-agent audits/repairs/writes checkpoints — covers: overview.md, tasks.md, dependencies.md, knowledge.md, plans/ status, knowledge/ accuracy, .diagram.mmd diagram drift (classDef mismatch, phantom nodes), AGENTS.md staleness
-4. If graphify `pending_enrichment: true` → load enrichment skill
+4. If codegraph `pending_enrichment: true` → load enrichment skill
 5. Present sync report
 
 ### EXPLORE Workflow

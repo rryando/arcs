@@ -239,23 +239,25 @@ async function handleSyncAgentsMd(
 }
 
 // ---------------------------------------------------------------------------
-// graphify-sync
+// codegraph-sync
 // ---------------------------------------------------------------------------
 
-const graphifySyncParams = {
+const codegraphSyncParams = {
   slug: { type: "string", required: true, positional: 0, description: "Project slug" },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
-  path: "graphify-sync",
-  description: "Re-extract codebase graph and ingest new structural knowledge",
+  // Re-indexes the codebase via codegraph and ingests new structural facts as
+  // proposals (gated, not direct-write into knowledge).
+  path: "codegraph-sync",
+  description: "Re-index codebase via codegraph and ingest new structural knowledge proposals",
   mutation: true,
-  params: graphifySyncParams,
-  handler: handleGraphifySync,
+  params: codegraphSyncParams,
+  handler: handleCodegraphSync,
 });
 
-async function handleGraphifySync(
-  params: ParsedParams<typeof graphifySyncParams>,
+async function handleCodegraphSync(
+  params: ParsedParams<typeof codegraphSyncParams>,
   _flags: CommandFlags,
 ): Promise<CLIResult> {
   const slug = params.slug;
@@ -272,41 +274,41 @@ async function handleGraphifySync(
     return failure("missing_param", "No workspace paths configured for this project.");
   }
 
-  const { detectGraphify, runExtraction, ingestGraph } = await import("../../utils/graphify.js");
-  const { writeProposalsFile } = await import("../../utils/graphify-knowledge.js");
+  const { detectCodegraph, runIndex, ingestGraph } = await import("../../utils/codegraph.js");
+  const { writeProposalsFile } = await import("../../utils/codegraph-knowledge.js");
 
-  const info = detectGraphify();
+  const info = detectCodegraph();
   if (!info.available) {
-    return failure("internal_error", "graphify is not available on PATH.");
+    return failure("internal_error", "codegraph is not available on PATH.");
   }
 
   const workspace = workspacePaths[0];
-  const extraction = runExtraction(workspace);
-  if (!extraction.success) {
-    return failure("internal_error", `Extraction failed: ${extraction.error ?? "unknown error"}`);
+  const idx = runIndex(workspace);
+  if (!idx.success) {
+    return failure("internal_error", `Indexing failed: ${idx.error ?? "unknown error"}`);
   }
 
-  const { proposals, stats } = ingestGraph(extraction.graphJsonPath, slug);
-  let graphify:
+  const { proposals, stats } = ingestGraph(workspace, slug);
+  let codegraph:
     | { proposed: number; pending_enrichment?: true; hint?: string }
     | { proposed: number };
   if (proposals.length > 0) {
-    const { readFile } = await import("node:fs/promises");
-    const graphJsonContent = await readFile(extraction.graphJsonPath, "utf-8");
-    await writeProposalsFile(slug, proposals, graphJsonContent);
-    graphify = {
+    // codegraph has no graph.json — use the status object as a stable
+    // fingerprint source (node/edge counts change with the graph).
+    await writeProposalsFile(slug, proposals, JSON.stringify(idx.status));
+    codegraph = {
       proposed: proposals.length,
       pending_enrichment: true,
-      hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
+      hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich codegraph proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
     };
   } else {
-    graphify = { proposed: 0 };
+    codegraph = { proposed: 0 };
   }
 
   return success({
     workspace,
-    graphJsonPath: extraction.graphJsonPath,
+    status: idx.status,
     stats,
-    graphify,
+    codegraph,
   });
 }

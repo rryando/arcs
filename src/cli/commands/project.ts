@@ -236,10 +236,10 @@ async function handleProjectInit(
     rootMeta.projects.push({ id: slug, name, status: "draft", dependsOn: [] });
     await writeRootMeta(dataDir, rootMeta);
 
-    // Graphify: extract code graph and seed structural proposals (non-fatal)
+    // Codegraph: bootstrap the code graph index and seed structural proposals (non-fatal)
     // Only attempt if workspace looks like a real codebase (has .git or package.json)
-    // Skip when ARCS_SKIP_GRAPHIFY=1 (used in tests to avoid spawning real binaries)
-    let graphify: {
+    // Skip when ARCS_SKIP_CODEGRAPH=1 (used in tests to avoid spawning real binaries)
+    let codegraph: {
       proposed: number;
       pending_enrichment?: true;
       hint?: string;
@@ -248,38 +248,38 @@ async function handleProjectInit(
     const graphifyWorkspace = wsPath ?? process.cwd();
     const hasGit = existsSync(resolve(graphifyWorkspace, ".git"));
     const looksLikeCodebase = hasGit || existsSync(resolve(graphifyWorkspace, "package.json"));
-    const skipGraphify = process.env.ARCS_SKIP_GRAPHIFY === "1";
-    if (looksLikeCodebase && !skipGraphify) {
+    const skipCodegraph = process.env.ARCS_SKIP_CODEGRAPH === "1";
+    if (looksLikeCodebase && !skipCodegraph) {
       try {
-        const { detectGraphify, runExtraction, ingestGraph } = await import(
-          "../../utils/graphify.js"
+        const { detectCodegraph, runIndex, ingestGraph } = await import(
+          "../../utils/codegraph.js"
         );
-        const { writeProposalsFile } = await import("../../utils/graphify-knowledge.js");
-        const info = detectGraphify();
+        const { writeProposalsFile } = await import("../../utils/codegraph-knowledge.js");
+        const info = detectCodegraph();
         if (info.available) {
-          const extraction = runExtraction(graphifyWorkspace);
-          if (extraction.success) {
-            const { proposals, stats } = ingestGraph(extraction.graphJsonPath, slug);
+          // runIndex bootstraps the project's .codegraph index
+          // (codegraph index <workspace> --force --quiet) — this is the new value.
+          const idx = runIndex(graphifyWorkspace);
+          if (idx.success) {
+            const { proposals, stats } = ingestGraph(graphifyWorkspace, slug);
             if (proposals.length > 0) {
-              const graphJsonContent = await readFile(extraction.graphJsonPath, "utf-8");
-              await writeProposalsFile(slug, proposals, graphJsonContent);
-              graphify = {
+              // codegraph has no graph.json — use the status object as a stable
+              // fingerprint source (node/edge counts change with the graph).
+              await writeProposalsFile(slug, proposals, JSON.stringify(idx.status));
+              codegraph = {
                 proposed: stats.totalProposals,
                 pending_enrichment: true,
-                hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
+                hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich codegraph proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
+                hooksHint:
+                  "codegraph auto-syncs the index via its own file watcher (MCP server) — no git hook install needed.",
               };
             } else {
-              graphify = { proposed: 0 };
-            }
-            // Offer git hook for auto-refresh on commit
-            if (hasGit) {
-              graphify.hooksHint =
-                "Run `graphify hook install` in the workspace to auto-refresh the code graph on each commit.";
+              codegraph = { proposed: 0 };
             }
           }
         }
       } catch {
-        // Graphify failure never blocks project init
+        // Codegraph failure never blocks project init
       }
     }
 
@@ -313,7 +313,7 @@ async function handleProjectInit(
       name,
       status: "draft",
       dependsOn: [],
-      graphify,
+      codegraph,
       quickScan: quickScanResult,
     });
   } catch (err) {

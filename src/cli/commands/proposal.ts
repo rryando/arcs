@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
-// proposal commands — gated graphify ingestion surface
+// proposal commands — gated codegraph ingestion surface
 //
-// `proposal list`     read pending proposals from proposals/graphify.json
+// `proposal list`     read pending proposals from proposals/codegraph.json
 // `proposal promote`  enrich-and-promote a proposal into knowledge (create OR merge)
 // `proposal drop`     remove a proposal without promoting (records reason in envelope)
 // `proposal backfill` migrate legacy graphify-template knowledge entries back to proposals
@@ -40,7 +40,7 @@ import {
 import { failure, success } from "../output-envelope.js";
 
 // Mirrors the knowledge KIND_ENUM from `knowledge.ts`. Promote accepts the full
-// knowledge surface even though graphify only emits a subset of these kinds —
+// knowledge surface even though codegraph only emits a subset of these kinds —
 // the promotion step is the agent's chance to re-classify.
 const KIND_ENUM = [
   "lesson",
@@ -80,7 +80,7 @@ const proposalListParams = {
 
 defineCommand({
   path: "proposal list",
-  description: "List pending graphify proposals for a project",
+  description: "List pending codegraph proposals for a project",
   params: proposalListParams,
   handler: handleProposalList,
 });
@@ -146,7 +146,7 @@ const proposalPromoteParams = {
 
 defineCommand({
   path: "proposal promote",
-  description: "Promote a graphify proposal into a knowledge entry (create or merge)",
+  description: "Promote a codegraph proposal into a knowledge entry (create or merge)",
   mutation: true,
   params: proposalPromoteParams,
   handler: handleProposalPromote,
@@ -240,7 +240,7 @@ async function handleProposalPromote(
       const existingMeta = validateJson(rawMeta, knowledgeMetaSchema, targetMetaPath);
       const bodyPath = resolve(projectDir, existingMeta.file);
       const existingBody = existsSync(bodyPath) ? await readFile(bodyPath, "utf-8") : "";
-      const appended = `${existingBody.replace(/\s+$/, "")}\n\n## From graphify proposal\n\n${body}\n`;
+      const appended = `${existingBody.replace(/\s+$/, "")}\n\n## From codegraph proposal\n\n${body}\n`;
       await writeFile(bodyPath, appended, "utf-8");
       // Touch updatedAt and refresh sourceFiles if any new ones were supplied
       const mergedSourceFiles =
@@ -330,7 +330,7 @@ const proposalDropParams = {
 
 defineCommand({
   path: "proposal drop",
-  description: "Remove a graphify proposal without promoting it",
+  description: "Remove a codegraph proposal without promoting it",
   mutation: true,
   params: proposalDropParams,
   handler: handleProposalDrop,
@@ -360,7 +360,7 @@ async function handleProposalDrop(
 //
 // One-shot migration: scan the project's knowledge index for entries that
 // were emitted by the OLD graphify-template ingester (identified by anchored
-// title prefixes) and move them into proposals/graphify.json so the next
+// title prefixes) and move them into proposals/codegraph.json so the next
 // agent pass can re-enrich them through the proposal gate.
 //
 // Default mode is dry-run; pass --apply to mutate. Idempotent: re-running
