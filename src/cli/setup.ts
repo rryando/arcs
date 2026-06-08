@@ -11,9 +11,9 @@ import {
   extractModelPreFills,
   getAvailableModels,
   getClaudeCodeModels,
-  readClaudeCodeCurrentModel,
   type ModelTierConfig,
   type ProviderModels,
+  readClaudeCodeCurrentModel,
   readOpenCodeConfig,
   writeConfig,
 } from "./config.js";

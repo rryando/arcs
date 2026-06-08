@@ -98,7 +98,10 @@ describe("opencode ARCS bundle bundle", () => {
       { source: "prompts/devil-advocate.txt", destination: "prompts/devil-advocate.txt" },
       { source: "prompts/graph-explorer.txt", destination: "prompts/graph-explorer.txt" },
       { source: "prompts/arcs-orchestrate.txt", destination: "prompts/arcs-orchestrate.txt" },
-      { source: "prompts/arcs-orchestrate-caveman.txt", destination: "prompts/arcs-orchestrate-caveman.txt" },
+      {
+        source: "prompts/arcs-orchestrate-caveman.txt",
+        destination: "prompts/arcs-orchestrate-caveman.txt",
+      },
     ]);
     expect(manifest.config.requiredMerges).toEqual(
       expect.arrayContaining([
