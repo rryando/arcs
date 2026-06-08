@@ -31,8 +31,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
 const defaultBundleRoot = resolve(repoRoot, "opencode/arcs");
 const defaultConfigRoot = resolve(homedir(), ".claude");
 const defaultProjectRoot = repoRoot;

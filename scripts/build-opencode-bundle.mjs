@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   normalizeRelativePath,
@@ -8,7 +8,8 @@ import {
   validateDeclaredPath,
 } from "./lib/bundle-helpers.mjs";
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
 const defaultManifestPath = resolve(repoRoot, "opencode/arcs/bundle-runtime.json");
 const defaultOutputRoot = resolve(repoRoot, "opencode/arcs");
 // Files that are repo-authored and must not be pruned. The repo bundle

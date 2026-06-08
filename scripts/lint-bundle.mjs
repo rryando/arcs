@@ -9,9 +9,12 @@
 // Exit code: 0 if no errors, 1 if errors found.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = resolve(import.meta.dirname, "..");
+// import.meta.dirname is Node >=20.11; derive it for Node 18 compatibility.
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
 const defaultBundleRoot = resolve(repoRoot, "opencode/arcs");
 
 const bundleRoot = process.env.BUNDLE_LINT_BUNDLE_ROOT
