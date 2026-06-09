@@ -6,7 +6,7 @@
 
 [![npm](https://img.shields.io/npm/v/@rryando/arcs?color=cb3837&label=npm&logo=npm)](https://www.npmjs.com/package/@rryando/arcs)
 [![CI](https://github.com/rryando/arcs/actions/workflows/ci.yml/badge.svg)](https://github.com/rryando/arcs/actions/workflows/ci.yml)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -93,7 +93,7 @@ Or select **ARCS Orchestrator** in OpenCode for full automation.
 
 | Tool | Required | Notes |
 |------|----------|-------|
-| [Node.js](https://nodejs.org/) v18+ | Yes | Runtime |
+| [Node.js](https://nodejs.org/) v20+ | Yes | Runtime |
 | [OpenCode](https://opencode.ai/) | Recommended | Agent host (orchestrator + sub-agents) |
 | [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host — `arcs init` deploys ARCS sub-agents with full model-tier selection |
 | [codegraph](https://github.com/colbymchenry/codegraph) | No | Optional code-intelligence: per-project index, MCP-based exploration, structural knowledge extraction |
@@ -371,7 +371,7 @@ When [codegraph](https://github.com/colbymchenry/codegraph) is on PATH, ARCS bui
 | Clusters | 8 | Directory-based module boundaries (pseudo-communities) |
 | Couplings | 5 | Cross-module dependency links |
 
-Codegraph is CLI-driven (Node ≥18 — no extra runtime), self-contained, 100% local, and auto-syncs its index via its own file watcher. All features degrade gracefully when the binary is absent.
+Codegraph is CLI-driven (Node ≥20 — no extra runtime), self-contained, 100% local, and auto-syncs its index via its own file watcher. All features degrade gracefully when the binary is absent.
 
 ### Graph-Explorer Integration
 
