@@ -31,7 +31,7 @@ Used as the `body` field of `gh api repos/{owner}/{repo}/pulls/{pull_number}/rev
 ### Citations Used
 - AGENTS.md §<section> — <what was checked>
 - knowledge/<id> — <what was checked>
-- graphify — <observations, if run>
+- codegraph — <observations, if run>
 
 ---
 <!-- arcs:deep-review:meta version=1 commit=<HEAD_SHA> rubric=<activated> mode=<posting-mode> -->
@@ -51,7 +51,7 @@ Used as the `body` field of `gh api repos/{owner}/{repo}/pulls/{pull_number}/rev
 
 <optional 1-2 sentences of why, only if not obvious from problem>
 
-Citation: <AGENTS.md §x | knowledge/<id> | graphify | principle: <name>>
+Citation: <AGENTS.md §x | knowledge/<id> | codegraph | principle: <name>>
 
 ​```suggestion
 <replacement code — only for small line replacements>

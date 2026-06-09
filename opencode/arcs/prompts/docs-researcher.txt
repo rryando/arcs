@@ -49,7 +49,7 @@ When creating entries, select the correct kind:
 | `lesson` | Learned techniques, process improvements | Bug descriptions |
 | `gotcha` | Traps, surprising behaviors, non-obvious failures | General observations |
 | `architecture` | Structural decisions, module boundaries | Code-level patterns |
-| `module` | Module-level descriptions (from graphify) | Individual files |
+| `module` | Module-level descriptions (from codegraph) | Individual files |
 
 Always run `arcs knowledge list <slug> --json` before creating — check for existing entries to update rather than duplicate.
 

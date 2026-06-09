@@ -20,7 +20,7 @@ const preservedOutputFiles = new Set([
   ".opencode/plugins/arcs.js",
   // ARCS-native skills (authored in this repo, no upstream source)
   // init-project skill — ARCS-native (mirrors orchestrator INIT workflow with
-  // graphify sub-flow, typed-agent dispatch, knowledge categories).
+  // codegraph sub-flow, typed-agent dispatch, knowledge categories).
   "skills/init-project/SKILL.md",
   // Caveman commit skill — adapted from https://github.com/JuliusBrussee/caveman (MIT).
   "skills/caveman-commit/SKILL.md",

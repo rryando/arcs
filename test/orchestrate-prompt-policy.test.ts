@@ -183,7 +183,6 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     "performance-diagnosis", // agent-loaded skill for code-doctor
     "deep-pr-review", // host-specific skill invoked directly by user PR-review trigger
     "customize-opencode", // host-specific meta-skill for editing opencode's own config
-    "graphify-aware", // auto-layered when graphify-out/graph.json detected in workspace
   ];
 
   it("every skill on disk is either routed or listed as non-routed exception", () => {
