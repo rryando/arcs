@@ -381,9 +381,10 @@ interface TemplateMatch {
 }
 
 /**
- * Local copy of the slugifier from `src/utils/graphify.ts:makeProposalId`.
- * Kept tiny and inlined here to avoid widening graphify.ts's export surface
- * just for the backfill path; the original helper is private to that module.
+ * Local copy of the slugifier formerly in `src/utils/graphify.ts:makeProposalId`
+ * (now superseded by `src/utils/codegraph.ts`). Kept tiny and inlined here to
+ * avoid widening the codegraph module's export surface just for the backfill
+ * path; the original helper is private to that module.
  *
  * Stable, lowercase, dash-separated. Truncated at 80 chars to keep ids
  * filesystem-friendly.

@@ -1,6 +1,6 @@
 ---
 name: deep-pr-review
-description: Use when the user provides a GitHub PR link with a "deep review" trigger inside a locally cloned repo, to perform a thorough multi-dimensional code review grounded in ARCS DAG context, AGENTS.md conventions, and optional graphify coupling analysis, then post findings as inline GitHub review comments under explicit user gate
+description: Use when the user provides a GitHub PR link with a "deep review" trigger inside a locally cloned repo, to perform a thorough multi-dimensional code review grounded in ARCS DAG context, AGENTS.md conventions, and optional codegraph coupling analysis, then post findings as inline GitHub review comments under explicit user gate
 ---
 
 # Skill: deep-pr-review
@@ -34,8 +34,8 @@ flowchart TD
     J --> K
     K --> L{Diff size?}
     L -->|huge >40 files OR >2000 lines| M[Force summary mode]
-    L -->|normal| N{graphify available?}
-    N -->|yes| O[Run affected/query on changed symbols]
+    L -->|normal| N{codegraph available?}
+    N -->|yes| O[Run impact/query on changed symbols]
     N -->|no| P[Skip coupling check — note in report]
     M --> Q[Aggregate findings + cite each]
     O --> Q
@@ -120,7 +120,7 @@ Every finding cites a source. No uncited findings:
 
 - `see knowledge/<id>: <title>` — ARCS knowledge entry
 - `AGENTS.md §<section>` — project convention
-- `graphify: <observation>` — coupling/affected result
+- `codegraph: <observation>` — coupling/impact result
 - `principle: <KISS|DRY|YAGNI|SOLID|correctness>` — first-principles label
 
 If only first-principles applies, that is sufficient — but it must be stated.
@@ -188,4 +188,4 @@ gh api POST /repos/{owner}/{repo}/pulls/{number}/reviews \
 - Re-review detection: if AI has reviewed before, scope to diff since last review's commit_id
 - Tag each posted suggestion with `<!-- arcs:deep-review:<finding-id> -->` for re-review tracking
 - See `review-template.md` for GitHub review body template
-- See `graphify-diff.md` for the changed-symbols-to-affected algorithm
+- See `codegraph-diff.md` for the changed-symbols-to-impact algorithm

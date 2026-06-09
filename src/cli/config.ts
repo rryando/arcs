@@ -96,6 +96,32 @@ export async function readOpenCodeConfig(): Promise<unknown | null> {
 }
 
 /**
+ * Diagnoses the opencode config file state, distinguishing a genuinely absent
+ * config (where manual model entry is the right fallback) from one that exists
+ * on disk but fails to parse (corruption — which must be surfaced, not silently
+ * treated as "no config"). The plain {@link readOpenCodeConfig} collapses both
+ * cases to `null`, which previously let a corrupt config masquerade as missing.
+ */
+export async function diagnoseOpenCodeConfig(): Promise<
+  | { status: "missing"; path: string }
+  | { status: "ok"; path: string; config: unknown }
+  | { status: "corrupt"; path: string; error: string }
+> {
+  const path = join(homedir(), ".config", "opencode", "opencode.json");
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return { status: "missing", path };
+  }
+  try {
+    return { status: "ok", path, config: JSON.parse(stripJsonComments(content)) };
+  } catch (err) {
+    return { status: "corrupt", path, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Extracts model tier pre-fills from parsed opencode config.
  */
 export function extractModelPreFills(config: unknown): ModelTierConfig {

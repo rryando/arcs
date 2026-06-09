@@ -362,7 +362,7 @@ describe("opencode bundle runtime manifest", () => {
           "scripts/stop-server.sh",
         ],
         "code-agent": ["SKILL.md"],
-        "deep-pr-review": ["SKILL.md", "review-template.md", "graphify-diff.md"],
+        "deep-pr-review": ["SKILL.md", "review-template.md", "codegraph-diff.md"],
         "enriching-codegraph-proposals": ["SKILL.md"],
         "executing-plans": ["SKILL.md"],
         "quick-dev": ["SKILL.md"],

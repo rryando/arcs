@@ -8,13 +8,13 @@ import { PACKAGE_ROOT } from "../utils/paths.js";
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
   type ArcsConfig,
+  diagnoseOpenCodeConfig,
   extractModelPreFills,
   getAvailableModels,
   getClaudeCodeModels,
   type ModelTierConfig,
   type ProviderModels,
   readClaudeCodeCurrentModel,
-  readOpenCodeConfig,
   writeConfig,
 } from "./config.js";
 import {
@@ -136,13 +136,19 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   // ── OpenCode configuration and installation flow ──────────────────────────
   if (selectedOpenCode) {
     // ── Model configuration ───────────────────────────────────────────────────
-    const openCodeConfig = await readOpenCodeConfig();
+    const configDiagnosis = await diagnoseOpenCodeConfig();
+    const openCodeConfig = configDiagnosis.status === "ok" ? configDiagnosis.config : null;
     const preFills = extractModelPreFills(openCodeConfig);
 
-    if (openCodeConfig) {
+    if (configDiagnosis.status === "ok") {
       p.note(
         `Found models:\n  model: ${preFills.heavy || "(not set)"}\n  small_model: ${preFills.light || "(not set)"}`,
         "OpenCode Config",
+      );
+    } else if (configDiagnosis.status === "corrupt") {
+      p.note(
+        `Config exists at ${configDiagnosis.path} but failed to parse:\n  ${configDiagnosis.error}\n\nFix the JSON syntax error and re-run, or enter model identifiers manually below to continue.`,
+        "OpenCode Config — INVALID JSON",
       );
     } else {
       p.note(

@@ -118,6 +118,27 @@ function readJsonFile(path: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Returns a parse-error message if the file exists on disk but is not valid
+ * JSON, otherwise null (missing file, or parses cleanly). Used to refuse a
+ * config-overwriting merge when the existing config is corrupt — overwriting it
+ * would silently discard the user's recoverable agents/models/MCP entries.
+ */
+function detectConfigParseError(path: string): string | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    return null; // missing file is fine — a fresh config will be written
+  }
+  try {
+    JSON.parse(stripJsonComments(raw));
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
 function writeJsonFile(path: string, data: object): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
@@ -507,6 +528,19 @@ function installInternal(options: InstallOptions = {}, hooks: InstallHooks = {})
   const backupDir = createTempDir(".arcs-bundle-backup");
   const previousConfigExists = existsSync(opencodeConfigPath());
   const previousConfig = previousConfigExists ? readFileSync(opencodeConfigPath(), "utf-8") : null;
+
+  // Refuse to proceed if an existing config is present but unparseable: the
+  // merge below reads it via readJsonFile (which falls back to {} on a parse
+  // error) and would then overwrite the corrupt-but-recoverable file with a
+  // near-empty one, silently discarding the user's agents/models/MCP entries.
+  const configParseError = detectConfigParseError(opencodeConfigPath());
+  if (configParseError !== null) {
+    throw new Error(
+      `Existing OpenCode config at ${opencodeConfigPath()} is not valid JSON ` +
+        `and would be overwritten by install:\n  ${configParseError}\n` +
+        "Fix the JSON syntax error (or move the file aside) and re-run.",
+    );
+  }
   const previousManifest = detection.installedManifest;
   const backupMap = new Map<string, string>();
 

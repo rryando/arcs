@@ -16,7 +16,7 @@
     "deep-pr-review": [
       "SKILL.md",
       "review-template.md",
-      "graphify-diff.md"
+      "codegraph-diff.md"
     ],
     "enriching-codegraph-proposals": [
       "SKILL.md"

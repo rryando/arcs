@@ -21,9 +21,6 @@ Thumbs.db
 # Runtime data
 data/
 
-# Graphify extraction output
-graphify-out/
-
 # Local worktrees
 .worktrees/
 

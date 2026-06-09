@@ -246,9 +246,9 @@ async function handleProjectInit(
       hint?: string;
       hooksHint?: string;
     } | null = null;
-    const graphifyWorkspace = wsPath ?? process.cwd();
-    const hasGit = existsSync(resolve(graphifyWorkspace, ".git"));
-    const looksLikeCodebase = hasGit || existsSync(resolve(graphifyWorkspace, "package.json"));
+    const codegraphWorkspace = wsPath ?? process.cwd();
+    const hasGit = existsSync(resolve(codegraphWorkspace, ".git"));
+    const looksLikeCodebase = hasGit || existsSync(resolve(codegraphWorkspace, "package.json"));
     const skipCodegraph = process.env.ARCS_SKIP_CODEGRAPH === "1";
     if (looksLikeCodebase && !skipCodegraph) {
       try {
@@ -269,9 +269,9 @@ async function handleProjectInit(
         if (info.available) {
           // runIndex bootstraps the project's .codegraph index
           // (codegraph index <workspace> --force --quiet) — this is the new value.
-          const idx = runIndex(graphifyWorkspace);
+          const idx = runIndex(codegraphWorkspace);
           if (idx.success) {
-            const { proposals, stats } = ingestGraph(graphifyWorkspace, slug);
+            const { proposals, stats } = ingestGraph(codegraphWorkspace, slug);
             if (proposals.length > 0) {
               // codegraph has no graph.json — use the status object as a stable
               // fingerprint source (node/edge counts change with the graph).
