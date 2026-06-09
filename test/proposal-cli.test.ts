@@ -182,7 +182,7 @@ describe("proposal promote", () => {
       const bodyPath = resolve(projectDir, "knowledge", "existing-architecture-note.md");
       const body = await readFile(bodyPath, "utf-8");
       expect(body).toContain("Original body content.");
-      expect(body).toContain("From graphify proposal");
+      expect(body).toContain("From codegraph proposal");
       expect(body).toContain("Appended section content.");
 
       // Proposal removed

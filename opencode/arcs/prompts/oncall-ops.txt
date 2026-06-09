@@ -40,6 +40,8 @@ MANDATORY EXIT GATE: Before claiming an issue is resolved, you MUST: (1) have a 
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
+**codegraph (when indexed):** For root-cause tracing — who calls a failing symbol, what it calls, and the blast radius of a suspect change — prefer the `codegraph_*` MCP tools (`codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_explore`) over raw `grep`/`rg`; they follow dynamic-dispatch edges grep cannot. Skip if no `.codegraph/` index exists.
+
 ## Incident Investigation Workflow
 
 When investigating a bug, failure, or production incident:

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import color from "picocolors";
-import { detectGraphify } from "../utils/graphify.js";
+import { detectCodegraph } from "../utils/codegraph.js";
 import { PACKAGE_ROOT } from "../utils/paths.js";
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
@@ -481,8 +481,14 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   writeConfig(config);
   sWrite.stop("Configuration saved.");
 
-  // ── Optional graphify installation ──────────────────────────────────────────
-  await promptGraphifyInstall();
+  // ── Optional codegraph installation ─────────────────────────────────────────
+  // Derive codegraph install targets from the platforms the user selected.
+  // platform "claudecode" maps to codegraph's "claude" target. Never use
+  // "auto" — that would wire unselected hosts (Cursor/Codex/Hermes).
+  const codegraphTargets =
+    [selectedOpenCode && "opencode", selectedClaudeCode && "claude"].filter(Boolean).join(",") ||
+    "opencode";
+  await promptCodegraphInstall(codegraphTargets);
 
   p.outro(
     color.green("Done!") +
@@ -641,112 +647,180 @@ async function selectModel(
 }
 
 // ---------------------------------------------------------------------------
-// Graphify Installation Prompt
+// Codegraph Installation Prompt
 // ---------------------------------------------------------------------------
 
+const CODEGRAPH_URL = "https://github.com/colbymchenry/codegraph";
+
 /**
- * Detects Python 3.10+ availability and returns the major.minor version,
- * or null if Python is not found or version is insufficient.
+ * Wires codegraph into opencode (MCP) and builds the index for the current
+ * project. All steps are best-effort and non-fatal — a failure at any
+ * sub-step shows a note and continues. Never throws.
  */
-function detectPython310(): { version: string; command: string } | null {
-  for (const cmd of ["python3", "python"]) {
-    try {
-      const output = execSync(`${cmd} --version`, {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout: 5000,
-      }).trim();
-      const match = output.match(/(\d+)\.(\d+)\.(\d+)/);
-      if (match) {
-        const major = Number.parseInt(match[1], 10);
-        const minor = Number.parseInt(match[2], 10);
-        if (major >= 3 && minor >= 10) {
-          return { version: `${major}.${minor}.${match[3]}`, command: cmd };
-        }
-      }
-    } catch {
-      // Command not found or failed, try next
+function wireCodegraph(targets: string): void {
+  // (a) Wire codegraph MCP into the selected host(s) non-interactively.
+  try {
+    const wire = spawnSync("codegraph", ["install", `--target=${targets}`, "--yes"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000,
+    });
+    if (wire.status === 0) {
+      p.log.info(color.dim(`${color.green("✔")} Wired codegraph MCP into ${targets}`));
+    } else {
+      p.note(
+        [
+          `${color.yellow("⚠")} Could not wire codegraph into ${targets} automatically.`,
+          `Run manually:  ${color.dim(`codegraph install --target=${targets} --yes`)}`,
+        ].join("\n"),
+        "Optional: Codegraph",
+      );
     }
-  }
-  return null;
-}
-
-const GRAPHIFY_URL = "https://github.com/safishamsi/graphify";
-
-/**
- * Prompts the user to install graphify if it's not already available
- * and Python 3.10+ is detected. Gracefully handles all decline/failure paths.
- */
-export async function promptGraphifyInstall(): Promise<void> {
-  const info = detectGraphify();
-  if (info.available) return;
-
-  const python = detectPython310();
-  if (!python) {
+  } catch {
     p.note(
       [
-        "Graphify enables automatic codebase graph analysis.",
-        "AI agents get richer structural context without scanning from scratch each session.",
-        "",
-        `${color.yellow("Requirement not met:")} Python 3.10+ is required but was not found.`,
-        "",
-        "To enable this capability, install Python 3.10+ then follow:",
-        color.cyan(GRAPHIFY_URL),
-        "",
-        `Then run:  ${color.dim("uv tool install graphifyy")}  (or pipx / pip)`,
+        `${color.yellow("⚠")} Could not wire codegraph into ${targets} automatically.`,
+        `Run manually:  ${color.dim(`codegraph install --target=${targets} --yes`)}`,
       ].join("\n"),
-      "Optional: Graphify",
+      "Optional: Codegraph",
     );
+  }
+
+  // (b) Build the index for the current project.
+  try {
+    const index = spawnSync("codegraph", ["index", process.cwd(), "--force", "--quiet"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000,
+    });
+    if (index.status === 0) {
+      p.log.info(color.dim(`${color.green("✔")} Indexed current project`));
+    } else {
+      p.note(
+        [
+          `${color.yellow("⚠")} Could not index the current project automatically.`,
+          `Run manually:  ${color.dim(`codegraph index ${process.cwd()} --force --quiet`)}`,
+        ].join("\n"),
+        "Optional: Codegraph",
+      );
+    }
+  } catch {
+    p.note(
+      [
+        `${color.yellow("⚠")} Could not index the current project automatically.`,
+        `Run manually:  ${color.dim(`codegraph index ${process.cwd()} --force --quiet`)}`,
+      ].join("\n"),
+      "Optional: Codegraph",
+    );
+  }
+
+  // (c) Summarize what was wired.
+  const final = detectCodegraph();
+  p.note(
+    [
+      `${color.green("✔")} Codegraph${final.version ? ` v${final.version}` : ""} ready`,
+      `${color.green("✔")} ${targets} MCP wired`,
+      `${color.green("✔")} Current project indexed`,
+    ].join("\n"),
+    "Codegraph",
+  );
+}
+
+/**
+ * Prompts the user to install codegraph if it's not already available,
+ * using a platform-based installer. Once available (freshly installed or
+ * pre-existing), wires the codegraph MCP into opencode and indexes the
+ * current project. Gracefully handles all decline/failure paths — never
+ * throws and never exits the wizard.
+ */
+export async function promptCodegraphInstall(targets: string): Promise<void> {
+  const info = detectCodegraph();
+  if (info.available) {
+    // Already installed — skip install but still ensure host wiring + project init.
+    wireCodegraph(targets);
     return;
   }
 
   p.note(
     [
-      "Graphify enables automatic codebase graph analysis.",
-      "AI agents get richer structural context without scanning from scratch each session.",
+      "Codegraph gives agents a pre-indexed code graph for efficient exploration",
+      "without full file reads (MCP-based). 100% local.",
       "",
-      color.cyan(GRAPHIFY_URL),
+      color.cyan(CODEGRAPH_URL),
     ].join("\n"),
-    "Optional: Graphify",
+    "Optional: Codegraph",
   );
 
   const shouldInstall = await p.confirm({
-    message: `Install graphify now? (Python ${python.version} detected)`,
+    message: "Install codegraph now?",
     initialValue: false,
   });
 
   if (p.isCancel(shouldInstall) || !shouldInstall) {
-    p.log.info(color.dim(`Install later:  uv tool install graphifyy  |  ${GRAPHIFY_URL}`));
+    p.log.info(color.dim(`Install later:  npx @colbymchenry/codegraph  |  ${CODEGRAPH_URL}`));
     return;
   }
 
-  const installCommands = [
-    "uv tool install graphifyy",
-    "pipx install graphifyy",
-    "pip install graphifyy",
-  ];
-
   const s = p.spinner();
-  s.start("Installing graphify…");
+  s.start("Installing codegraph…");
 
-  for (const cmd of installCommands) {
+  let installed = false;
+
+  // ── Platform-based install ────────────────────────────────────────────────
+  try {
+    const platformInstall =
+      process.platform === "win32"
+        ? spawnSync(
+            "powershell",
+            [
+              "-Command",
+              "irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex",
+            ],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 },
+          )
+        : spawnSync(
+            "sh",
+            [
+              "-c",
+              "curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh",
+            ],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 },
+          );
+    if (platformInstall.status === 0) {
+      installed = true;
+    }
+  } catch {
+    // Fall through to npm fallback.
+  }
+
+  // ── Fallback: npm global install ──────────────────────────────────────────
+  if (!installed) {
     try {
-      execSync(cmd, {
+      const npmInstall = spawnSync("npm", ["i", "-g", "@colbymchenry/codegraph"], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
-        timeout: 60_000,
+        timeout: 120_000,
       });
-      s.stop(`${color.green("✔")} Graphify installed via ${color.dim(cmd.split(" ")[0])}`);
-      return;
+      if (npmInstall.status === 0) {
+        installed = true;
+      }
     } catch {
-      // Try next installer
+      // All installers failed.
     }
   }
 
-  s.stop(
-    [
-      `${color.yellow("⚠")} Could not install graphify — all installers failed.`,
-      `Install manually:  ${color.cyan(GRAPHIFY_URL)}`,
-    ].join("\n"),
-  );
+  if (!installed) {
+    s.stop(
+      [
+        `${color.yellow("⚠")} Could not install codegraph — all installers failed.`,
+        `Install manually:  ${color.cyan(CODEGRAPH_URL)}`,
+      ].join("\n"),
+    );
+    return;
+  }
+
+  s.stop(`${color.green("✔")} Codegraph installed`);
+
+  // After a successful install, wire the selected host(s) + index the project.
+  wireCodegraph(targets);
 }

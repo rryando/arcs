@@ -1,7 +1,7 @@
 /**
- * Storage layer for `~/.arcs/projects/<slug>/proposals/graphify.json`.
+ * Storage layer for `~/.arcs/projects/<slug>/proposals/codegraph.json`.
  *
- * Graphify ingestion writes here (instead of `knowledge/`) so a downstream
+ * Codegraph ingestion writes here (instead of `knowledge/`) so a downstream
  * gate can review proposals before they are promoted into the durable
  * knowledge index. Reads/writes mirror the rest of the storage layer:
  * Zod-validated I/O, atomic writes via `withLock`, descriptive errors.
@@ -52,7 +52,34 @@ function proposalsDirPath(slug: string): string {
 }
 
 function proposalsFilePath(slug: string): string {
+  return join(proposalsDirPath(slug), "codegraph.json");
+}
+
+/**
+ * Legacy proposals file path. Older projects wrote proposals to
+ * `proposals/graphify.json` before the codegraph rename. Reads fall back to
+ * this path when the current `codegraph.json` is absent; writes always target
+ * the new path so the legacy file is migrated forward on the next write.
+ */
+function legacyProposalsFilePath(slug: string): string {
   return join(proposalsDirPath(slug), "graphify.json");
+}
+
+/**
+ * Resolve which proposals file to read from. Prefers the current
+ * `codegraph.json`; falls back to the legacy `graphify.json` when only the
+ * legacy file exists. Returns null when neither exists.
+ */
+async function resolveReadPath(slug: string): Promise<string | null> {
+  const current = proposalsFilePath(slug);
+  if (await fileExists(current)) {
+    return current;
+  }
+  const legacy = legacyProposalsFilePath(slug);
+  if (await fileExists(legacy)) {
+    return legacy;
+  }
+  return null;
 }
 
 function knowledgeIndexPath(slug: string): string {
@@ -68,8 +95,8 @@ function knowledgeIndexPath(slug: string): string {
  * Throws an `invalidFileFormat` DagError if the file fails Zod validation.
  */
 export async function readProposals(slug: string): Promise<ProposalsFile | null> {
-  const filePath = proposalsFilePath(slug);
-  if (!(await fileExists(filePath))) {
+  const filePath = await resolveReadPath(slug);
+  if (!filePath) {
     return null;
   }
 
@@ -130,10 +157,13 @@ export async function writeProposals(slug: string, data: ProposalsFile): Promise
  * Idempotent — never throws on a missing target.
  */
 export async function removeProposal(slug: string, proposalId: string): Promise<boolean> {
-  const filePath = proposalsFilePath(slug);
-  if (!(await fileExists(filePath))) {
+  // Existence check is back-compat aware (current or legacy path).
+  if (!(await resolveReadPath(slug))) {
     return false;
   }
+
+  // Writes always migrate forward to the new path.
+  const filePath = proposalsFilePath(slug);
 
   let removed = false;
 
@@ -179,7 +209,7 @@ export async function annotateDedupCandidates(
     const result = knowledgeIndexSchema.safeParse(rawIndex);
     if (!result.success) {
       // A malformed knowledge index is not this module's problem to surface;
-      // treat it as "no candidates" so graphify can proceed. Knowledge-store
+      // treat it as "no candidates" so codegraph can proceed. Knowledge-store
       // owns the rebuild path.
       return [];
     }

@@ -122,7 +122,7 @@
           "graph-explorer"
         ],
         "value": {
-          "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context before falling back to file-system tools. Replaces vanilla explore for ARCS projects.",
+          "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
           "temperature": 0,

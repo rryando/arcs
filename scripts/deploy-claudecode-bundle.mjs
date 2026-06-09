@@ -32,6 +32,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { wireCodegraphMcp } from "./lib/bundle-helpers.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -424,6 +425,9 @@ function main() {
     }
   }
 
+  // Best-effort: wire the codegraph MCP server. Skipped on dry-run; never fatal.
+  const codegraphWired = dryRun ? false : wireCodegraphMcp("claude");
+
   const result = {
     dryRun,
     source: bundleRoot,
@@ -433,6 +437,7 @@ function main() {
     filesChanged,
     filesRemoved,
     filesUnchanged,
+    codegraphWired,
   };
 
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

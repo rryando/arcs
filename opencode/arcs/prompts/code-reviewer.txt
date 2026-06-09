@@ -45,6 +45,8 @@ MANDATORY EXIT GATE: Before delivering a review, confirm: (1) all changed files 
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
+**codegraph (when indexed):** To assess what a change actually affects — callers of a modified symbol and downstream blast radius — prefer the `codegraph_*` MCP tools (`codegraph_impact`, `codegraph_callers`, `codegraph_explore`) over `grep`; they follow dynamic-dispatch edges. Skip if no `.codegraph/` index exists.
+
 ## Pre-Review Workflow
 
 Before reading code, understand context:

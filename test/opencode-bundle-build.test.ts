@@ -363,7 +363,7 @@ describe("opencode bundle runtime manifest", () => {
         ],
         "code-agent": ["SKILL.md"],
         "deep-pr-review": ["SKILL.md", "review-template.md", "graphify-diff.md"],
-        "enriching-graphify-proposals": ["SKILL.md"],
+        "enriching-codegraph-proposals": ["SKILL.md"],
         "executing-plans": ["SKILL.md"],
         "quick-dev": ["SKILL.md"],
         "requesting-code-review": ["SKILL.md", "code-reviewer.md"],

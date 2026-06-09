@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { isAbsolute, relative, resolve } from "node:path";
 
 export function normalizeRelativePath(filePath) {
@@ -169,4 +170,20 @@ export function validateDeclaredPath(relativePath, outputRoot, validationRoot) {
   }
 
   return normalizedPath;
+}
+
+export function wireCodegraphMcp(target) {
+  // Best-effort: wire the codegraph MCP server for this host. Non-fatal.
+  // Skipped silently if the codegraph binary is absent.
+  try {
+    const r = spawnSync("codegraph", ["install", `--target=${target}`, "--yes"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000,
+    });
+    if (r.error || r.status !== 0) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }

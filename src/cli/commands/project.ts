@@ -236,11 +236,12 @@ async function handleProjectInit(
     rootMeta.projects.push({ id: slug, name, status: "draft", dependsOn: [] });
     await writeRootMeta(dataDir, rootMeta);
 
-    // Graphify: extract code graph and seed structural proposals (non-fatal)
+    // Codegraph: bootstrap the code graph index and seed structural proposals (non-fatal)
     // Only attempt if workspace looks like a real codebase (has .git or package.json)
-    // Skip when ARCS_SKIP_GRAPHIFY=1 (used in tests to avoid spawning real binaries)
-    let graphify: {
+    // Skip when ARCS_SKIP_CODEGRAPH=1 (used in tests to avoid spawning real binaries)
+    let codegraph: {
       proposed: number;
+      available?: boolean;
       pending_enrichment?: true;
       hint?: string;
       hooksHint?: string;
@@ -248,38 +249,55 @@ async function handleProjectInit(
     const graphifyWorkspace = wsPath ?? process.cwd();
     const hasGit = existsSync(resolve(graphifyWorkspace, ".git"));
     const looksLikeCodebase = hasGit || existsSync(resolve(graphifyWorkspace, "package.json"));
-    const skipGraphify = process.env.ARCS_SKIP_GRAPHIFY === "1";
-    if (looksLikeCodebase && !skipGraphify) {
+    const skipCodegraph = process.env.ARCS_SKIP_CODEGRAPH === "1";
+    if (looksLikeCodebase && !skipCodegraph) {
       try {
-        const { detectGraphify, runExtraction, ingestGraph } = await import(
-          "../../utils/graphify.js"
-        );
-        const { writeProposalsFile } = await import("../../utils/graphify-knowledge.js");
-        const info = detectGraphify();
-        if (info.available) {
-          const extraction = runExtraction(graphifyWorkspace);
-          if (extraction.success) {
-            const { proposals, stats } = ingestGraph(extraction.graphJsonPath, slug);
-            if (proposals.length > 0) {
-              const graphJsonContent = await readFile(extraction.graphJsonPath, "utf-8");
-              await writeProposalsFile(slug, proposals, graphJsonContent);
-              graphify = {
-                proposed: stats.totalProposals,
-                pending_enrichment: true,
-                hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
-              };
-            } else {
-              graphify = { proposed: 0 };
-            }
-            // Offer git hook for auto-refresh on commit
-            if (hasGit) {
-              graphify.hooksHint =
-                "Run `graphify hook install` in the workspace to auto-refresh the code graph on each commit.";
-            }
+        const { detectCodegraph, runIndex, ingestGraph } = await import("../../utils/codegraph.js");
+        const { writeProposalsFile } = await import("../../utils/codegraph-knowledge.js");
+        let info = detectCodegraph();
+        // In an interactive TTY (non-JSON) session, actively offer to install
+        // codegraph on the spot rather than only printing a hint. JSON consumers
+        // never see a prompt.
+        if (!info.available && !flags.json && process.stdout.isTTY === true) {
+          const { promptAndInstallCodegraph } = await import("../../utils/codegraph-install.js");
+          const didInstall = await promptAndInstallCodegraph();
+          if (didInstall) {
+            // Re-detect so the ingest pipeline below picks up the new binary.
+            info = detectCodegraph();
           }
         }
+        if (info.available) {
+          // runIndex bootstraps the project's .codegraph index
+          // (codegraph index <workspace> --force --quiet) — this is the new value.
+          const idx = runIndex(graphifyWorkspace);
+          if (idx.success) {
+            const { proposals, stats } = ingestGraph(graphifyWorkspace, slug);
+            if (proposals.length > 0) {
+              // codegraph has no graph.json — use the status object as a stable
+              // fingerprint source (node/edge counts change with the graph).
+              await writeProposalsFile(slug, proposals, JSON.stringify(idx.status));
+              codegraph = {
+                proposed: stats.totalProposals,
+                pending_enrichment: true,
+                hint: "Run `arcs proposal list <slug> --json` from a skill-aware host to enrich codegraph proposals into knowledge entries. Or run `arcs proposal list <slug>` to inspect.",
+                hooksHint:
+                  "codegraph auto-syncs the index via its own file watcher (MCP server) — no git hook install needed.",
+              };
+            } else {
+              codegraph = { proposed: 0 };
+            }
+          }
+        } else {
+          // Binary not on PATH — surface a structured signal (instead of null)
+          // so the user knows codegraph was skipped and how to seed it later.
+          codegraph = {
+            proposed: 0,
+            available: false,
+            hint: "codegraph binary not found — install with `npm i -g @colbymchenry/codegraph` then re-run `arcs codegraph-sync <slug>` for structural proposals.",
+          };
+        }
       } catch {
-        // Graphify failure never blocks project init
+        // Codegraph failure never blocks project init
       }
     }
 
@@ -308,12 +326,16 @@ async function handleProjectInit(
       }
     }
 
+    // When codegraph is unavailable, the structured `codegraph` field carries
+    // the install hint (JSON path). Interactive TTY sessions are offered an
+    // on-the-spot install above before this point, so no extra terminal nudge
+    // is printed here.
     return success({
       slug,
       name,
       status: "draft",
       dependsOn: [],
-      graphify,
+      codegraph,
       quickScan: quickScanResult,
     });
   } catch (err) {

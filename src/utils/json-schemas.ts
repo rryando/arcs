@@ -139,7 +139,7 @@ export const taskIndexSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// proposals/graphify.json — graphify ingestion proposals (gated, not direct-write)
+// proposals/codegraph.json — codegraph ingestion proposals (gated, not direct-write)
 // ---------------------------------------------------------------------------
 
 export const proposalKindSchema = z.enum(["architecture", "module", "gotcha", "pattern"]);

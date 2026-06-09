@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { KnowledgeProposal } from "../src/utils/graphify.js";
-import { writeProposalsFile } from "../src/utils/graphify-knowledge.js";
+import type { KnowledgeProposal } from "../src/utils/codegraph.js";
+import { writeProposalsFile } from "../src/utils/codegraph-knowledge.js";
 import { getProjectDir } from "../src/utils/paths.js";
 import { readProposals } from "../src/utils/proposal-store.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
@@ -24,7 +24,7 @@ function seedKnowledgeIndex(entries: unknown[]): void {
 
 function makeProposal(overrides: Partial<KnowledgeProposal> = {}): KnowledgeProposal {
   return {
-    id: "graphify-cluster-src-utils",
+    id: "codegraph-cluster-src-utils",
     kind: "architecture",
     label: "src/utils",
     structuralFacts: { memberCount: 5, fileCount: 3 },
@@ -40,7 +40,7 @@ describe("writeProposalsFile", () => {
       const proposals: KnowledgeProposal[] = [
         makeProposal(),
         makeProposal({
-          id: "graphify-god-foo",
+          id: "codegraph-god-foo",
           kind: "module",
           label: "foo",
           structuralFacts: { nodeFile: "src/foo.ts", nodeIn: 4, nodeOut: 2 },
@@ -58,7 +58,7 @@ describe("writeProposalsFile", () => {
       expect(file?.graphFingerprint).toBe(result.fingerprint);
       expect(file?.proposals).toHaveLength(2);
       const ids = file?.proposals.map((p) => p.id).sort();
-      expect(ids).toEqual(["graphify-cluster-src-utils", "graphify-god-foo"]);
+      expect(ids).toEqual(["codegraph-cluster-src-utils", "codegraph-god-foo"]);
       // Each proposal carries (possibly empty) suggestedDedupCandidates.
       for (const p of file?.proposals ?? []) {
         expect(Array.isArray(p.suggestedDedupCandidates)).toBe(true);
@@ -130,27 +130,27 @@ describe("writeProposalsFile", () => {
       await writeProposalsFile(
         SLUG,
         [
-          makeProposal({ id: "graphify-cluster-old-a", label: "old-a" }),
-          makeProposal({ id: "graphify-cluster-old-b", label: "old-b" }),
+          makeProposal({ id: "codegraph-cluster-old-a", label: "old-a" }),
+          makeProposal({ id: "codegraph-cluster-old-b", label: "old-b" }),
         ],
         '{"nodes":[]}',
       );
 
       // Simulate a backfill or an agent decision that left a proposal pending
-      // with a different id than what graphify will produce next time.
+      // with a different id than what codegraph will produce next time.
       const before = await readProposals(SLUG);
       expect(before?.proposals.map((p) => p.id).sort()).toEqual([
-        "graphify-cluster-old-a",
-        "graphify-cluster-old-b",
+        "codegraph-cluster-old-a",
+        "codegraph-cluster-old-b",
       ]);
 
-      // Second sync: graphify produces ONE proposal that collides with old-a
+      // Second sync: codegraph produces ONE proposal that collides with old-a
       // and one new proposal old-b is gone from this extraction.
       const result = await writeProposalsFile(
         SLUG,
         [
-          makeProposal({ id: "graphify-cluster-old-a", label: "old-a-fresh" }),
-          makeProposal({ id: "graphify-cluster-new-c", label: "new-c" }),
+          makeProposal({ id: "codegraph-cluster-old-a", label: "old-a-fresh" }),
+          makeProposal({ id: "codegraph-cluster-new-c", label: "new-c" }),
         ],
         '{"nodes":[{"id":"changed"}]}',
       );
@@ -162,12 +162,12 @@ describe("writeProposalsFile", () => {
       const ids = after?.proposals.map((p) => p.id).sort();
       // old-a (refreshed), old-b (preserved), new-c (added) — three total.
       expect(ids).toEqual([
-        "graphify-cluster-new-c",
-        "graphify-cluster-old-a",
-        "graphify-cluster-old-b",
+        "codegraph-cluster-new-c",
+        "codegraph-cluster-old-a",
+        "codegraph-cluster-old-b",
       ]);
       // Collision winner: the new extraction. old-a should now have label "old-a-fresh".
-      const oldA = after?.proposals.find((p) => p.id === "graphify-cluster-old-a");
+      const oldA = after?.proposals.find((p) => p.id === "codegraph-cluster-old-a");
       expect(oldA?.label).toBe("old-a-fresh");
     });
   });
@@ -181,7 +181,7 @@ describe("writeProposalsFile", () => {
         SLUG,
         [
           makeProposal({
-            id: "graphify-cluster-backfilled",
+            id: "codegraph-cluster-backfilled",
             label: "backfilled",
             structuralFacts: {},
           }),
@@ -189,17 +189,17 @@ describe("writeProposalsFile", () => {
         "backfill",
       );
 
-      // Next graphify-sync produces a different proposal entirely.
+      // Next codegraph-sync produces a different proposal entirely.
       await writeProposalsFile(
         SLUG,
-        [makeProposal({ id: "graphify-cluster-fresh", label: "fresh" })],
+        [makeProposal({ id: "codegraph-cluster-fresh", label: "fresh" })],
         '{"nodes":[]}',
       );
 
       const after = await readProposals(SLUG);
       const ids = after?.proposals.map((p) => p.id).sort();
       // Backfilled proposal survived — agent enrichment work is not lost.
-      expect(ids).toEqual(["graphify-cluster-backfilled", "graphify-cluster-fresh"]);
+      expect(ids).toEqual(["codegraph-cluster-backfilled", "codegraph-cluster-fresh"]);
     });
   });
 });
