@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { extractModelPreFills, readOpenCodeConfig } from "../src/cli/config.js";
+import {
+  diagnoseOpenCodeConfig,
+  extractModelPreFills,
+  readOpenCodeConfig,
+} from "../src/cli/config.js";
 import { applyAgentModelConfig, writeOpencodeAgent } from "../src/cli/instructions.js";
 
 // ---------------------------------------------------------------------------
@@ -126,6 +130,54 @@ describe("readOpenCodeConfig", () => {
     await writeFile(join(configDir, "opencode.json"), "42");
     const result = await readOpenCodeConfig();
     expect(result).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B2. diagnoseOpenCodeConfig — distinguishes missing vs corrupt vs ok
+// ---------------------------------------------------------------------------
+
+describe("diagnoseOpenCodeConfig", () => {
+  let tempDir: string;
+  let originalHome: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "arcs-test-"));
+    originalHome = process.env.HOME;
+    process.env.HOME = tempDir;
+  });
+
+  afterEach(async () => {
+    process.env.HOME = originalHome;
+    await rm(tempDir, { recursive: true });
+  });
+
+  it("reports 'missing' when the config file does not exist", async () => {
+    const result = await diagnoseOpenCodeConfig();
+    expect(result.status).toBe("missing");
+  });
+
+  it("reports 'ok' with parsed config when valid", async () => {
+    const configDir = join(tempDir, ".config", "opencode");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, "opencode.json"), JSON.stringify({ model: "test/model" }));
+    const result = await diagnoseOpenCodeConfig();
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.config).toEqual({ model: "test/model" });
+    }
+  });
+
+  it("reports 'corrupt' with an error when the file exists but is invalid JSON", async () => {
+    const configDir = join(tempDir, ".config", "opencode");
+    await mkdir(configDir, { recursive: true });
+    // Mirrors the real-world corruption: a mangled key splice.
+    await writeFile(join(configDir, "opencode.json"), '{ "grap"description": "x" }');
+    const result = await diagnoseOpenCodeConfig();
+    expect(result.status).toBe("corrupt");
+    if (result.status === "corrupt") {
+      expect(result.error).toBeTruthy();
+    }
   });
 });
 
