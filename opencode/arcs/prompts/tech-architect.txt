@@ -39,6 +39,8 @@ MANDATORY EXIT GATE: Before delivering analysis, confirm: (1) all relevant modul
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
+**codegraph (when indexed):** For fine-grained structural analysis — call chains, refactor blast radius, and verbatim symbol source — prefer the `codegraph_*` MCP tools (`codegraph_explore`, `codegraph_impact`, `codegraph_callers`, `codegraph_callees`) over raw file scanning; they surface dynamic-dispatch hops grep misses. Skip if no `.codegraph/` index exists.
+
 ## Analysis Workflow
 
 When dispatched for structural analysis:

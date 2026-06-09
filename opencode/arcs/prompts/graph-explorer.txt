@@ -94,7 +94,7 @@ codegraph maintains a pre-indexed code graph (symbols, call edges, dynamic-dispa
 
 **First, check the index exists:**
 - Look for `.codegraph/codegraph.db`, or call `codegraph_status` to confirm index health.
-- If absent: note "N/A — no codegraph index" in the Declaration, suggest `codegraph init -i` to the user, and skip this step.
+- If absent: note "N/A — no codegraph index" in the Declaration, suggest the user run `arcs codegraph-sync <slug>` to build the index, and skip this step.
 
 **Map the question to the right tool:**
 

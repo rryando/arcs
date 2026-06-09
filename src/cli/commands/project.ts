@@ -241,6 +241,7 @@ async function handleProjectInit(
     // Skip when ARCS_SKIP_CODEGRAPH=1 (used in tests to avoid spawning real binaries)
     let codegraph: {
       proposed: number;
+      available?: boolean;
       pending_enrichment?: true;
       hint?: string;
       hooksHint?: string;
@@ -251,11 +252,20 @@ async function handleProjectInit(
     const skipCodegraph = process.env.ARCS_SKIP_CODEGRAPH === "1";
     if (looksLikeCodebase && !skipCodegraph) {
       try {
-        const { detectCodegraph, runIndex, ingestGraph } = await import(
-          "../../utils/codegraph.js"
-        );
+        const { detectCodegraph, runIndex, ingestGraph } = await import("../../utils/codegraph.js");
         const { writeProposalsFile } = await import("../../utils/codegraph-knowledge.js");
-        const info = detectCodegraph();
+        let info = detectCodegraph();
+        // In an interactive TTY (non-JSON) session, actively offer to install
+        // codegraph on the spot rather than only printing a hint. JSON consumers
+        // never see a prompt.
+        if (!info.available && !flags.json && process.stdout.isTTY === true) {
+          const { promptAndInstallCodegraph } = await import("../../utils/codegraph-install.js");
+          const didInstall = await promptAndInstallCodegraph();
+          if (didInstall) {
+            // Re-detect so the ingest pipeline below picks up the new binary.
+            info = detectCodegraph();
+          }
+        }
         if (info.available) {
           // runIndex bootstraps the project's .codegraph index
           // (codegraph index <workspace> --force --quiet) — this is the new value.
@@ -277,6 +287,14 @@ async function handleProjectInit(
               codegraph = { proposed: 0 };
             }
           }
+        } else {
+          // Binary not on PATH — surface a structured signal (instead of null)
+          // so the user knows codegraph was skipped and how to seed it later.
+          codegraph = {
+            proposed: 0,
+            available: false,
+            hint: "codegraph binary not found — install with `npm i -g @colbymchenry/codegraph` then re-run `arcs codegraph-sync <slug>` for structural proposals.",
+          };
         }
       } catch {
         // Codegraph failure never blocks project init
@@ -308,6 +326,10 @@ async function handleProjectInit(
       }
     }
 
+    // When codegraph is unavailable, the structured `codegraph` field carries
+    // the install hint (JSON path). Interactive TTY sessions are offered an
+    // on-the-spot install above before this point, so no extra terminal nudge
+    // is printed here.
     return success({
       slug,
       name,

@@ -482,7 +482,13 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   sWrite.stop("Configuration saved.");
 
   // ── Optional codegraph installation ─────────────────────────────────────────
-  await promptCodegraphInstall();
+  // Derive codegraph install targets from the platforms the user selected.
+  // platform "claudecode" maps to codegraph's "claude" target. Never use
+  // "auto" — that would wire unselected hosts (Cursor/Codex/Hermes).
+  const codegraphTargets =
+    [selectedOpenCode && "opencode", selectedClaudeCode && "claude"].filter(Boolean).join(",") ||
+    "opencode";
+  await promptCodegraphInstall(codegraphTargets);
 
   p.outro(
     color.green("Done!") +
@@ -651,21 +657,21 @@ const CODEGRAPH_URL = "https://github.com/colbymchenry/codegraph";
  * project. All steps are best-effort and non-fatal — a failure at any
  * sub-step shows a note and continues. Never throws.
  */
-function wireCodegraph(): void {
-  // (a) Wire codegraph MCP into opencode non-interactively.
+function wireCodegraph(targets: string): void {
+  // (a) Wire codegraph MCP into the selected host(s) non-interactively.
   try {
-    const wire = spawnSync("codegraph", ["install", "--target=opencode", "--yes"], {
+    const wire = spawnSync("codegraph", ["install", `--target=${targets}`, "--yes"], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 120_000,
     });
     if (wire.status === 0) {
-      p.log.info(color.dim(`${color.green("✔")} Wired codegraph MCP into OpenCode`));
+      p.log.info(color.dim(`${color.green("✔")} Wired codegraph MCP into ${targets}`));
     } else {
       p.note(
         [
-          `${color.yellow("⚠")} Could not wire codegraph into OpenCode automatically.`,
-          `Run manually:  ${color.dim("codegraph install --target=opencode --yes")}`,
+          `${color.yellow("⚠")} Could not wire codegraph into ${targets} automatically.`,
+          `Run manually:  ${color.dim(`codegraph install --target=${targets} --yes`)}`,
         ].join("\n"),
         "Optional: Codegraph",
       );
@@ -673,8 +679,8 @@ function wireCodegraph(): void {
   } catch {
     p.note(
       [
-        `${color.yellow("⚠")} Could not wire codegraph into OpenCode automatically.`,
-        `Run manually:  ${color.dim("codegraph install --target=opencode --yes")}`,
+        `${color.yellow("⚠")} Could not wire codegraph into ${targets} automatically.`,
+        `Run manually:  ${color.dim(`codegraph install --target=${targets} --yes`)}`,
       ].join("\n"),
       "Optional: Codegraph",
     );
@@ -713,7 +719,7 @@ function wireCodegraph(): void {
   p.note(
     [
       `${color.green("✔")} Codegraph${final.version ? ` v${final.version}` : ""} ready`,
-      `${color.green("✔")} OpenCode MCP wired`,
+      `${color.green("✔")} ${targets} MCP wired`,
       `${color.green("✔")} Current project indexed`,
     ].join("\n"),
     "Codegraph",
@@ -727,11 +733,11 @@ function wireCodegraph(): void {
  * current project. Gracefully handles all decline/failure paths — never
  * throws and never exits the wizard.
  */
-export async function promptCodegraphInstall(): Promise<void> {
+export async function promptCodegraphInstall(targets: string): Promise<void> {
   const info = detectCodegraph();
   if (info.available) {
-    // Already installed — skip install but still ensure opencode wiring + project init.
-    wireCodegraph();
+    // Already installed — skip install but still ensure host wiring + project init.
+    wireCodegraph(targets);
     return;
   }
 
@@ -751,9 +757,7 @@ export async function promptCodegraphInstall(): Promise<void> {
   });
 
   if (p.isCancel(shouldInstall) || !shouldInstall) {
-    p.log.info(
-      color.dim(`Install later:  npx @colbymchenry/codegraph  |  ${CODEGRAPH_URL}`),
-    );
+    p.log.info(color.dim(`Install later:  npx @colbymchenry/codegraph  |  ${CODEGRAPH_URL}`));
     return;
   }
 
@@ -817,6 +821,6 @@ export async function promptCodegraphInstall(): Promise<void> {
 
   s.stop(`${color.green("✔")} Codegraph installed`);
 
-  // After a successful install, wire opencode + index the project.
-  wireCodegraph();
+  // After a successful install, wire the selected host(s) + index the project.
+  wireCodegraph(targets);
 }

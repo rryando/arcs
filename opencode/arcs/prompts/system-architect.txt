@@ -37,6 +37,8 @@ MANDATORY EXIT GATE: Before finalizing any design, verify: (1) dependency direct
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
+**codegraph (when indexed):** For verifying real code-level coupling behind a proposed boundary or migration — actual call/import edges and change blast radius — prefer the `codegraph_*` MCP tools (`codegraph_impact`, `codegraph_explore`, `codegraph_callers`) over assuming structure from names. Skip if no `.codegraph/` index exists.
+
 ## Cross-Project Workflow
 
 When dispatched for structural design or migration planning:

@@ -191,6 +191,8 @@ Phase-gate verification?
 
 `graph-explorer` uses `arcs search`, `arcs related`, `arcs context`, and `arcs knowledge get` FIRST. It falls back to Read/Glob/Grep only when the DAG cannot answer. This is cheaper and more semantically rich than raw file scanning.
 
+For structural / code-navigation questions — what calls X, what X depends on, how a flow reaches Y, blast radius of changing Z, where a symbol lives, an entity's verbatim source — `graph-explorer` additionally wields a live code-graph via `codegraph_*` MCP tools (`codegraph_explore`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_node`). This is structurally precise — far richer than prose BM25 search or Grep. Route any "where / what-depends-on / what-calls / how-does-it-flow / blast-radius" question to `graph-explorer` with confidence; do not under-route it to plain keyword search.
+
 ### Sub-Agent Dispatch Template
 
 Every dispatch MUST include:

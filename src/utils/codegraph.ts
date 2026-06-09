@@ -166,8 +166,8 @@ interface CgCalleesResult {
 // --- Shared predicates / helpers ---
 
 /**
-  * Test files import/define many symbols but aren't architectural hubs.
-  */
+ * Test files import/define many symbols but aren't architectural hubs.
+ */
 const isTestFile = (file: string) =>
   /\.(test|spec)\.[jt]sx?$/.test(file) ||
   file.startsWith("test/") ||
@@ -245,9 +245,9 @@ function cgCallees(name: string, limit: number): CgRelative[] {
 }
 
 /**
-  * Approximate file "type" buckets from language/extension
-  * (code vs document vs other).
-  */
+ * Approximate file "type" buckets from language/extension
+ * (code vs document vs other).
+ */
 function fileTypeOf(file: CgFile): string {
   const ext = extname(file.path).toLowerCase();
   if (ext === ".ts" || ext === ".tsx" || ext === ".js" || ext === ".jsx" || ext === ".mjs") {
@@ -327,7 +327,7 @@ export function runIndex(workspacePath: string): ExtractionOutcome {
 
 // --- ingestGraph (CLI-only) ---
 
-export function ingestGraph(workspacePath: string, _slug: string): IngestionResult {
+export function ingestGraph(_workspacePath: string, _slug: string): IngestionResult {
   const empty: IngestionResult = {
     proposals: [],
     stats: { godNodes: 0, communities: 0, crossModuleCouplings: 0, totalProposals: 0 },
@@ -338,7 +338,7 @@ export function ingestGraph(workspacePath: string, _slug: string): IngestionResu
 
   // (a) status
   const status = cgStatus();
-  if (!status || !status.initialized || status.nodeCount <= 0) return empty;
+  if (!status?.initialized || status.nodeCount <= 0) return empty;
 
   // (b) files (minus test files)
   const allFiles = cgFiles();

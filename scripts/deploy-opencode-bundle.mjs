@@ -24,6 +24,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { wireCodegraphMcp } from "./lib/bundle-helpers.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -178,6 +179,9 @@ async function main() {
     }
   }
 
+  // Best-effort: wire the codegraph MCP server. Skipped on dry-run; never fatal.
+  const codegraphWired = dryRun ? false : wireCodegraphMcp("opencode");
+
   const result = {
     dryRun,
     source: bundleRoot,
@@ -188,6 +192,7 @@ async function main() {
     filesUnchanged,
     restartRequired,
     cliRegistered: !dryRun,
+    codegraphWired,
     ...(restartRequired && {
       restartGuidance: "Plugin file changed. Restart opencode for changes to take effect.",
     }),
