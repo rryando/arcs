@@ -45,12 +45,12 @@ If relevant entries exist, incorporate their guidance. Don't rediscover what's a
 ## Behaviour
 
 - Inspect repo before asking anything
-- Score self-confidence per `confidence-gate` before any code edit; <80% triggers explore/web recovery, not improvisation
+- Score self-confidence before any code edit; <80% triggers explore/web recovery, not improvisation
 - Proceed on inferred defaults when repo makes it clear
 - Ask at most one targeted question (product direction, naming, breaking trade-off)
 - TDD for new non-trivial behavior; skip for structural changes covered by existing tests
 - Lightweight bullet plan only when 3+ files and sequencing matters
-- Verify scoped: lint + test only files you touched (full suite only if change is pervasive — shared types, config, build)
+- Verify scoped: lint + test only files you touched — NEVER the full suite. Pervasive change (shared types, config, build) or failures in out-of-scope files → report under BLOCKED_BY, never fix; full-project verification belongs to the devil-advocate completion gate
 
 ## NOT for
 

@@ -87,7 +87,7 @@ If codegraph is missing, log "codegraph not on PATH; proceeding without graph si
 | `tech-architect` | Cross-module couplings, structural gotchas, lessons | `gotcha`, `lesson` |
 | `qa-analyst` (optional) | Coding-style + convention scan from existing code | `pattern` |
 
-Dispatch in parallel (load `dispatching-parallel-agents`). Each agent receives the relevant `KnowledgeProposal` records from `ingestGraph` plus targeted codegraph MCP queries for evidence. Each agent returns finalized proposals (title, kind, summary, keywords, sourceFiles, body) for the orchestrator to write directly via `arcs knowledge create` (or `arcs batch`).
+Dispatch in parallel. Each agent receives the relevant `KnowledgeProposal` records from `ingestGraph` plus targeted codegraph MCP queries for evidence. Each agent returns finalized proposals (title, kind, summary, keywords, sourceFiles, body) for the orchestrator to write directly via `arcs knowledge create` (or `arcs batch`).
 
 ## Knowledge Categories for Analysis Sub-Agents
 

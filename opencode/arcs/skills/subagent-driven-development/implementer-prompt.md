@@ -18,13 +18,9 @@ Task tool (general-purpose):
 
     ## Before You Begin
 
-    If you have questions about:
-    - The requirements or acceptance criteria
-    - The approach or implementation strategy
-    - Dependencies or assumptions
-    - Anything unclear in the task description
-
-    **Ask them now.** Raise any concerns before starting work.
+    If the requirements, acceptance criteria, approach, dependencies, or anything in the
+    task description is unclear or insufficient: do NO work — immediately return status
+    NEEDS_CONTEXT listing the specific questions.
 
     ## Your Job
 
@@ -38,8 +34,8 @@ Task tool (general-purpose):
 
     Work from: [directory]
 
-    **While you work:** If you encounter something unexpected or unclear, **ask questions**.
-    It's always OK to pause and clarify. Don't guess or make assumptions.
+    **While you work:** If you encounter something unexpected or unclear, don't guess or
+    make assumptions — stop and return BLOCKED or NEEDS_CONTEXT with the specific question.
 
     ## Git Rules
 
@@ -55,10 +51,14 @@ Task tool (general-purpose):
     Lint and test ONLY the files you touched:
     - Lint: `biome check src/your-file.ts` (NOT `biome check .`)
     - Test: `vitest run test/your-file.test.ts` (NOT `vitest run` or `npm test`)
-    - Type check: `tsc --noEmit` (this one is whole-project — exception)
+    - Type check: `tsc --noEmit` is allowed as a read-only signal — if it reports errors
+      in files OUTSIDE your scope, do NOT fix them; record them under `concerns` and
+      proceed. The authoritative project-wide tsc run belongs to the devil-advocate gate.
 
-    Full suite only when your change is pervasive (shared types, config, build).
-    You MUST state why your verification scope is sufficient in your report.
+    NEVER run the full suite — not even for pervasive changes. If your change is pervasive
+    (shared types, config, build), record it in `scopeChanges`. Failures you observe in
+    files outside your scope are report-only — leave them untouched.
+    You MUST state why your verification scope is sufficient in your report (`scopeReason`).
 
     ## Code Organization
 
@@ -118,7 +118,7 @@ Task tool (general-purpose):
 
     ## Report Format (MANDATORY)
 
-    When done, return prose explanation followed by this EXACT JSON block as the LAST thing in your message:
+    When done, return brief prose findings FIRST, then this EXACT JSON block as the LAST thing in your message — nothing after it:
 
     ```json
     {

@@ -76,6 +76,7 @@ if (!isCommandAvailable("gh")) {
 
 if (!isCommandAvailable("rtk")) {
   console.warn(`WARNING: rtk not found.`);
-  console.warn(`  RTK improves AI command usage tracking: https://github.com/rtk-ai/rtk`);
-  console.warn(`  Install: rtk init -g  (or rtk init -g --opencode for OpenCode)`);
+  console.warn(`  RTK cuts agent token usage on shell commands: https://github.com/rtk-ai/rtk`);
+  console.warn(`  Install: brew install rtk`);
+  console.warn(`  Then wire it up: rtk init -g  (add --opencode to also wire OpenCode)`);
 }

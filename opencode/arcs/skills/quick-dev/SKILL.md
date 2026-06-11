@@ -17,7 +17,7 @@ flowchart TD
     K --> B{Fully bounded?}
     B -->|Yes| C[Execute change directly]
     B -->|No| D[Escalate to code-agent or brainstorming]
-    C --> E[Verify: typecheck + lint + affected tests]
+    C --> E[Verify scoped: tsc --noEmit + lint + tests for touched files]
     E --> F[Done — commit only when asked]
 ```
 
@@ -33,13 +33,13 @@ Check for patterns, gotchas, and lessons before implementing. Skip only if the c
 
 1. Orient with ARCS context + search if pattern-related
 2. Execute directly — no planning doc, no brainstorming, no TDD ritual
-3. Run focused verification (not full suite unless pervasive)
+3. Scoped verification only — run the dispatch VERIFY command (tests + lint for files you touched). NEVER the full suite. Pervasive change (shared types, config, build) or failures in out-of-scope files → report under BLOCKED_BY, never fix; full-project verification belongs to the devil-advocate completion gate.
 
 ## Escalation
 
 If hidden complexity surfaces mid-task — **pause immediately**, state the issue, offer to switch to `code-agent` or `brainstorming`. Do not silently expand scope.
 
-If self-confidence drops below 80% per `confidence-gate` (open decision, unverified assumption, sibling pattern unclear), escalate to `code-agent` — `quick-dev` does not permit exploration loops; `code-agent` does.
+If self-confidence drops below 80% (open decision, unverified assumption, sibling pattern unclear), escalate to `code-agent` — `quick-dev` does not permit exploration loops; `code-agent` does.
 
 ## NOT for
 

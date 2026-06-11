@@ -138,6 +138,8 @@ Diagrams are **agentic execution maps** in separate `.mmd` files — never embed
 
 All nodes start `:::backlog` but metadata must be fully populated at creation time for diagram-first execution.
 
+Per-node `verify` commands MUST be scoped to that task's files (e.g. `npm test -- tests/exact/path/test.py`, `vitest run test/orders.test.ts`) — never the bare full suite (`npm test`, `vitest run`, `biome check .`). The devil-advocate completion gate owns the single full-project pass.
+
 ## Plan Review Loop
 
 ```mermaid
@@ -153,7 +155,7 @@ flowchart TD
 
 - Chunk boundaries: `## Chunk N: <name>`, ≤1000 lines each
 - Same agent fixes (preserves context). Max 5 iterations, then surface to human.
-- Reviewer must announce confidence score per `confidence-gate`. Score <80% loops back to "Fix chunk" — never proceed past a sub-threshold review.
+- Reviewer must announce a confidence score (0-100). Score <80% loops back to "Fix chunk" — never proceed past a sub-threshold review.
 
 ## Storage
 

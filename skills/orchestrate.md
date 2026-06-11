@@ -86,9 +86,16 @@ Discovery: `arcs --commands --json`
 
 Pair with `loop` skill for iteration discipline.
 
+## Verification Contract
+
+- Sub-agents run ONLY the scoped VERIFY command from their dispatch (tests/lint on files they touched) — never the full suite.
+- The orchestrator never verifies: no tests, lint, builds, or `tsc`.
+- `devil-advocate` PHASE: completion is the session's single full-project pass (full suite + `tsc --noEmit`); on BLOCK, re-dispatch scoped fixes from its FAILURES attribution and re-gate. Two consecutive BLOCKs → stop, report.
+
 ## Completion
 
 Every session ends with:
-1. What was done
-2. Current project state
-3. Suggested next steps
+1. Gate — if any agent reported FILES_TOUCHED ≠ none, dispatch `devil-advocate` PHASE: completion (the only full-project verification); BLOCK → fix loop; never claim done before PASS. Zero-file-change sessions skip the gate.
+2. What was done
+3. Current project state
+4. Suggested next steps

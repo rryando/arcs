@@ -21,11 +21,11 @@ flowchart TD
     B -->|Passes immediately| D[Test is wrong — fix or delete]
     D --> A
     C --> E{Run test}
-    E -->|All pass| F[Refactor — keep green]
+    E -->|Your tests pass| F[Refactor — keep green]
     E -->|Fails| C
     F --> G{More behavior needed?}
     G -->|Yes| A
-    G -->|No| H[Done — verify all green]
+    G -->|No| H[Done — your test files green, scoped VERIFY passes]
 ```
 
 ## Iron Law
@@ -35,12 +35,12 @@ Code written before a test? **Delete it.** No "reference", no "adapting". Start 
 ## RED — Write Failing Test
 
 - One behavior per test, clear name, real code (no mocks unless unavoidable)
-- Run: `npm test path/to/test.test.ts` — confirm fails for the right reason
+- Run: `npm test -- path/to/test.test.ts` — confirm fails for the right reason
 
 ## GREEN — Minimal Code
 
 - Simplest code to pass. Nothing beyond what the test requires.
-- Run: confirm all tests pass, output pristine
+- Run: re-run YOUR test file(s) (`npm test -- path/to/test.test.ts`) — confirm they pass, output pristine. Never the unscoped suite; the devil-advocate completion gate owns full-project verification.
 
 ## REFACTOR — Clean Up
 

@@ -127,7 +127,7 @@
           "model": "github-copilot/claude-haiku-4.5",
           "temperature": 0,
           "permission": {
-            "edit": "allow",
+            "edit": "deny",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
@@ -149,7 +149,7 @@
           "temperature": 0.5,
           "prompt": "{file:./prompts/code-reviewer.txt}",
           "permission": {
-            "edit": "allow",
+            "edit": "deny",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
@@ -190,7 +190,7 @@
           "model": "github-copilot/claude-haiku-4.5",
           "temperature": 0.4,
           "permission": {
-            "edit": "allow",
+            "edit": "deny",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
@@ -206,7 +206,7 @@
           "software-engineer"
         ],
         "value": {
-          "description": "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, executing-plans, finishing-a-development-branch, and aesthetic skills as needed.",
+          "description": "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "temperature": 0,
@@ -253,7 +253,7 @@
           "model": "github-copilot/claude-haiku-4.5",
           "temperature": 0.3,
           "permission": {
-            "edit": "allow",
+            "edit": "deny",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
@@ -274,7 +274,7 @@
           "model": "github-copilot/claude-sonnet-4.6",
           "temperature": 0.7,
           "permission": {
-            "edit": "allow",
+            "edit": "deny",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
@@ -283,6 +283,16 @@
           "prompt": "{file:./prompts/devil-advocate.txt}"
         },
         "mode": "merge"
+      },
+      {
+        "path": [
+          "agent",
+          "devil-advocate",
+          "permission",
+          "edit"
+        ],
+        "value": "deny",
+        "mode": "overwrite"
       },
       {
         "path": [
@@ -316,7 +326,7 @@
           "model": "github-copilot/claude-opus-4.6",
           "temperature": 0.5,
           "permission": {
-            "edit": "allow",
+            "edit": "deny",
             "bash": "allow",
             "webfetch": "allow",
             "mcp": "allow",
@@ -332,6 +342,56 @@
         ],
         "value": "github-copilot/claude-haiku-4.5",
         "mode": "if-absent"
+      },
+      {
+        "path": [
+          "agent",
+          "graph-explorer",
+          "permission",
+          "edit"
+        ],
+        "value": "deny",
+        "mode": "overwrite"
+      },
+      {
+        "path": [
+          "agent",
+          "code-reviewer",
+          "permission",
+          "edit"
+        ],
+        "value": "deny",
+        "mode": "overwrite"
+      },
+      {
+        "path": [
+          "agent",
+          "tech-architect",
+          "permission",
+          "edit"
+        ],
+        "value": "deny",
+        "mode": "overwrite"
+      },
+      {
+        "path": [
+          "agent",
+          "qa-analyst",
+          "permission",
+          "edit"
+        ],
+        "value": "deny",
+        "mode": "overwrite"
+      },
+      {
+        "path": [
+          "agent",
+          "system-architect",
+          "permission",
+          "edit"
+        ],
+        "value": "deny",
+        "mode": "overwrite"
       }
     ]
   }

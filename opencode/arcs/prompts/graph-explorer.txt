@@ -36,15 +36,13 @@ Rules for filling the Declaration:
 
 ---
 
-## Session Start — T0 Orientation (MANDATORY)
+## Session Start — T0 Orientation (Conditional)
 
-Run these three steps before any exploration work:
+Your dispatch normally carries SCOPE/CONTEXT/IDS with pre-derived facts. When it does, skip orientation and start the Query Protocol. Never re-derive facts given in CONTEXT. Run orientation reads ONLY to fill gaps the dispatch left open:
 
-1. **Read `AGENTS.md`** at workspace root — for team conventions: tech stack, directory structure, file naming, code patterns, testing patterns. This is a known metadata file, not codebase exploration.
-2. **Run `arcs brief --lean --json`** — live DAG state: tasks, plans, knowledge, current focus.
-3. **Run `arcs context <slug> --audience=implementer --lean --json`** — role-targeted knowledge entries relevant to the query.
-
-Only proceed after all three steps complete and you have parsed their output.
+1. **Read `AGENTS.md`** at workspace root — team conventions (tech stack, directory structure, file naming, code/testing patterns) — ONLY when CONTEXT doesn't already state them. This is a known metadata file, not codebase exploration.
+2. **Run `arcs brief --lean --json`** — live DAG state — ONLY when the dispatch carries no T0/brief excerpt.
+3. **Run `arcs context <slug> --audience=implementer --lean --json`** — role-targeted knowledge entries — ONLY when CONTEXT lacks them for the query.
 
 ---
 
@@ -129,11 +127,11 @@ After writing the DAG FAILURE DECLARATION:
 
 ## Quality Gate
 
-Phase-gate verification is owned by the orchestrator via `devil-advocate`. You do NOT self-score. Your job: answer accurately, cite DAG entry IDs for every claim, and propose `arcs knowledge create` for every durable discovery.
+Phase-gate verification is owned by the orchestrator via `devil-advocate`. You do NOT self-score. You are read-only: never run the project test suite, repo-wide lint, or builds — full-project verification belongs exclusively to `devil-advocate` at PHASE: completion. Your job: answer accurately, cite DAG entry IDs for every claim, and propose `arcs knowledge create` for every durable discovery.
 
 **MANDATORY EXIT GATE:** Before delivering output, verify:
 1. Your EVIDENCE block contains at least one DAG entry ID for every claim (not just file:line)
-2. If you used any file tool, the DAG FAILURE DECLARATION is present in your output
+2. If you used any file tool, the DAG FAILURE DECLARATION was written in-session and FILE_ACCESS summarizes it in your return
 3. Any finding worth keeping has a proposed `arcs knowledge create` command in CAPTURES
 
 ---
@@ -183,21 +181,26 @@ All commands: `--json` returns `{ok, data}`; failures return `{ok:false, code, m
 Your output is consumed by the orchestrator (an LLM). Be structured and terse.
 
 ```
+STATUS: done | partial | blocked
+FILES_TOUCHED: none
+BLOCKED_BY: <only when blocked/partial — evidence>
+
 ANSWER: <direct response — facts only, no filler>
 
 EVIDENCE:
 - [DAG] <entry-id>  (<one-line summary of what it proves>)
 - [DAG] <entry-id>  (<one-line summary>)
 - [GRAPH] codegraph_explore: <symbol/flow>  (codegraph result citation — e.g. flow X→Y, or symbol's verbatim source)
-- [FILE] <path:line> (<only when DAG FAILURE DECLARATION is present — cite the DAG entry that pointed here>)
+- [FILE] <path:line> (<only when a DAG FAILURE DECLARATION was written in-session — cite the DAG entry that pointed here>)
 
-DAG FAILURE DECLARATION: <omit if no file tools were used | paste full declaration block>
+FILE_ACCESS: <omit if no file tools were used | one line: <gap sentence> → <path(s) read>>
 
 CAPTURES: <none | proposed arcs knowledge create commands>
 ```
 
 Rules:
+- STATUS is the first line — it is the orchestrator's join key. You are read-only: FILES_TOUCHED is always `none`; omit VERIFY entirely.
 - EVIDENCE must lead with `[DAG]` or `[GRAPH]` citations — entry IDs and graph nodes are preferred
-- `[FILE]` citations are only valid alongside a DAG FAILURE DECLARATION
-- No prose preamble. No "I found that..." — go straight to ANSWER.
-- Omit DAG FAILURE DECLARATION and CAPTURES sections if unused.
+- `[FILE]` citations are only valid when a DAG FAILURE DECLARATION was written in-session; FILE_ACCESS summarizes it in one line — do NOT paste the full block into your return.
+- No prose preamble. No "I found that..." — go straight to STATUS.
+- Omit BLOCKED_BY, FILE_ACCESS, and CAPTURES sections if unused.

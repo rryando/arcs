@@ -92,7 +92,7 @@ Update via `arcs project update-doc <slug> <doc> --content="..."`.
 | `tech-architect` | Cross-module couplings, structural gotchas, lessons | `gotcha`, `lesson` |
 | `qa-analyst` (optional) | Coding-style + convention scan from existing code | `pattern` |
 
-Dispatch in parallel — load `dispatching-parallel-agents`. Each agent receives:
+Dispatch in parallel — all agents in one message, per the orchestrator's Parallelism rules. Each agent receives:
 - The relevant `KnowledgeProposal` records from `ingestGraph` (so they don't rediscover what codegraph already found)
 - Targeted codegraph queries for evidence (e.g., `codegraph_node` / `codegraph_impact` output for the modules they own)
 - Explicit scope (which files / which kinds to produce)

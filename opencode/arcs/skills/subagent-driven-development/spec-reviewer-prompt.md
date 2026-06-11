@@ -57,7 +57,7 @@ Task tool (general-purpose):
 
     ## Report Format (MANDATORY)
 
-    Return prose explanation followed by this EXACT JSON block as the LAST thing in your message:
+    Return brief prose findings FIRST, then this EXACT JSON block as the LAST thing in your message — nothing after it:
 
     ```json
     {

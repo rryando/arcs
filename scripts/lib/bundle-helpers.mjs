@@ -174,9 +174,35 @@ export function validateDeclaredPath(relativePath, outputRoot, validationRoot) {
 
 export function wireCodegraphMcp(target) {
   // Best-effort: wire the codegraph MCP server for this host. Non-fatal.
-  // Skipped silently if the codegraph binary is absent.
+  // Skipped silently if the codegraph binary is absent, or when
+  // ARCS_SKIP_CODEGRAPH=1 (set by the test suite so deploy-script runs never
+  // mutate the developer's real host config).
+  if (process.env.ARCS_SKIP_CODEGRAPH === "1") return false;
   try {
     const r = spawnSync("codegraph", ["install", `--target=${target}`, "--yes"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000,
+    });
+    if (r.error || r.status !== 0) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function wireRtk(target) {
+  // Best-effort: wire RTK (token-optimized command proxy) for this host.
+  // `rtk init -g` always covers Claude Code; `--opencode` additionally
+  // installs the OpenCode plugin. Non-fatal. Skipped silently if the rtk
+  // binary is absent, or when ARCS_SKIP_RTK=1 (set by the test suite so
+  // deploy-script runs never mutate the developer's real host config).
+  if (process.env.ARCS_SKIP_RTK === "1") return false;
+  try {
+    const args = ["init", "-g"];
+    if (target === "opencode") args.push("--opencode");
+    args.push("--auto-patch");
+    const r = spawnSync("rtk", args, {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 120_000,

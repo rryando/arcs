@@ -130,9 +130,9 @@ describe("writeOpencodeAgent — agent key order", () => {
       // cascades into dispatched sub-agents
       expect(cavemanContent).toContain("Sub-Agent Propagation");
       expect(cavemanContent).toContain("INHERITED from ARCS Caveman orchestrator");
-      // Caveman must reference the bundled commit/review skills
+      // Caveman must reference the bundled commit skill and the inline review format
       expect(cavemanContent).toContain("caveman-commit");
-      expect(cavemanContent).toContain("caveman-review");
+      expect(cavemanContent).toContain("one-line findings");
     });
   });
 });

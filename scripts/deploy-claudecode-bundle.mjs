@@ -32,7 +32,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { wireCodegraphMcp } from "./lib/bundle-helpers.mjs";
+import { wireCodegraphMcp, wireRtk } from "./lib/bundle-helpers.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -88,71 +88,84 @@ const agentTierMap = {
   "arcs-docs": "heavy",
   "oncall-ops": "heavy",
   "system-architect": "heavy",
-  general: "heavy",
   "arcs-orchestrate": "standard",
   "arcs-orchestrate-caveman": "standard",
   "devil-advocate": "standard",
+  "graph-explorer": "light",
   "code-reviewer": "light",
   "tech-architect": "light",
   "qa-analyst": "light",
 };
 
+// Agent descriptions mirror opencode/arcs/manifest.json (canonical) — keep in sync.
 const agentMetadata = {
   "software-engineer": {
     name: "Software Engineer",
-    description: "Implementation specialist. Writes code, runs tests, and ships features.",
+    description:
+      "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
     tools: "Read, Write, Edit, Glob, Grep, Bash",
     model: "inherit",
   },
   "devil-advocate": {
     name: "Devil's Advocate",
-    description: "Adversarial phase-gate agent. Checks work using KISS/YAGNI/DRY principles.",
+    description:
+      "Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
+    tools: "Read, Glob, Grep, Bash",
+    model: "inherit",
+  },
+  "graph-explorer": {
+    name: "Graph Explorer",
+    description:
+      "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
     tools: "Read, Glob, Grep, Bash",
     model: "inherit",
   },
   "tech-architect": {
     name: "Technical Architect",
     description:
-      "Architecture and analysis specialist. Deep structural reasoning and trade-off evaluation.",
+      "Architecture and analysis specialist. Deep structural reasoning, refactor guidance, trade-off evaluation, and root cause analysis without making hasty edits.",
     tools: "Read, Glob, Grep, Bash",
     model: "inherit",
   },
   "code-reviewer": {
     name: "Code Reviewer",
-    description: "Reviews code changes for correctness, maintainability, and testing issues.",
+    description:
+      "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
     tools: "Read, Glob, Grep, Bash",
     model: "inherit",
   },
   "qa-analyst": {
     name: "QA Analyst",
-    description: "Quality enforcement specialist. Proactive code audits and convention compliance.",
+    description:
+      "Quality enforcement specialist. Proactive code audits, review dispatch, convention compliance.",
     tools: "Read, Glob, Grep, Bash",
     model: "inherit",
   },
   "system-architect": {
     name: "System Architect",
     description:
-      "Architecture and design specialist. Module boundaries, dependency graphs, and design decisions.",
+      "Architecture and design specialist. Module boundaries, dependency graphs, migration strategies, and cross-project design decisions.",
     tools: "Read, Glob, Grep, Bash",
     model: "inherit",
   },
   "arcs-docs": {
     name: "ARCS Docs Specialist",
     description:
-      "Documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health.",
+      "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
     tools: "Read, Write, Edit, Glob, Grep, Bash",
     model: "inherit",
   },
   "docs-researcher": {
     name: "Docs Researcher",
-    description: "Handles documentation writing, research synthesis, and document-heavy analysis.",
+    description:
+      "Handles documentation writing, research synthesis, OCR-adjacent extraction, and document-heavy analysis tasks.",
     tools: "Read, Write, Edit, Glob, Grep, Bash",
     model: "inherit",
   },
   "oncall-ops": {
     name: "On-Call Ops",
     description:
-      "Debugging and diagnosis specialist. Finds root causes through systematic investigation.",
+      "Debugging and diagnosis specialist. Finds root causes through systematic investigation, log triage, bisect, and performance profiling.",
     tools: "Read, Write, Edit, Glob, Grep, Bash",
     model: "inherit",
   },
@@ -428,6 +441,11 @@ function main() {
   // Best-effort: wire the codegraph MCP server. Skipped on dry-run; never fatal.
   const codegraphWired = dryRun ? false : wireCodegraphMcp("claude");
 
+  // Best-effort: wire RTK instructions + hook. `rtk init -g` only writes the
+  // user-global config, so project-scoped deploys skip it. Skipped on dry-run;
+  // never fatal.
+  const rtkWired = dryRun || scope === "project" ? false : wireRtk("claude");
+
   const result = {
     dryRun,
     source: bundleRoot,
@@ -438,6 +456,7 @@ function main() {
     filesRemoved,
     filesUnchanged,
     codegraphWired,
+    rtkWired,
   };
 
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

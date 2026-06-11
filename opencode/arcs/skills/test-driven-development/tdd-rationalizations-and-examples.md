@@ -66,7 +66,7 @@ test('rejects empty email', async () => {
 
 ### Verify RED
 ```bash
-$ npm test
+$ npm test -- submitForm.test.ts
 FAIL: expected 'Email required', got undefined
 ```
 
@@ -82,7 +82,7 @@ function submitForm(data: FormData) {
 
 ### Verify GREEN
 ```bash
-$ npm test
+$ npm test -- submitForm.test.ts
 PASS
 ```
 

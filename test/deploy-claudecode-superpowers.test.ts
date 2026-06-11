@@ -15,6 +15,8 @@ type DeployResult = {
   filesChanged: string[];
   filesRemoved: string[];
   filesUnchanged: string[];
+  codegraphWired: boolean;
+  rtkWired: boolean;
 };
 
 function writeFile(rootPath: string, relativePath: string, content: string) {
@@ -70,8 +72,10 @@ describe("deploy-claudecode-bundle", () => {
       expect(result.dryRun).toBe(true);
       expect(result.filesAdded).toContain("agents/software-engineer.md");
       expect(result.filesAdded).toContain("agents/devil-advocate.md");
-      // Dry-run: files should NOT actually be written
+      // Dry-run: files should NOT actually be written, no external wiring
       expect(existsSync(resolve(configRoot, "agents/software-engineer.md"))).toBe(false);
+      expect(result.codegraphWired).toBe(false);
+      expect(result.rtkWired).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -95,6 +99,11 @@ describe("deploy-claudecode-bundle", () => {
       expect(result.dryRun).toBe(false);
       expect(result.filesAdded).toContain("agents/software-engineer.md");
       expect(result.filesAdded).toContain("agents/devil-advocate.md");
+      // Real-write deploys still skip external wiring under the test suite:
+      // global-setup exports ARCS_SKIP_CODEGRAPH/ARCS_SKIP_RTK and the child
+      // process inherits them, so the developer's host config is never touched.
+      expect(result.codegraphWired).toBe(false);
+      expect(result.rtkWired).toBe(false);
 
       // Verify actually written and contains correct frontmatter and system prompt
       const writtenContent = readFileSync(
@@ -103,7 +112,7 @@ describe("deploy-claudecode-bundle", () => {
       );
       expect(writtenContent).toContain("name: Software Engineer");
       expect(writtenContent).toContain(
-        "description: Implementation specialist. Writes code, runs tests, and ships features.",
+        "description: Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
       );
       expect(writtenContent).toContain("model: inherit");
       expect(writtenContent).toContain('tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]');
@@ -161,7 +170,7 @@ describe("deploy-claudecode-bundle", () => {
       const compiledDevilAdvocate = [
         "---",
         "name: Devil's Advocate",
-        "description: Adversarial phase-gate agent. Checks work using KISS/YAGNI/DRY principles.",
+        "description: Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
         "model: inherit",
         'tools: ["Read", "Glob", "Grep", "Bash"]',
         "---",

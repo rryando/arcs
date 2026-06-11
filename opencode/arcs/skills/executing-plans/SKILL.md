@@ -27,20 +27,20 @@ flowchart TD
     E --> F{Concerns about plan?}
     F -->|Yes| G[Raise with human — STOP]
     F -->|No| H[Select next ready task]
-    H --> I[Transition task → in_progress]
+    H --> I[Mark task started — see Transition ownership]
     I --> J[Execute steps exactly]
-    J --> K[Run verification command]
+    J --> K[Run task's scoped verify command]
     K --> L{Passes?}
     L -->|No| M{Repeated failure?}
     M -->|Yes| N[STOP — ask for help]
     M -->|No| J
-    L -->|Yes| O[Transition task → done]
+    L -->|Yes| O[Report task done — see Transition ownership]
     O --> P{More ready tasks?}
     P -->|Yes| H
     P -->|No| Q{All tasks done?}
     Q -->|No| R[Re-scan: arcs diagram ready]
     R --> P
-    Q -->|Yes| S[Use finishing-a-development-branch skill]
+    Q -->|Yes| S[Report completion — devil-advocate gate owns the full-project pass]
 ```
 
 ## Diagram-First Task Selection
@@ -53,15 +53,19 @@ When plan has `.diagram.mmd`:
 
 **Dependency-aware ordering:** `arcs next` respects `dependsOn` — it only surfaces tasks whose dependencies are all `done`. Use `arcs next` as the authoritative source for what's executable; you don't need to manually parse `.mmd` for ordering. `arcs diagram ready` remains useful for per-plan metadata inspection.
 
-**Transition requires both flags:** `arcs task transition <slug> <taskId> done --diagramNodeId=T001 --planId=<planId>`
+**Transition ownership:** When dispatched by the ARCS orchestrator, you never run `arcs task transition` — report each task done in your return envelope (STATUS/FILES_TOUCHED/VERIFY) and the orchestrator transitions after the execute gate passes. Only when running standalone (no orchestrator session) transition yourself, with both flags: `arcs task transition <slug> <taskId> done --diagramNodeId=T001 --planId=<planId>`
+
+**Verify scope rule:** Run ONLY the current task's `verify` command, scoped to that task's `files`. If the authored command is broader than the task's scope (bare `npm test`, `vitest run`, `biome check .`), narrow it to the touched files first (e.g. `npm test -- test/orders.test.ts`). Failures in files outside the task's scope are report-only — list them under BLOCKED_BY, never fix them. Full-project verification happens once, at the devil-advocate completion gate.
 
 ## Sub-Agent Context
 
-Include in sub-agent prompts:
+Fetch once, then paste the relevant output into each dispatch's CONTEXT — don't make sub-agents re-fetch:
 ```bash
 arcs context <slug> --audience=implementer --lean --json
 arcs search <slug> "<task-keywords>" --lean --json
 ```
+
+Sub-agents run `arcs` lookups only to fill gaps the dispatch left open — never to re-derive what CONTEXT already states.
 
 Sub-agents MUST NOT edit `.mmd` files — orchestrator owns diagram updates.
 
@@ -87,7 +91,7 @@ Post-execution DAG sync fires automatically when:
 
 - Review plan critically before starting — raise concerns first
 - Follow plan steps exactly — don't improvise
-- Never skip verifications
+- Never skip verifications — and never widen them beyond the task's scope
 - Never start on main/master without explicit consent
 - Reference sub-skills when plan specifies them
-- Use `finishing-a-development-branch` after all tasks complete
+- After all tasks complete: report completion — the devil-advocate completion gate runs the single full-project verification

@@ -28,10 +28,11 @@ CHECK:
 VERDICTS: `PASS` | `BLOCK(reasons)` | `TRIM(tasks to cut with rationale)`
 
 ### PHASE: execute
-Artifact: a git diff or set of file changes.
+Artifact: the implementer's return — FILES_TOUCHED + scoped VERIFY command + declared SCOPE. Derive the diff yourself, scoped to the implementer's files: `git diff HEAD -- <FILES_TOUCHED paths>`. Changes in other paths belong to parallel siblings — never judge them at this gate.
 
 CHECK:
-1. Run the scoped test command provided. If tests fail → BLOCK immediately.
+0. Handover gate: if the dispatch lacks the scoped VERIFY command or FILES_TOUCHED → BLOCK(missing handover: VERIFY and/or FILES_TOUCHED) immediately. NEVER improvise — do not run the full suite or any project-default test script at this gate. Parallel siblings share the worktree; a full run here judges their in-flight work. Full-project verification happens exactly once, at PHASE: completion.
+1. Run ONLY the scoped VERIFY command forwarded in the dispatch. If tests fail → BLOCK immediately.
 2. Run scoped lint if provided. If lint fails → BLOCK immediately.
 3. Read the diff critically:
    - Unnecessary abstractions? (factory, strategy, plugin patterns for 1 consumer)
@@ -39,7 +40,7 @@ CHECK:
    - Duplicated logic? (grep for similar patterns elsewhere in codebase)
    - Over-engineering? (configurable where hardcoded suffices)
    - Naming unclear? (ambiguous variables, misleading function names)
-4. Scope check: did the change touch files outside declared scope?
+4. Scope drift: compare FILES_TOUCHED against the declared SCOPE — any file touched outside SCOPE is drift.
 5. Prompt→Result alignment: does what was built match what was asked?
 
 VERDICTS: `PASS` | `BLOCK(reasons)` | `WARN(concerns that don't block but should be noted)`
@@ -56,20 +57,26 @@ CHECK:
 VERDICTS: `PASS` | `BLOCK(reasons)` | `DEDUP(list overlapping entries with IDs)`
 
 ### PHASE: completion
-Artifact: summary of all work done in session + original user request.
+Artifact: session summary (per-agent scopes + FILES_TOUCHED) + original user request.
+
+You are the session's ONLY full-project verification — no sub-agent and no orchestrator runs the full suite; it runs here, once, after all implementation lands. Cross-scope interaction failures from parallel agents' changes are EXPECTED to surface here — that is this gate's purpose, not a surprise.
 
 CHECK:
-1. Run the full test suite (this is the ONE place full-suite is justified).
+1. Run the full test suite (this is the ONE place full-suite is justified; use the command from the dispatch if provided, else the project's standard test script).
 2. Run `tsc --noEmit` for type safety.
 3. Compare: original ask vs delivered work. Identify gaps.
 4. Check for loose ends: TODO comments added, partial implementations, placeholder values.
 5. Would you ship this to production right now? If hesitating, why?
 
+On any test or `tsc` failure → BLOCK with a FAILURES block (see Verdict Format). Attribute every failure: use `git diff`/`git log` on the implicated paths plus the per-agent scopes in the session summary to name the suspected owning scope/task. The orchestrator re-dispatches scoped fixes straight from your FAILURES lines — each line must be actionable on its own.
+
+Pre-existing breakage: if `git diff`/`git log` shows the implicated paths were NOT touched this session, mark the line `suspected scope: pre-existing`. Never BLOCK on pre-existing failures alone — report them under WARN or INCOMPLETE so the orchestrator surfaces them to the user instead of auto-dispatching fixes.
+
 VERDICTS: `PASS` | `BLOCK(reasons)` | `INCOMPLETE(specific gaps)`
 
 ## Verdict Format
 
-Always return a structured verdict:
+Always return a structured verdict — verdict-first. Gates do NOT use the work-agent Standard Return Envelope:
 
 ```
 PHASE: <phase>
@@ -80,6 +87,9 @@ PRINCIPLE VIOLATIONS:
 
 TEST RESULT:
 - <command ran>: <pass/fail + summary>
+
+FAILURES:   (completion phase, on failure — one line per failure)
+- <failing test/file>: <one-line error> | implicated: <paths> | suspected scope: <task/agent> | repro: <scoped command>
 
 SCOPE DRIFT:
 - <none | list of out-of-scope changes>
