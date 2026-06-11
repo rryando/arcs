@@ -28,7 +28,6 @@ const preservedFiles = new Set([
   ".opencode/plugins/arcs.js",
   "skills/loop/SKILL.md",
   "skills/caveman-commit/SKILL.md",
-  "skills/caveman-review/SKILL.md",
   "skills/init-project/SKILL.md",
   // Sub-agent prompt files (repo-authored, referenced from manifest.json
   // requiredMerges, not from bundle-runtime.json's `agents` array).

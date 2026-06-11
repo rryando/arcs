@@ -44,9 +44,14 @@ flowchart TD
     R -->|yes| T[Mark task done]
     T --> U{More tasks?}
     U -->|yes| B
-    U -->|no| V[Dispatch final cross-task reviewer]
-    V --> W[Load skill: finishing-a-development-branch]
+    U -->|no| V[Dispatch devil-advocate PHASE: completion — the single full-project pass]
+    V -->|PASS| W[Report completion]
+    V -->|BLOCK| X[Re-dispatch scoped fixes per FAILURES] --> V
 ```
+
+**Gate cap:** two consecutive completion BLOCKs → stop and escalate to human; never loop the V→X cycle a third time.
+
+**Under the ARCS orchestrator:** the orchestrator's devil-advocate PHASE: execute gate replaces the code-quality reviewer step (the gate runs the scoped VERIFY and the drift check); spec review remains. Running standalone, keep both reviewer stages as drawn.
 
 ## Retry & Escalation
 
@@ -84,8 +89,9 @@ Every implementer subagent prompt MUST include:
 | **Context** | Where this task fits in the plan; what came before |
 | **Scope** | File boundaries — what to touch, what NOT to touch |
 | **Acceptance** | Done criteria copied verbatim from plan/diagram |
-| **Verify** | Exact command to run before claiming done |
+| **Verify** | Exact command to run before claiming done — scoped to the task's files, never the full suite |
 | **Skill** | Which work-mode skill to load (from diagram metadata or inferred) |
+| **Return** | Structured Return envelope (below) — brief prose findings first, JSON block last |
 
 Do NOT make the subagent read the plan file. Provide full text in the prompt.
 
@@ -102,15 +108,25 @@ Do NOT make the subagent read the plan file. Provide full text in the prompt.
 - `./implementer-prompt.md`
 - `./spec-reviewer-prompt.md`
 - `./code-quality-reviewer-prompt.md`
-- `./return-schema.md` — structured output format (inject into every dispatch)
 
 ## Structured Return
 
-All sub-agents MUST return a JSON block as the final thing in their message, per `./return-schema.md`.
-Orchestrator parses `status` for routing, `payload` for action. Free-form prose above is fine.
+All sub-agents MUST return a JSON block as the LAST thing in their message — brief prose findings first, JSON block last, nothing after it:
+
+```json
+{
+  "status": "DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT",
+  "summary": "<1-2 sentences>",
+  "payload": { "<role-specific fields per prompt template>": "..." }
+}
+```
+
+Role payloads: implementer → `filesChanged`/`filesCreated`/`verification{command,result,scopeReason}`/`concerns`/`scopeChanges`; spec reviewer → `compliant`/`issues`; quality reviewer → `approved`/`issues`.
+Orchestrator parses `status` for routing, `payload` for action.
+Mapping to the orchestrator's Standard Return Envelope: DONE→done, DONE_WITH_CONCERNS→done + concerns surfaced, BLOCKED→blocked, NEEDS_CONTEXT→blocked.
 
 Include in every dispatch prompt:
-> "Return format: JSON envelope with status + typed payload. See return-schema.md for your role's schema."
+> "Return format: brief prose findings first, then the JSON envelope (status + typed payload) from your role's prompt template as the LAST thing in your message — nothing after it."
 
 ## Git State Discipline
 
@@ -129,10 +145,13 @@ Sub-agents lint and test **only files they touched**:
 |-------|---------|----------|
 | Lint | `biome check src/changed.ts` | `biome check .` |
 | Test | `vitest run test/changed.test.ts` | `vitest run` / `npm test` |
-| Type check | `tsc --noEmit` (whole-project — exception) | — |
+| Type check | `tsc --noEmit` — read-only signal; out-of-scope errors are report-only | fixing type errors outside your scope |
 
-Full suite justified ONLY when change is pervasive (shared types, config, build).
-Sub-agent must state `scopeReason` in return payload.
+Sub-agents NEVER run the full suite — not even for pervasive changes. If a change is pervasive
+(shared types, config, build), record it in `scopeChanges`/`concerns`; the orchestrator defers
+full-project verification to the devil-advocate completion gate. Type errors or test failures in
+files outside your scope are report-only — never fix them; the authoritative project-wide tsc run
+belongs to that gate. Sub-agent must state `scopeReason` in return payload.
 
 ## Parallelism Rules
 
@@ -140,7 +159,7 @@ Parallel implementers are allowed when tasks touch **zero shared files**.
 
 1. **Independence check:** Orchestrator verifies no file overlap before dispatch. If overlap → serialize.
 2. **Batch limit:** Maximum 4 concurrent subagents per round. Queue remaining.
-3. **Prompt construction:** Each subagent gets: Scope, Goal, Context, Constraints, Output format — all required.
+3. **Prompt construction:** Per the Sub-Agent Prompt Construction table above — all rows required.
 4. **Conflict detection:** After fan-out completes, check for conflicting edits before committing.
 5. **Shared context:** Fetch once (e.g., project brief), inject into all subagent prompts — don't make each agent re-fetch.
 

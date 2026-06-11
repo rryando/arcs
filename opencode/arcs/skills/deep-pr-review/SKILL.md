@@ -81,14 +81,14 @@ Agent picks dimensions from diff context. **Correctness is always evaluated.** O
 | **YAGNI** | Code written "for later" with no current caller; abstractions with one concrete use; configurable hooks with one known value; generic machinery built for hypothetical consumers |
 | **SOLID** | Module gains responsibilities, dependency direction shifts, large classes touched |
 | **Convention fit** | AGENTS.md or DAG `pattern`/`architecture` knowledge applies to changed files |
-| **Architectural risk** → handoff `architecture-review` | Diff crosses module boundaries, touches god nodes, changes public API |
-| **Performance risk** → handoff `performance-diagnosis` | Hot paths, loops over external IO, new queries, allocations in render |
+| **Architectural risk** → handoff to the system-architect agent (structural audit) | Diff crosses module boundaries, touches god nodes, changes public API |
+| **Performance risk** → handoff to the oncall-ops agent (performance investigation) | Hot paths, loops over external IO, new queries, allocations in render |
 
 Skipped dimensions are reported as `cleared (not applicable: <reason>)`. Never silently dropped.
 
 ## Severity Prefixes
 
-Reuses `caveman-review` format for inline output:
+Inline findings are one line — `<file>:L<line>: problem. fix.` — prefixed by severity:
 
 | Prefix | Meaning | Posting default |
 |--------|---------|-----------------|
@@ -131,7 +131,7 @@ GitHub `​```suggestion` blocks render an "Apply suggestion" button. Use **only
 
 - Multi-line code restructure → inline review comment with a fenced code block (no `suggestion` tag)
 - Missing block / new file content → top-level review body bullet
-- Cross-file refactor → handoff finding with `architecture-review` recommendation
+- Cross-file refactor → handoff finding recommending the system-architect agent (structural audit)
 
 ## Posting Protocol (ONE `gh api` call — never per-finding)
 
@@ -182,9 +182,9 @@ gh api POST /repos/{owner}/{repo}/pulls/{number}/reviews \
 - Never post to GitHub before user picks a posting mode
 - Cite every finding — no uncited claims
 - ` ```suggestion ` blocks only for small line-replacement fixes
-- Defer to `architecture-review` for full structural drift; surface as handoff flag, do not run inline
-- Defer to `performance-diagnosis` for perf investigation; surface as risk flag
-- Compose with `auditing-a-feature` rubric and `caveman-review` inline format — do not duplicate
+- Defer to the system-architect agent (structural audit) for full structural drift; surface as handoff flag, do not run inline
+- Defer to the oncall-ops agent (performance investigation) for perf work; surface as risk flag
+- Review dimensions are defined in this skill (Adaptive Rubric); inline findings use the one-line format `<file>:L<line>: problem. fix.` — do not duplicate
 - Re-review detection: if AI has reviewed before, scope to diff since last review's commit_id
 - Tag each posted suggestion with `<!-- arcs:deep-review:<finding-id> -->` for re-review tracking
 - See `review-template.md` for GitHub review body template

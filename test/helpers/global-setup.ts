@@ -12,7 +12,8 @@
  *   2. Creates one sandbox dir under `os.tmpdir()` and exports it via
  *      `ARCS_DATA_DIR`. `withTempDataDir` still nests on top — it saves and
  *      restores the env var, so per-test overrides remain isolated.
- *   3. Sets `ARCS_SKIP_CODEGRAPH=1` so tests never shell out to codegraph.
+ *   3. Sets `ARCS_SKIP_CODEGRAPH=1` and `ARCS_SKIP_RTK=1` so tests never
+ *      shell out to codegraph or rtk.
  *   4. Removes the sandbox on teardown.
  */
 
@@ -39,6 +40,7 @@ export default function setup(): () => void {
 
   process.env.ARCS_DATA_DIR = sandbox;
   process.env.ARCS_SKIP_CODEGRAPH = "1";
+  process.env.ARCS_SKIP_RTK = "1";
 
   return () => {
     try {

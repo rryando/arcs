@@ -5,6 +5,7 @@ import * as p from "@clack/prompts";
 import color from "picocolors";
 import { detectCodegraph } from "../utils/codegraph.js";
 import { PACKAGE_ROOT } from "../utils/paths.js";
+import { detectRtk } from "../utils/rtk.js";
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
   type ArcsConfig,
@@ -496,6 +497,13 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     "opencode";
   await promptCodegraphInstall(codegraphTargets);
 
+  // ── Optional RTK installation ───────────────────────────────────────────────
+  // `rtk init -g` always covers Claude Code; `--opencode` additionally installs
+  // the OpenCode plugin — so only the opencode selection changes the wiring.
+  // The Claude Code selection is passed along so the prompt can ask before
+  // touching an unselected host.
+  await promptRtkInstall(selectedOpenCode, selectedClaudeCode);
+
   p.outro(
     color.green("Done!") +
       " You can re-run this setup at any time with " +
@@ -829,4 +837,168 @@ export async function promptCodegraphInstall(targets: string): Promise<void> {
 
   // After a successful install, wire the selected host(s) + index the project.
   wireCodegraph(targets);
+}
+
+// ---------------------------------------------------------------------------
+// RTK Installation Prompt
+// ---------------------------------------------------------------------------
+
+const RTK_URL = "https://github.com/rtk-ai/rtk";
+
+/**
+ * Wires RTK instructions + the auto-rewrite hook into the selected host(s).
+ * `rtk init -g` always covers Claude Code; `--opencode` additionally installs
+ * the OpenCode plugin. Best-effort and non-fatal — never throws.
+ */
+function wireRtk(withOpencode: boolean): void {
+  const args = ["init", "-g"];
+  if (withOpencode) args.push("--opencode");
+  args.push("--auto-patch");
+  const manualCommand = `rtk ${args.join(" ")}`;
+  const wiredHosts = withOpencode ? "opencode, claude" : "claude";
+
+  try {
+    const wire = spawnSync("rtk", args, {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000,
+    });
+    if (wire.status === 0) {
+      p.log.info(color.dim(`${color.green("✔")} Wired RTK into ${wiredHosts}`));
+    } else {
+      p.note(
+        [
+          `${color.yellow("⚠")} Could not wire RTK into ${wiredHosts} automatically.`,
+          `Run manually:  ${color.dim(manualCommand)}`,
+        ].join("\n"),
+        "Optional: RTK",
+      );
+    }
+  } catch {
+    p.note(
+      [
+        `${color.yellow("⚠")} Could not wire RTK into ${wiredHosts} automatically.`,
+        `Run manually:  ${color.dim(manualCommand)}`,
+      ].join("\n"),
+      "Optional: RTK",
+    );
+  }
+}
+
+/**
+ * Prompts the user to install RTK if it's not already available, using the
+ * official install script with a Homebrew fallback. Once available (freshly
+ * installed or pre-existing), wires RTK instructions + the auto-rewrite hook
+ * into the selected host(s) — asking first when the wiring would also touch
+ * an unselected Claude Code config. Gracefully handles all decline/failure
+ * paths — never throws and never exits the wizard.
+ */
+export async function promptRtkInstall(
+  withOpencode: boolean,
+  claudeSelected: boolean,
+): Promise<void> {
+  const info = detectRtk();
+  if (info.available) {
+    // `rtk init -g` is global — it configures Claude Code even when only
+    // OpenCode was selected. Ask before touching an unselected host.
+    if (withOpencode && !claudeSelected) {
+      const proceed = await p.confirm({
+        message: "Wire RTK for OpenCode? (rtk init -g is global — it also configures Claude Code)",
+        initialValue: true,
+      });
+
+      if (p.isCancel(proceed) || !proceed) {
+        p.log.info(
+          color.dim("Skipped RTK wiring. Run manually:  rtk init -g --opencode --auto-patch"),
+        );
+        return;
+      }
+    }
+
+    wireRtk(withOpencode);
+    return;
+  }
+
+  p.note(
+    [
+      "RTK proxies agent shell commands and filters noise from their output",
+      "(60-90% fewer tokens on git/test/build commands). 100% local.",
+      "Wiring runs `rtk init -g` — global: it always configures Claude Code;",
+      "`--opencode` additionally installs the OpenCode plugin.",
+      "",
+      color.cyan(RTK_URL),
+    ].join("\n"),
+    "Optional: RTK",
+  );
+
+  // No automated Windows installer is published — point at the releases page
+  // instead of offering an install that cannot succeed.
+  if (process.platform === "win32") {
+    p.log.info(color.dim(`Install manually:  ${RTK_URL}/releases`));
+    return;
+  }
+
+  const shouldInstall = await p.confirm({
+    message: "Install RTK now?",
+    initialValue: false,
+  });
+
+  if (p.isCancel(shouldInstall) || !shouldInstall) {
+    p.log.info(color.dim(`Install later:  brew install rtk  |  ${RTK_URL}`));
+    return;
+  }
+
+  const s = p.spinner();
+  s.start("Installing RTK…");
+
+  let installed = false;
+
+  // ── Platform-based install ────────────────────────────────────────────────
+  try {
+    const platformInstall = spawnSync(
+      "sh",
+      [
+        "-c",
+        "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh",
+      ],
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 },
+    );
+    if (platformInstall.status === 0) {
+      installed = true;
+    }
+  } catch {
+    // Fall through to Homebrew fallback.
+  }
+
+  // ── Fallback: Homebrew ────────────────────────────────────────────────────
+  if (!installed) {
+    try {
+      const brewInstall = spawnSync("brew", ["install", "rtk"], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120_000,
+      });
+      if (brewInstall.status === 0) {
+        installed = true;
+      }
+    } catch {
+      // All installers failed.
+    }
+  }
+
+  if (!installed) {
+    s.stop(
+      [
+        `${color.yellow("⚠")} Could not install RTK — all installers failed.`,
+        `Install manually:  ${color.cyan(RTK_URL)}`,
+      ].join("\n"),
+    );
+    return;
+  }
+
+  s.stop(`${color.green("✔")} RTK installed`);
+
+  // After a successful install, wire the selected host(s). Consent was given
+  // via the install confirm, which follows the note disclosing the wiring.
+  wireRtk(withOpencode);
 }

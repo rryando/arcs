@@ -84,9 +84,9 @@ async function gitInit(directory: string) {
 
 **Critical:** Use `console.error()` in tests (not logger - may not show)
 
-**Run and capture:**
+**Run and capture (scoped to the suspect test file — never the full suite):**
 ```bash
-npm test 2>&1 | grep 'DEBUG git init'
+npm test -- path/to/suspect.test.ts 2>&1 | grep 'DEBUG git init'
 ```
 
 **Analyze stack traces:**

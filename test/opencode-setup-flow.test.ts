@@ -68,18 +68,31 @@ describe("OpenCode setup flow", () => {
     // text prompts return empty strings by default (model config)
     vi.mocked((prompts as any).__text).mockResolvedValue("");
     vi.mocked((prompts as any).__multiselect).mockResolvedValue(["opencode"]);
-    vi.mocked(childProcess.spawnSync).mockClear();
     const actualChildProcess =
       await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(childProcess.spawnSync).mockReset();
+    // Fail-closed default: external binaries and installers must never execute
+    // for real from these tests. Individual tests override as needed.
+    vi.mocked(childProcess.spawnSync).mockImplementation(((cmd: any, args: any, options: any) => {
+      if (cmd === "rtk" || cmd === "codegraph" || cmd === "sh" || cmd === "npm" || cmd === "brew") {
+        return { status: 1, stdout: "", stderr: "" } as any;
+      }
+      return (actualChildProcess.spawnSync as any)(cmd, args, options);
+    }) as any);
     vi.mocked(childProcess.execSync).mockReset();
     // Simulate opencode being installed/on PATH so the environment-detection
     // gate in runSetup() passes regardless of the host (CI has neither binary).
+    // rtk/codegraph detection throws (= not installed) so setup-flow stays
+    // host-independent; individual tests override as needed.
     vi.mocked(childProcess.execSync).mockImplementation(((cmd: any, ...rest: any[]) => {
       if (typeof cmd === "string" && cmd.includes("which opencode")) {
         return "/usr/local/bin/opencode\n" as any;
       }
       if (typeof cmd === "string" && cmd.includes("which claude")) {
         return "/usr/local/bin/claude\n" as any;
+      }
+      if (typeof cmd === "string" && (cmd.includes("rtk") || cmd.includes("codegraph"))) {
+        throw new Error("binary not installed in tests");
       }
       return (actualChildProcess.execSync as any)(cmd, ...rest);
     }) as any);
@@ -250,6 +263,107 @@ describe("OpenCode setup flow", () => {
       const agents = updated.agent as Record<string, unknown>;
       const arcsAgent = agents?.["ARCS Orchestrator"] as Record<string, unknown>;
       expect(arcsAgent?.prompt).not.toBe("stale-prompt-text");
+    });
+  });
+
+  // Override rtk detection (beforeEach default = not installed) so the
+  // wiring path runs; codegraph stays absent. spawnSync keeps the fail-closed
+  // interception but lets rtk succeed.
+  async function mockRtkAvailable() {
+    const actualChildProcess =
+      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+
+    vi.mocked(childProcess.execSync).mockImplementation(((cmd: any, ...rest: any[]) => {
+      if (typeof cmd === "string" && cmd.includes("which opencode")) {
+        return "/usr/local/bin/opencode\n" as any;
+      }
+      if (typeof cmd === "string" && cmd.includes("which claude")) {
+        return "/usr/local/bin/claude\n" as any;
+      }
+      if (typeof cmd === "string" && cmd.includes("rtk --version")) {
+        return "rtk 1.0.0\n" as any;
+      }
+      if (typeof cmd === "string" && cmd.includes("which rtk")) {
+        return "/usr/local/bin/rtk\n" as any;
+      }
+      if (typeof cmd === "string" && cmd.includes("codegraph")) {
+        throw new Error("binary not installed in tests");
+      }
+      return (actualChildProcess.execSync as any)(cmd, ...rest);
+    }) as any);
+
+    vi.mocked(childProcess.spawnSync).mockImplementation(((cmd: any, args: any, options: any) => {
+      if (cmd === "rtk") {
+        return { status: 0, stdout: "", stderr: "" } as any;
+      }
+      if (cmd === "codegraph" || cmd === "sh" || cmd === "npm" || cmd === "brew") {
+        return { status: 1, stdout: "", stderr: "" } as any;
+      }
+      return (actualChildProcess.spawnSync as any)(cmd, args, options);
+    }) as any);
+  }
+
+  it("wires RTK for OpenCode + Claude Code when rtk is available and the user consents", async () => {
+    const prompts = await import("@clack/prompts");
+    await mockRtkAvailable();
+
+    vi.mocked((prompts as any).__confirm)
+      .mockResolvedValueOnce(false) // customizeAgents
+      .mockResolvedValueOnce(true) // register agent
+      .mockResolvedValueOnce(false) // decline codegraph install
+      .mockResolvedValueOnce(true); // consent to RTK wiring (also covers Claude Code)
+
+    await withTempHomeDir(async () => {
+      await runSetup("init");
+      expect(childProcess.spawnSync).toHaveBeenCalledWith(
+        "rtk",
+        ["init", "-g", "--opencode", "--auto-patch"],
+        expect.any(Object),
+      );
+    });
+  });
+
+  it("skips RTK wiring when the user declines touching the unselected Claude Code config", async () => {
+    const prompts = await import("@clack/prompts");
+    await mockRtkAvailable();
+
+    vi.mocked((prompts as any).__confirm)
+      .mockResolvedValueOnce(false) // customizeAgents
+      .mockResolvedValueOnce(true) // register agent
+      .mockResolvedValueOnce(false) // decline codegraph install
+      .mockResolvedValueOnce(false); // decline RTK wiring
+
+    await withTempHomeDir(async () => {
+      await runSetup("init");
+      expect(childProcess.spawnSync).not.toHaveBeenCalledWith(
+        "rtk",
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+  });
+
+  it("shows RTK install pointer when rtk is missing and the user declines install", async () => {
+    const prompts = await import("@clack/prompts");
+    // beforeEach default applies: rtk and codegraph both absent, fail-closed spawns.
+
+    vi.mocked((prompts as any).__confirm)
+      .mockResolvedValueOnce(false) // customizeAgents
+      .mockResolvedValueOnce(true) // register agent
+      .mockResolvedValueOnce(false) // decline codegraph install
+      .mockResolvedValueOnce(false); // decline RTK install
+
+    await withTempHomeDir(async () => {
+      await runSetup("init");
+      expect((prompts as any).__note).toHaveBeenCalledWith(
+        expect.stringContaining("github.com/rtk-ai/rtk"),
+        "Optional: RTK",
+      );
+      expect(childProcess.spawnSync).not.toHaveBeenCalledWith(
+        "rtk",
+        expect.anything(),
+        expect.anything(),
+      );
     });
   });
 

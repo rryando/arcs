@@ -25,8 +25,8 @@ Used as the `body` field of `gh api repos/{owner}/{repo}/pulls/{pull_number}/rev
 
 ### Architectural / Performance Handoffs
 <only if any; otherwise omit section>
-- [architecture-review] <reason — e.g. crosses 3 modules, touches god node X>
-- [performance-diagnosis] <reason — e.g. new query in render path>
+- [system-architect] <reason — e.g. crosses 3 modules, touches god node X>
+- [oncall-ops] <reason — e.g. new query in render path>
 
 ### Citations Used
 - AGENTS.md §<section> — <what was checked>

@@ -18,9 +18,9 @@ flowchart TD
     C --> D[Fill code-reviewer.md template]
     D --> E[Dispatch arcs:code-reviewer subagent]
     E --> F{Review results}
-    F -->|Critical| G[Fix immediately]
-    F -->|Important| H[Fix before proceeding]
-    F -->|Minor| I[Note for later]
+    F -->|CRITICAL| G[Fix immediately]
+    F -->|HIGH| H[Fix before proceeding]
+    F -->|MEDIUM/LOW| I[Note for later]
     G --> E
     H --> E
 ```
@@ -30,18 +30,22 @@ flowchart TD
 - `{WHAT_WAS_IMPLEMENTED}` — what you built
 - `{PLAN_OR_REQUIREMENTS}` — what it should do
 - `{BASE_SHA}` / `{HEAD_SHA}` — commit range
-- `{PROJECT_CONVENTIONS}` — CLAUDE.md / linter configs / style guides
+- `{PROJECT_CONVENTIONS}` — CLAUDE.md / linter configs / style guides (gather once per session, reuse across dispatches)
 
 ## When to Request
 
-**Mandatory:** after each subagent task, after major features, before merge to main.
+**Mandatory:** after major features, before merge to main.
+**Already scheduled:** when `subagent-driven-development` drives the loop, its pipeline dispatches this review as stage 2 (code-quality-reviewer applies this template's checklist but returns the SDD JSON envelope) — do not schedule it twice for the same task.
 **Optional:** when stuck, before refactoring, after complex bugfix.
 
 ## Red Flags
 
 - Never skip because "it's simple"
-- Never ignore Critical issues
-- Never proceed with unfixed Important issues
+- Never ignore CRITICAL findings
+- Never proceed with unfixed HIGH findings
 - Always include project conventions in reviewer context
+- CRITICAL/HIGH fixes route to the owning implementer — never fix files outside your own scope
 
 See template at: `requesting-code-review/code-reviewer.md`
+
+Reviewer returns the unified envelope: STATUS → VERDICT (approve | request-changes | comment-only) → FINDINGS by severity (CRITICAL/HIGH/MEDIUM/LOW) with 📍 file:line anchors.

@@ -57,10 +57,10 @@ After the clear part is delivered, resume caveman.
 
 ## Carve-outs — Structured-Terse (delegate to skill)
 
-These outputs are structured-terse by design but produced by a dedicated skill with its own formatting contract — not by chat-caveman compression. Load the skill and follow it exactly; do not apply chat-caveman rules on top.
+These outputs are structured-terse by design with their own formatting contract — not chat-caveman compression. Where a skill is named, load it and follow it exactly; do not apply chat-caveman rules on top.
 
 - **Commit messages / PR bodies** — use \`caveman-commit\` skill (Conventional Commits, subject ≤50 chars, body only when "why" isn't obvious). Not chat-caveman, not verbose.
-- **Code review comments** — use \`caveman-review\` skill (one-line findings, \`<file>:L<line>: problem. fix.\`, optional severity prefix). Not chat-caveman, not verbose.
+- **Code review comments** — one-line findings: \`<file>:L<line>: problem. fix.\`, optional severity prefix. Not chat-caveman, not verbose.
 
 ## Carve-outs — FULL PROSE ALWAYS (caveman NEVER applies)
 
@@ -79,11 +79,11 @@ Respond terse like caveman. Drop articles, filler, pleasantries, hedging. Fragme
 
 Carve-outs (write FULL PROSE, never caveman):
 - Code you write or modify
-- Commit messages, PR bodies, code review comments (use caveman-commit / caveman-review skills if available)
+- Commit messages, PR bodies (use the caveman-commit skill if available); code review comments use one-line findings (\`<file>:L<line>: problem. fix.\`)
 - Any document written to the ARCS DAG (plans, knowledge entries, overviews, tasks, dependency notes) — always full prose, no exceptions. Future sessions read this content; compression destroys fidelity.
 - \`.mmd\` diagram files — these are structured agent execution maps parsed by tooling; never compress their comments, metadata blocks, or node labels.
 - Security warnings, irreversible action confirmations, **pre-write confirmation summaries**.
-- Your final summary returned to the orchestrator — this IS chat-facing narration, so apply caveman to it
+- Your return to the orchestrator: keep the Standard Return Envelope fields (STATUS / FILES_TOUCHED / VERIFY / BLOCKED_BY + agent-specific sections) byte-exact and complete — caveman applies only to free-text prose around them
 
 Level: full. Active every response. No drift.
 
@@ -96,7 +96,6 @@ Then follow that block with the normal detailed sub-agent task prompt — struct
 ## Skill References (optional, load when task matches)
 
 - \`caveman-commit\` — terse Conventional Commits. Load when writing commit messages.
-- \`caveman-review\` — one-line PR review findings. Load when reviewing code diffs.
 - \`caveman-compress\` — external tool that compresses memory files at rest. OUT OF SCOPE for ARCS DAG (DAG must stay full prose per carve-outs). Only referenced for awareness.
 
 ## Same workflow, same tools, same discipline

@@ -97,6 +97,7 @@ Or select **ARCS Orchestrator** in OpenCode for full automation.
 | [OpenCode](https://opencode.ai/) | Recommended | Agent host (orchestrator + sub-agents) |
 | [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host — `arcs init` deploys ARCS sub-agents with full model-tier selection |
 | [codegraph](https://github.com/colbymchenry/codegraph) | No | Optional code-intelligence: per-project index, MCP-based exploration, structural knowledge extraction |
+| [rtk](https://github.com/rtk-ai/rtk) | No | Optional token-optimized command proxy (60-90% savings on shell output) — `arcs init` and bundle deploys auto-wire it for OpenCode and Claude Code when present |
 
 ---
 
@@ -182,7 +183,7 @@ The orchestrator:
 1. **Orients** — calls `arcs brief` for the T0 routing envelope (~1 KB)
 2. **Classifies** — detects intent (INIT / BRAINSTORM / EXECUTE / SYNC / EXPLORE)
 3. **Delegates** — dispatches specialist sub-agents in parallel when possible
-4. **Consumes** — parses structured sub-agent output (STATUS, CHANGES, VERIFY)
+4. **Consumes** — parses structured sub-agent output (STATUS, FILES_TOUCHED, VERIFY, BLOCKED_BY)
 5. **Persists** — writes to DAG: task transitions, knowledge captures, plan updates
 6. **Advances** — `arcs done` completes tasks, automatically unblocking dependents
 
@@ -296,33 +297,33 @@ Queries: `arcs search` uses BM25 for text + graph traversal (weighted BFS) for r
 
 ## Sub-Agents
 
-The orchestrator is **delegation-first** — it never reads code, runs tests, or explores. It dispatches specialist sub-agents with scoped prompts and consumes their structured (non-prose) output:
+The orchestrator is **delegation-first** — it never reads code, runs tests, or explores. It dispatches specialist sub-agents with self-contained scoped prompts (SCOPE / GOAL / CONTEXT / IDS / CONSTRAINTS / SKILL / VERIFY / RETURN) and consumes their structured (non-prose) output:
 
 | Sub-Agent | Role | When |
 |-----------|------|------|
 | **graph-explorer** | DAG-first knowledge + code exploration via codegraph MCP tools | Any "where is X / what depends on Y" query |
-| **software-engineer** | Writes code, runs tests | EXECUTE — bounded tasks |
+| **software-engineer** | Writes code, verifies only its touched files | EXECUTE — bounded tasks |
 | **system-architect** | Module boundaries, plan creation | BRAINSTORM — design-open |
 | **tech-architect** | Deep analysis, trade-offs | Analysis without edits |
 | **oncall-ops** | Debugging, log triage, bisect | Bugs, test failures |
 | **code-reviewer** | Pre-merge review | PR review, phase gates |
-| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries (mandatory) |
+| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries (mandatory); completion gate = the single full-project verification |
 | **arcs-docs** | DAG health, knowledge curation | SYNC workflow |
 | **docs-researcher** | External research, documentation | INIT tech-stack scan |
 | **qa-analyst** | Convention audits, compliance | Read-only audits |
 
-All sub-agents return **structured output** (not prose) for token-efficient orchestrator consumption:
+All sub-agents return **structured output** (not prose) opening with the standard return envelope:
 
 ```
-STATUS: done
-CHANGES:
-- src/foo.ts — added validation
-VERIFY:
-- vitest run test/foo.test.ts: pass
+STATUS: done | blocked | partial
+FILES_TOUCHED:
+src/foo.ts
+VERIFY: vitest run test/foo.test.ts → pass
+BLOCKED_BY: <only when blocked/partial — evidence>
 KNOWLEDGE: none
 ```
 
-The orchestrator parses STATUS/VERDICT first, extracts KNOWLEDGE/CAPTURES for DAG persistence, and routes SCOPE_CHANGE to diagram regeneration.
+The orchestrator parses STATUS/VERDICT first, forwards FILES_TOUCHED + VERIFY into the devil-advocate execute gate, extracts KNOWLEDGE/CAPTURES for DAG persistence, and routes SCOPE_CHANGE to diagram regeneration. Sub-agents verify only the files they touched; the devil-advocate completion gate runs the session's single full-project pass (full suite + `tsc --noEmit`), and on BLOCK the orchestrator re-dispatches scoped fixes from the gate's FAILURES attribution and re-gates.
 
 ### Skills (loaded per-dispatch)
 

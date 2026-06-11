@@ -43,7 +43,7 @@ flowchart TD
 
     Fix --> WriteFail[Write failing test]
     WriteFail --> Implement[Single targeted fix]
-    Implement --> Green{Tests pass?}
+    Implement --> Green{Scoped tests pass?}
     Green -->|Yes| Capture[Capture as ARCS knowledge]
     Green -->|No| FailCount
 
@@ -78,8 +78,8 @@ flowchart TD
 
 - Write a failing test FIRST (proves the bug exists)
 - Implement a single targeted fix
-- Verify all tests pass
-- If fix introduces new failures, revert and return to Phase 2
+- Verify the scoped tests for the files you changed pass (your dispatch VERIFY command — never the full suite; the devil-advocate completion gate owns that)
+- If your fix introduces new failures in YOUR scoped tests, revert and return to Phase 2. Failures in files outside your scope are report-only (BLOCKED_BY) — likely a sibling agent's in-flight work; never fix or revert it
 
 ## Log Triage Protocol
 

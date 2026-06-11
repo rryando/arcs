@@ -17,6 +17,8 @@ type DeployResult = {
   filesUnchanged: string[];
   restartRequired: boolean;
   restartGuidance?: string;
+  codegraphWired: boolean;
+  rtkWired: boolean;
 };
 
 function writeFile(rootPath: string, relativePath: string, content: string) {
@@ -77,8 +79,10 @@ describe("deploy-opencode-bundle", () => {
       expect(result.filesAdded).toContain("skills/arcs/planner/SKILL.md");
       expect(result.filesAdded).toContain("skills/arcs/planner/notes.md");
       expect(result.filesAdded).toContain("plugins/arcs.js");
-      // Dry-run: files should NOT actually be written
+      // Dry-run: files should NOT actually be written, no external wiring
       expect(existsSync(resolve(configRoot, "skills/arcs/planner/SKILL.md"))).toBe(false);
+      expect(result.codegraphWired).toBe(false);
+      expect(result.rtkWired).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -101,6 +105,11 @@ describe("deploy-opencode-bundle", () => {
       const result = JSON.parse(proc.stdout) as DeployResult;
       expect(result.dryRun).toBe(false);
       expect(result.filesAdded.length).toBeGreaterThan(0);
+      // Real-write deploys still skip external wiring under the test suite:
+      // global-setup exports ARCS_SKIP_CODEGRAPH/ARCS_SKIP_RTK and the child
+      // process inherits them, so the developer's host config is never touched.
+      expect(result.codegraphWired).toBe(false);
+      expect(result.rtkWired).toBe(false);
       // Files actually written
       expect(readFileSync(resolve(configRoot, "skills/arcs/planner/SKILL.md"), "utf-8")).toBe(
         "# Planner skill",

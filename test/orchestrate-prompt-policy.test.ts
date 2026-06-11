@@ -153,36 +153,18 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     "brainstorming",
     "systematic-debugging",
     "requesting-code-review",
-    "receiving-code-review",
-    "auditing-a-feature",
     "writing-plans",
-    "finishing-a-development-branch",
-    "dispatching-parallel-agents",
     "subagent-driven-development",
     "to-diagram",
-    "loop",
     "init-project",
-    "task-triage",
-    "onboarding-session",
-    "arcs-sync",
-    "using-git-worktrees",
     "enriching-codegraph-proposals",
   ];
 
   // Skills that are host-specific, formatting-only, or special-purpose (not routed by orchestrator)
   const NON_ROUTED_EXCEPTIONS = [
     "caveman-commit", // formatting skill for commit messages
-    "caveman-review", // formatting skill for code review comments
-    "aesthetic", // layering skill loaded by sub-agents for UI work
     "executing-plans", // session-management skill loaded by sub-agents
-    "writing-skills", // meta-skill for skill authoring
-    "using-superpowers", // meta-skill for skill discovery
-    "arcs-dashboard", // optional UI tool
-    "architecture-review", // agent-loaded skill for system-architect
-    "knowledge-curation", // agent-loaded skill for arcs-docs
-    "performance-diagnosis", // agent-loaded skill for code-doctor
     "deep-pr-review", // host-specific skill invoked directly by user PR-review trigger
-    "customize-opencode", // host-specific meta-skill for editing opencode's own config
   ];
 
   it("every skill on disk is either routed or listed as non-routed exception", () => {
@@ -202,11 +184,7 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     const supportSkills = [
       "systematic-debugging",
       "requesting-code-review",
-      "receiving-code-review",
-      "auditing-a-feature",
       "writing-plans",
-      "finishing-a-development-branch",
-      "dispatching-parallel-agents",
       "subagent-driven-development",
       "enriching-codegraph-proposals",
     ];

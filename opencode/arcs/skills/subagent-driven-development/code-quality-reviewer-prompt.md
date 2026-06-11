@@ -8,7 +8,8 @@ Use this template when dispatching a code quality reviewer subagent.
 
 ```
 Task tool (arcs:code-reviewer):
-  Use template at requesting-code-review/code-reviewer.md
+  Apply the review dimensions/checklist from requesting-code-review/code-reviewer.md.
+  Output format: the JSON envelope defined below — NOT the template's envelope+VERDICT format.
 
   WHAT_WAS_IMPLEMENTED: [from implementer's report]
   PLAN_OR_REQUIREMENTS: Task N from [plan-file]
@@ -25,7 +26,7 @@ Task tool (arcs:code-reviewer):
 
 ## Report Format (MANDATORY)
 
-Return prose explanation followed by this EXACT JSON block as the LAST thing in your message:
+Return brief prose findings FIRST, then this EXACT JSON block as the LAST thing in your message — nothing after it:
 
 ```json
 {

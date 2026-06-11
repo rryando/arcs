@@ -142,6 +142,8 @@ Between plan-level header and `flowchart TD` declaration:
 
 **Required:** node, title, status, skill, scope, acceptance. **Optional:** files, verify, blocked-by, delegate.
 
+`verify` must name a command scoped to the node's files (e.g. `npm test -- --testPathPattern=orders`, `vitest run test/orders.test.ts`) — never the bare full suite (`npm test`, `vitest run`). The devil-advocate completion gate owns the single full-project pass.
+
 ## Plan-Level Header Comments
 
 ```
@@ -182,7 +184,7 @@ Plans with 15+ nodes: cluster into `subgraph` blocks by phase. If unreadable, sp
 - **Ownership:** Only orchestrator/coordinator writes .mmd files. Sub-agents read only and report status back
 - **Presentation:** Internal skill — never narrate conventions to user. Show rendered diagram or URL only
 - **Determinism:** Same metadata must produce byte-identical .mmd output (nodes ordered by ID, edges by source→target, fields in fixed order)
-- **Confidence gate:** Self-score ≥80% via confidence-gate skill before writing .mmd files
+- **Confidence gate:** Self-score ≥80% before writing .mmd files
 - **Validation before write:** unique IDs, valid edges, all 4 classDef present, valid :::class suffixes
 - **Backward compat:** Plans without .mmd remain valid; diagrams without rich metadata upgraded during SYNC
 
