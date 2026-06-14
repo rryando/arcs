@@ -110,12 +110,12 @@ describe("deploy-claudecode-bundle", () => {
         resolve(configRoot, "agents/software-engineer.md"),
         "utf-8",
       );
-      expect(writtenContent).toContain("name: Software Engineer");
+      expect(writtenContent).toContain("name: software-engineer");
       expect(writtenContent).toContain(
         "description: Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
       );
       expect(writtenContent).toContain("model: inherit");
-      expect(writtenContent).toContain('tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]');
+      expect(writtenContent).toContain("tools: Read, Write, Edit, Glob, Grep, Bash");
       expect(writtenContent).toContain("software engineer prompt body");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
@@ -148,7 +148,7 @@ describe("deploy-claudecode-bundle", () => {
         resolve(projectRoot, ".claude/agents/software-engineer.md"),
         "utf-8",
       );
-      expect(writtenContent).toContain("name: Software Engineer");
+      expect(writtenContent).toContain("name: software-engineer");
       expect(writtenContent).toContain("software engineer prompt body");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
@@ -169,10 +169,10 @@ describe("deploy-claudecode-bundle", () => {
       // devil-advocate should be unchanged:
       const compiledDevilAdvocate = [
         "---",
-        "name: Devil's Advocate",
+        "name: devil-advocate",
         "description: Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
         "model: inherit",
-        'tools: ["Read", "Glob", "Grep", "Bash"]',
+        "tools: Read, Glob, Grep, Bash",
         "---",
         "",
         "devil's advocate prompt body",

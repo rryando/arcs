@@ -237,15 +237,23 @@ function buildAgentSources() {
     const tier = agentTierMap[stem] || "standard";
     const model = tierModels[tier];
 
-    const toolsArray = meta.tools.split(",").map((t) => t.trim());
-    const toolsYaml = `[${toolsArray.map((t) => `"${t}"`).join(", ")}]`;
+    // Claude Code requires `name` to be a kebab-case identifier (lowercase
+    // letters + hyphens). The filename stem already satisfies this and is
+    // unique, so it IS the agent name — the human-readable label lives in
+    // `description`. The default-agent setting (DEFAULT_AGENT) references this
+    // same stem, so it resolves. Display names with spaces/parens/apostrophes
+    // (meta.name) are invalid here and caused intermittent init failures.
+    const toolsCsv = meta.tools
+      .split(",")
+      .map((t) => t.trim())
+      .join(", ");
 
     const compiledContent = [
       "---",
-      `name: ${meta.name}`,
+      `name: ${stem}`,
       `description: ${meta.description}`,
       `model: ${model}`,
-      `tools: ${toolsYaml}`,
+      `tools: ${toolsCsv}`,
       "---",
       "",
       promptContent,
