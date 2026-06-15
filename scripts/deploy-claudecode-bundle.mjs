@@ -173,14 +173,18 @@ const agentMetadata = {
     name: "ARCS Orchestrator",
     description:
       "The central coordinator for executing plans, managing agent dispatch, and handling DAG workflows.",
-    tools: "Read, Write, Edit, Glob, Grep, Bash",
+    // Task is required: orchestrators dispatch sub-agents. Omitting it leaves
+    // the delegator with no way to delegate.
+    tools: "Task, Read, Write, Edit, Glob, Grep, Bash",
     model: "inherit",
   },
   "arcs-orchestrate-caveman": {
     name: "ARCS Orchestrator (Caveman)",
     description:
       "A terse, high-efficiency orchestrator that drives tasks without extra commentary.",
-    tools: "Read, Write, Edit, Glob, Grep, Bash",
+    // Task is required: orchestrators dispatch sub-agents. Omitting it leaves
+    // the delegator with no way to delegate.
+    tools: "Task, Read, Write, Edit, Glob, Grep, Bash",
     model: "inherit",
   },
 };
