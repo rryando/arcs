@@ -86,6 +86,26 @@ Agent picks dimensions from diff context. **Correctness is always evaluated.** O
 
 Skipped dimensions are reported as `cleared (not applicable: <reason>)`. Never silently dropped.
 
+## Over-engineering / bloat pass
+
+A focused pass that hunts ONLY over-engineering and complexity — correctness, security, and performance stay in the normal review pass above. Runs on a diff (delete-list for the changed lines) OR whole-repo (bloat audit). Lists findings only; applies nothing.
+
+One finding per line, tagged:
+
+| Tag | Catches | Replacement |
+|-----|---------|-------------|
+| `delete:` | Dead code, unused flexibility, speculative feature | nothing |
+| `stdlib:` | Hand-rolled thing the standard library ships | name the function |
+| `native:` | Dependency or code doing what the platform already does | name the feature |
+| `yagni:` | Abstraction with one implementation, config nobody sets, layer with one caller | inline / remove |
+| `shrink:` | Same logic in fewer lines | show the shorter form |
+
+Format: `L<line>: <tag> <what>. <replacement>.` — use `<file>:L<line>: ...` for multi-file or whole-repo audits.
+
+End with the only metric that matters: `net: -<N> lines, -<M> deps possible.` Nothing to cut → `Lean already. Ship.`
+
+Boundary: never flag the single ONE-runnable-check that `the-ladder` requires for non-trivial logic as bloat.
+
 ## Severity Prefixes
 
 Inline findings are one line — `<file>:L<line>: problem. fix.` — prefixed by severity:

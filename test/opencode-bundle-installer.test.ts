@@ -51,7 +51,11 @@ function readExpectedSourceBundleVersion(): string {
 
 // ARCS-native skill files: authored in this repo, not sourced from upstream.
 // Must match the skill entries in scripts/build-opencode-bundle.mjs preservedOutputFiles.
-const arcsNativeSkillFiles = ["skills/caveman-commit/SKILL.md", "skills/init-project/SKILL.md"];
+const arcsNativeSkillFiles = [
+  "skills/caveman-commit/SKILL.md",
+  "skills/init-project/SKILL.md",
+  "skills/the-ladder/SKILL.md",
+];
 
 function curatedBundlePayloadFiles(): string[] {
   const runtimeManifest = readRuntimeManifest();

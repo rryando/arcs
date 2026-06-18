@@ -32,7 +32,11 @@ function listRelativeFiles(rootPath: string, currentPath = rootPath): string[] {
 
 // ARCS-native skills: authored in this repo, not sourced from upstream.
 // Must match the skill entries in scripts/build-opencode-bundle.mjs preservedOutputFiles.
-const arcsNativeSkillFiles = ["skills/caveman-commit/SKILL.md", "skills/init-project/SKILL.md"];
+const arcsNativeSkillFiles = [
+  "skills/caveman-commit/SKILL.md",
+  "skills/init-project/SKILL.md",
+  "skills/the-ladder/SKILL.md",
+];
 
 describe("checked-in opencode bundle pruning", () => {
   it("matches the runtime manifest exactly", () => {

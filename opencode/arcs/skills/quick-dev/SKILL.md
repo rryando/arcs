@@ -31,6 +31,7 @@ Check for patterns, gotchas, and lessons before implementing. Skip only if the c
 
 ## Behaviour
 
+0. Apply `the-ladder` before writing code — climb the rungs (stdlib / native platform / installed dep before new code) and mark deliberate simplifications with `// SHORTCUT:` comments
 1. Orient with ARCS context + search if pattern-related
 2. Execute directly — no planning doc, no brainstorming, no TDD ritual
 3. Scoped verification only — run the dispatch VERIFY command (tests + lint for files you touched). NEVER the full suite. Pervasive change (shared types, config, build) or failures in out-of-scope files → report under BLOCKED_BY, never fix; full-project verification belongs to the devil-advocate completion gate.

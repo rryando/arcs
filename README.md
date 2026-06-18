@@ -334,6 +334,13 @@ The orchestrator parses STATUS/VERDICT first, forwards FILES_TOUCHED + VERIFY in
 | **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
 | **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-codegraph-proposals` |
 
+### Minimalism Reflex — `the-ladder`
+
+`the-ladder` auto-layers under the construction work modes (`quick-dev` / `code-agent` / `executing-plans`) — it is not a work mode you pick. Before writing code, it climbs the rungs and stops at the lowest one that solves the problem: **YAGNI → standard library → native platform feature → already-installed dependency → one line → the minimum that works.** Hard carve-outs are never simplified away — input validation at trust boundaries, data-loss handling, security, accessibility, and anything explicitly requested. Non-trivial logic ships with one runnable check.
+
+- **`// SHORTCUT:` markers** — deliberate simplifications are marked inline as `// SHORTCUT: <ceiling>, upgrade when <trigger>`. The orchestrator harvests these into the knowledge DAG at session completion so deferrals don't rot.
+- **Bloat-audit pass** — `deep-pr-review` gained an over-engineering pass (delete / stdlib / native / yagni / shrink tags, `net: -N lines` output) distinct from correctness review.
+
 ---
 
 ## Data Model

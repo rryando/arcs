@@ -187,7 +187,7 @@ describe("opencode ARCS bundle bundle", () => {
 
     // ARCS-native skills (authored in this repo) live in the bundle but aren't
     // declared in bundle-runtime.json — they are preserved output files.
-    const arcsNativeSkillNames = ["caveman-commit", "init-project"];
+    const arcsNativeSkillNames = ["caveman-commit", "init-project", "the-ladder"];
     const expectedSkillNames = [
       ...new Set([...Object.keys(runtimeManifest.skills), ...arcsNativeSkillNames]),
     ].sort();
@@ -205,7 +205,7 @@ describe("opencode ARCS bundle bundle", () => {
       expect(result.status).toBe(0);
       // Skills dir contains the manifest-declared skills plus the ARCS-native
       // skills (preservedOutputFiles) — the build prunes nothing in this set.
-      const arcsNativeSkillNames = ["caveman-commit", "init-project"];
+      const arcsNativeSkillNames = ["caveman-commit", "init-project", "the-ladder"];
       const expectedSkillsAfterBuild = [
         ...new Set([...Object.keys(runtimeManifest.skills), ...arcsNativeSkillNames]),
       ].sort();

@@ -29,6 +29,7 @@ const preservedFiles = new Set([
   "skills/loop/SKILL.md",
   "skills/caveman-commit/SKILL.md",
   "skills/init-project/SKILL.md",
+  "skills/the-ladder/SKILL.md",
   // Sub-agent prompt files (repo-authored, referenced from manifest.json
   // requiredMerges, not from bundle-runtime.json's `agents` array).
   "prompts/software-engineer.txt",

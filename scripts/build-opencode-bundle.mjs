@@ -24,6 +24,9 @@ const preservedOutputFiles = new Set([
   "skills/init-project/SKILL.md",
   // Caveman commit skill — adapted from https://github.com/JuliusBrussee/caveman (MIT).
   "skills/caveman-commit/SKILL.md",
+  // the-ladder skill — ARCS-native build-time minimalism discipline (auto-layers
+  // under construction work-modes; not a work-mode itself).
+  "skills/the-ladder/SKILL.md",
   // Agent prompt files (repo-authored, referenced via {file:} in manifest.json)
   "prompts/software-engineer.txt",
   "prompts/tech-architect.txt",

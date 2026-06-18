@@ -165,6 +165,7 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     "caveman-commit", // formatting skill for commit messages
     "executing-plans", // session-management skill loaded by sub-agents
     "deep-pr-review", // host-specific skill invoked directly by user PR-review trigger
+    "the-ladder", // build-time reflex, not a routed work-mode
   ];
 
   it("every skill on disk is either routed or listed as non-routed exception", () => {

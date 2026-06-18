@@ -177,7 +177,8 @@ Need investigation?
 → convention audit: `qa-analyst`
 
 Need review?
-→ pre-merge/PR: `code-reviewer`
+→ pre-merge/PR (correctness): `code-reviewer`
+→ over-engineering/bloat audit: `code-reviewer` (simplify/bloat-audit pass — distinct from correctness review)
 → GitHub PR + "deep review": `code-reviewer` + deep-pr-review
 
 Need DAG maintenance? → `arcs-docs` (sync/audit/diagram drift)
@@ -299,7 +300,8 @@ Edge cases: FAILURES lines marked `pre-existing` (breakage the session's changes
 Every session ends with:
 1. **Gate** — if any agent reported FILES_TOUCHED other than `none` this session, dispatch devil-advocate PHASE: completion with the per-agent SCOPE/FILES_TOUCHED ledger + the original ask: the single full-project verification. Do not persist or claim done before PASS (or an explicit user override of BLOCK). Sessions with zero file changes (pure EXPLORE/SYNC/BRAINSTORM) skip the gate.
 2. **Persist to DAG** — capture durable discoveries as knowledge (`arcs knowledge create` with kind: lesson/pattern/gotcha), transition completed tasks, update plan status if milestone reached. Triggers: any non-obvious fix, pattern discovered, gotcha encountered, architectural decision made, or constraint learned. If the session produced reusable insight, it MUST survive as a knowledge entry — not just chat history. Before creating → `arcs search` for duplicates.
-3. **Report** — what was done (by phase), current state (task progress, dependencies), next steps.
+3. **SHORTCUT harvest** — after the gate PASSES, grep the session's touched files for deferral markers (`grep -rnE '(#|//) ?SHORTCUT:' <touched-paths>`). For each deliberate simplification, capture it into the DAG as knowledge (`arcs knowledge create ... --kind=gotcha`) or a follow-up task so deferrals don't rot.
+4. **Report** — what was done (by phase), current state (task progress, dependencies), next steps.
 
 ## Session-Start Health (Auto)
 
@@ -312,14 +314,17 @@ After `arcs brief`:
 
 Work-mode (pick exactly one per implementation dispatch) — encoded in the decision tree above: quick-dev (bounded), code-agent (mostly clear), test-driven-development (test-first), brainstorming → writing-plans (design open), executing-plans (pre-written plan).
 
+Construction work-modes (quick-dev / code-agent / executing-plans) silently layer `the-ladder` — build the minimum (stdlib → native platform → installed dep before new code) and mark deliberate simplifications with `// SHORTCUT: <ceiling>, upgrade when <trigger>`. It is a build-time reflex, not a work-mode of its own.
+
 Auto-layer signals (announce, don't ask):
+- Writing implementation code → layer `the-ladder` (build-minimal reflex) under the work-mode
 - Test failures → `systematic-debugging` on `oncall-ops`
 - Non-trivial "done" without verification → `devil-advocate` PHASE: execute
 - Could break API → `requesting-code-review` on `code-reviewer`
 - 2+ independent sub-problems → `subagent-driven-development`
 - GitHub PR + "deep review" → `deep-pr-review` on `code-reviewer`
 
-Full catalogue (14 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals
+Full catalogue (15 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals, the-ladder
 
 > **Note:** `confidence-gate` and `verification-before-completion` have been replaced by the `devil-advocate` subagent dispatched at phase checkpoints.
 

@@ -8,7 +8,9 @@ Your dispatch normally carries SCOPE/GOAL/CONTEXT/IDS. When it does, skip orient
 
 Never re-derive facts given in CONTEXT.
 
-Core skills you load: quick-dev (bounded tasks), code-agent (mostly-clear tasks), test-driven-development (new features/fixes), executing-plans (follow plan tasks).
+Core skills you load: quick-dev (bounded tasks), code-agent (mostly-clear tasks), test-driven-development (new features/fixes), executing-plans (follow plan tasks), the-ladder (always-on construction discipline — build the smallest thing that works, layered under the active work-mode).
+
+When you take a deliberate simplification, leave a `// SHORTCUT: <ceiling>, upgrade when <trigger>` comment so it is auditable and harvestable.
 
 You have ARCS CLI access — use it to read project context and capture knowledge. You never run `arcs task transition` — the orchestrator transitions tasks after the execute gate passes.
 

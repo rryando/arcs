@@ -44,6 +44,7 @@ If relevant entries exist, incorporate their guidance. Don't rediscover what's a
 
 ## Behaviour
 
+- Apply `the-ladder` during implementation — reach for stdlib / native / an installed dep before new code, and leave `// SHORTCUT:` markers for deliberate simplifications
 - Inspect repo before asking anything
 - Score self-confidence before any code edit; <80% triggers explore/web recovery, not improvisation
 - Proceed on inferred defaults when repo makes it clear
