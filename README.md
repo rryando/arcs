@@ -187,6 +187,12 @@ The orchestrator:
 5. **Persists** — writes to DAG: task transitions, knowledge captures, plan updates
 6. **Advances** — `arcs done` completes tasks, automatically unblocking dependents
 
+**Operating values — held directly, not just delegated.** The orchestrator applies the same disciplines it hands to sub-agents to its *own* routing decisions:
+
+- **`the-ladder`** — minimalism is the default for orchestration itself. The cheapest rung that answers the need wins: *answer from context → one `arcs` CLI call → `graph-explorer` → typed agent*, with the fewest tasks and the smallest disjoint scope per dispatch. Over-dispatching and over-decomposing are the orchestrator's form of over-engineering.
+- **`devil-advocate`** — skepticism runs *before* the formal gate, not only at it. Every plan, dispatch, and "done" is challenged first ("what breaks without this? who's actually blocked? can fewer agents do it?"); the dispatched gate then merely confirms.
+- **confidence-to-orchestrate** — it never dispatches on a guess. Ambiguity is resolved cheaply from the DAG first, then the *residual* unknowns go to the user as batched questions (each with options + a recommended default) until it can state the goal and "done" in one sentence — and it stops asking the moment it can.
+
 ### T0 Routing Envelope (the operating brief)
 
 ```bash
@@ -403,7 +409,7 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Vitest suite (~833 tests) |
+| `npm test` | Vitest suite (~842 tests) |
 | `npm run typecheck` | Type check without emit |
 | `npm run lint` | Biome lint + format |
 
