@@ -57,6 +57,8 @@ When plan has `.diagram.mmd`:
 
 **Verify scope rule:** Run ONLY the current task's `verify` command, scoped to that task's `files`. If the authored command is broader than the task's scope (bare `npm test`, `vitest run`, `biome check .`), narrow it to the touched files first (e.g. `npm test -- test/orders.test.ts`). Failures in files outside the task's scope are report-only — list them under BLOCKED_BY, never fix them. Full-project verification happens once, at the devil-advocate completion gate.
 
+**Directed gotcha read before each task:** Before executing a task, search the DAG for known traps in its area so you don't walk into one the plan didn't anticipate: `arcs knowledge search <slug> "<task-keywords>" --lean --json`, filtering for `kind=gotcha`. Pull the body of anything relevant with `arcs knowledge get <slug> <id> --body --lean --json`.
+
 ## Sub-Agent Context
 
 Fetch once, then paste the relevant output into each dispatch's CONTEXT — don't make sub-agents re-fetch:
@@ -78,6 +80,10 @@ Sub-agents MUST NOT edit `.mmd` files — orchestrator owns diagram updates.
 - Fundamental approach needs rethinking
 
 Ask for clarification rather than guessing. Don't force through blockers.
+
+## Capturing Execution Discoveries
+
+When execution surfaces something the plan didn't know — a plan-vs-reality delta, a gotcha hit mid-task, a convention the plan got wrong — capture it so the "new knowledge entries" sync trigger below actually fires: `arcs knowledge upsert <slug> "<title>" --kind=<gotcha|lesson> --summary="<what reality diverged from the plan / the trap hit>" --keywords="<k1,k2>" --source-files="<path,...>" --json`. Skip when execution matched the plan exactly. Upsert is idempotent by title.
 
 ## Auto-Sync Triggers
 

@@ -24,7 +24,7 @@ MANDATORY EXIT GATE: Before claiming documentation work is complete, validate th
 | Command | When to use |
 |---------|-------------|
 | `arcs brief --lean --json` | Session start — orient on project and sync state |
-| `arcs validate <slug> --json` | First step of any sync — check DAG health. Use `--checks=sourcefiles\|status-drift\|diagrams\|agents-md` for targeted checks (default: `all`) |
+| `arcs validate <slug> --json` | First step of any sync — check DAG health. Use `--checks=sourcefiles\|status-drift\|diagrams\|agents-md\|knowledge-health` for targeted checks (default: `all`) |
 | `arcs knowledge list <slug> --json` | Audit knowledge entries for staleness/taxonomy |
 | `arcs knowledge update-meta <slug> <id> --keywords="kw1,kw2" --json` | Fix taxonomy or metadata on entries |
 | `arcs knowledge upsert <slug> <title> --kind=<kind> --summary="..." --json` | Idempotent create-or-update a knowledge entry (use instead of create when entry may already exist) |
@@ -34,7 +34,7 @@ MANDATORY EXIT GATE: Before claiming documentation work is complete, validate th
 | `arcs plan update-meta <slug> <planId> --status=done --json` | Close completed plans |
 | `arcs git-log <slug> --json` | Check commits since last sync to scope audit |
 
-> **Optional flags for `knowledge create` / `knowledge upsert`:** `--body="<markdown content>"` for extended detail, `--source-files="src/foo.ts:anchor"` for structured file references.
+> **Optional flags for `knowledge upsert`:** `--body="<markdown content>"` for extended detail, `--source-files="src/foo.ts:anchor"` for structured file references.
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
@@ -55,6 +55,7 @@ You receive:
 1. **Orient:** Use the T0/validate/staleness payload from the dispatch; run `arcs brief --lean --json` only if the payload is absent or flagged stale
 2. **Audit DAG entries against codebase:**
    - `arcs knowledge list <slug> --lean --json` — review each entry's summary for staleness
+   - `arcs validate <slug> --checks=knowledge-health --json` — enrich or prune thin entries (missing summary/source-files) and flag stale ones
    - `arcs task list <slug> --lean --json` — check statuses match reality
    - `arcs plan list <slug> --lean --json` — check plan statuses
    - Read overview.md via `arcs project get <slug> --doc=overview --json`
@@ -66,10 +67,10 @@ You receive:
    - Missing knowledge entries for recent architectural changes
    - Overview description no longer accurate
    - sourceFiles references that no longer resolve
-4. **Apply corrections** (run directly):
+4. **Apply corrections** (before repairing, read prior lessons/gotchas — `arcs knowledge list <slug> --kind=lesson --lean --json` and `--kind=gotcha` — so repairs stay consistent with captured decisions; then run directly):
    ```bash
    arcs knowledge update-meta <slug> <entryId> --summary="<new summary>" --keywords="<kw1>,<kw2>" --json
-   arcs knowledge create <slug> "<title>" --kind=<kind> --summary="<summary>" --body="<markdown content>" --keywords="<kw1>,<kw2>" --json
+   arcs knowledge upsert <slug> "<title>" --kind=<kind> --summary="<summary>" --body="<markdown content>" --keywords="<kw1>,<kw2>" --json
    arcs task transition <slug> <taskId> done --planId=<planId> --diagramNodeId=<nodeId> --json
    arcs plan update-meta <slug> <planId> --status=done --json
    ```
@@ -84,7 +85,7 @@ You receive:
 - [ ] overview.md — description, goals, current focus accurate?
 - [ ] tasks — statuses match reality?
 - [ ] plans — statuses current? Any done/archived?
-- [ ] knowledge entries — summaries accurate? sourceFiles resolve? Missing entries?
+- [ ] knowledge entries — summaries accurate? sourceFiles resolve? Missing entries? `arcs validate <slug> --checks=knowledge-health` — thin entries enriched/pruned, stale ones flagged?
 - [ ] diagrams — `.diagram.mmd` classDef matches task status? Phantom/missing nodes?
 - [ ] AGENTS.md — present, up-to-date, symlinked?
 - [ ] dependencies.md — relationships still valid?
@@ -134,6 +135,10 @@ SYNC_REPORT:
 
 MUTATIONS:
 - <failed or notable mutations only, plus IDs of entries created — counts stay in SYNC_REPORT>
+
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
 
 SCOPE_CHANGE: <none | topology change needing `arcs diagram sort-metadata`>
 

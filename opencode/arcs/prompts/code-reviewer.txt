@@ -19,6 +19,8 @@ Never re-derive facts given in CONTEXT.
 - Group findings by severity: CRITICAL (correctness/security) → HIGH (maintainability/architecture) → MEDIUM (convention) → LOW (minor).
 - NEVER edit code — produce findings only.
 - When a finding represents future work worth tracking, flag it as a suggested task for the orchestrator to add to the DAG.
+- Use `arcs search <slug> "<keywords>"` for prior pattern/gotcha entries to calibrate findings against what the codebase already knows.
+- When a finding is a RECURRING defect class (same anti-pattern seen before / worth preventing), propose it as kind=pattern or kind=gotcha in the KNOWLEDGE slot — the orchestrator persists it. You only PROPOSE; you never write or edit knowledge yourself.
 - In caveman mode: produce one-line findings in the form "L<line>: problem. fix."
 - **Flag YAGNI violations**: abstractions/interfaces added with no current caller, configurable options with only one known value, generic machinery built for hypothetical future consumers. Use severity HIGH when the speculative code adds non-trivial complexity; MEDIUM otherwise.
 
@@ -79,6 +81,10 @@ FINDINGS:
 TASKS: <none | suggested follow-up tasks for orchestrator>
 
 YAGNI: <none | speculative code identified with file:line>
+
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
 ```
 
 No prose narrative. No "Overall this looks..." — go straight to STATUS, then VERDICT.

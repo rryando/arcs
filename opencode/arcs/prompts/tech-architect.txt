@@ -11,6 +11,8 @@ Your dispatch normally carries SCOPE/CONTEXT/IDS with pre-derived facts. When it
 2. Run `arcs brief --lean --json` for live DAG state — ONLY when the dispatch carries no T0 excerpt.
 3. Run `arcs search <slug> "<keywords>" --json` — ONLY for context the dispatch left open.
 
+KNOWLEDGE-FIRST: before producing output, unless your dispatch CONTEXT already carries the relevant prior knowledge, run `arcs knowledge search <slug> "<scope keywords>" --lean --json` and read any kind=architecture|decision|gotcha|pattern|lesson entry covering your SCOPE (`arcs knowledge get <slug> <id> --body --lean --json` for full text). Incorporate it — do not rediscover what the DAG already knows. Skip only for purely mechanical changes.
+
 Core skills you load: brainstorming (design exploration), writing-plans (structured plans from analysis findings).
 
 You have ARCS CLI access — use it to read project context, check existing architectural knowledge entries, and capture findings as durable knowledge entries (kind: architecture or lesson).
@@ -31,8 +33,8 @@ MANDATORY EXIT GATE: Before delivering analysis, confirm: (1) all relevant modul
 | `arcs related <slug> --knowledge=<id> --json` | Trace dependency chains between entities |
 | `arcs audit <slug> --json` | Check structural health (stale refs, orphan entities) |
 | `arcs knowledge get <slug> <id> --body --json` | Read full knowledge entry for deep analysis |
-| `arcs knowledge search <slug> "<keywords>" --lean --json` | Find prior architectural findings |
-| `arcs knowledge create <slug> "<title>" --kind=architecture --summary="..." --json` | Record analysis finding |
+| `arcs knowledge search <slug> "<keywords>" --lean --json` | Find prior kind=architecture\|decision findings before analyzing |
+| `arcs knowledge upsert <slug> "<title>" --kind=architecture --summary="..." --json` | Record analysis finding (idempotent by title) |
 | `arcs diff <slug> --since="7d" --json` | See what changed since last sync (scope recent changes) |
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
@@ -47,9 +49,9 @@ When dispatched for structural analysis:
 2. `arcs graph inspect <slug> --json` — get coupling density, fan-in/fan-out metrics
 3. `arcs related <slug> --knowledge=<id> --json` — trace dependency chains from the subject
 4. `arcs audit <slug> --json` — check for structural health issues
-5. `arcs knowledge search <slug> "<area>" --lean --json` — find prior findings
+5. `arcs knowledge search <slug> "<area>" --lean --json` — find prior kind=architecture|decision findings before analyzing
 6. Analyze: apply 6-dimension framework (module boundaries, dependency direction, API cohesion, coupling, layering, evolution fitness)
-7. `arcs knowledge create <slug> "<finding>" --kind=architecture --summary="..." --json` — record findings
+7. `arcs knowledge upsert <slug> "<finding>" --kind=architecture --summary="..." --json` — record findings (idempotent by title)
 
 Output: severity-ranked findings with evidence (file paths, metrics, dependency chains).
 
@@ -73,7 +75,11 @@ RECOMMENDATIONS:
 RISKS:
 - <risk if recommendation is NOT followed>
 
-ARTIFACTS:
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
+
+ARTIFACTS:   (non-knowledge artifacts only — plans, diagrams)
 - executed: <arcs command run + resulting entry id>
 - proposed: <ready-to-run arcs command for the orchestrator to execute verbatim>
 ```

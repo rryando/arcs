@@ -16,6 +16,7 @@ import {
   deletePlan,
   deleteTask,
   type FileRef,
+  type KnowledgeAudience,
   type KnowledgeKind,
   type PlanStatus,
   type TaskPriority,
@@ -80,6 +81,23 @@ const BATCH_OPS: BatchOpInfo[] = [
  */
 function normalizeBatchOp(op: string): string {
   return op;
+}
+
+/**
+ * Convert a batch op's `sourceFiles` value to the stored FileRef shape.
+ * Accepts an array of "path" / "path:anchor" strings (parsed at the colon)
+ * or already-shaped FileRef objects (passed through). Returns undefined when
+ * absent so the field is only threaded when provided.
+ */
+function toSourceFileRefs(raw: unknown): FileRef[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map((item) => {
+    if (typeof item === "string") {
+      const [path, anchor] = item.trim().split(":");
+      return anchor ? { path, anchor } : { path };
+    }
+    return item as FileRef;
+  });
 }
 
 const batchParams = {
@@ -221,12 +239,17 @@ async function handleBatch(
           const kind = op.kind as KnowledgeKind;
           if (!title || !kind) throw new Error("title and kind required");
           const id = normalizeIdentifier(title);
+          const sourceFiles = toSourceFileRefs(op.sourceFiles);
+          const audience = op.audience as KnowledgeAudience | undefined;
           const entry = await createKnowledgeEntry(projectDir, {
             id,
             title,
             kind,
             keywords: (op.keywords as string[]) ?? [],
+            summary: op.summary as string | undefined,
             content: op.body as string | undefined,
+            ...(sourceFiles && { sourceFiles }),
+            ...(audience && { audience }),
           });
           results.push({ index: i, op: op.op, success: true, result: { id: entry.id } });
           break;
@@ -241,7 +264,8 @@ async function handleBatch(
             kind: op.kind as KnowledgeKind | undefined,
             summary: op.summary as string | undefined,
             keywords: op.keywords as string[] | undefined,
-            sourceFiles: op.sourceFiles as FileRef[] | undefined,
+            audience: op.audience as KnowledgeAudience | undefined,
+            sourceFiles: toSourceFileRefs(op.sourceFiles),
           });
           results.push({ index: i, op: op.op, success: true, result: { entryId: entry.id } });
           break;

@@ -57,6 +57,10 @@ sourceFiles: [{path: "...", anchor: "..."}]
 ---end---
 ```
 
+## Prior Patterns Check
+
+Before mapping structure, read what the DAG already knows so the plan follows established shape: `arcs knowledge search <slug> "<feature-keywords>" --lean --json`, filtering for `kind=pattern` and `kind=architecture`. Reuse known conventions rather than inventing parallel ones.
+
 ## File Structure
 
 Before defining tasks, map which files will be created/modified:
@@ -162,6 +166,8 @@ flowchart TD
 ```bash
 arcs plan create <slug> --title="YYYY-MM-DD <feature> Implementation Plan" --summary="..." --status=planned --keywords="implementation-plan" --body="<markdown>" --json
 ```
+
+Then extract the plan's "why this structure" rationale into a durable entry — don't let the architecture reasoning stay sealed inside the plan body: `arcs knowledge upsert <slug> "<feature> architecture rationale" --kind=architecture --summary="<why the structure is shaped this way; key trade-offs>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json`. Use `--kind=decision` instead when the entry is really a single settled call rather than a structural shape. Upsert is idempotent by title.
 
 ## Execution Handoff
 

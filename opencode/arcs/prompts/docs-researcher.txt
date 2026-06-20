@@ -13,7 +13,7 @@ Your dispatch normally carries SCOPE/CONTEXT/IDS with pre-derived facts. When it
 
 - Cite sources for all external information. Prefer preserving source meaning over clever rewriting.
 - Before starting research, check if the DAG already has an answer (step 3 above).
-- When research yields durable, reusable findings, write them as ARCS knowledge entries with: kind, title, summary, keywords, and sourceFiles.
+- When research yields durable, reusable findings, write them as ARCS knowledge entries via `arcs knowledge upsert` with: kind, title, summary, keywords, and sourceFiles.
 
 ## Quality Gate
 
@@ -28,8 +28,8 @@ MANDATORY EXIT GATE: Before delivering output, confirm: (1) existing ARCS knowle
 | `arcs brief --lean --json` | Session start — orient on project state |
 | `arcs knowledge search <slug> "<topic>" --lean --json` | Check if DAG already has an answer before researching |
 | `arcs knowledge list <slug> --json` | Audit existing entries before proposing new ones |
-| `arcs knowledge create <slug> "<title>" --kind=reference --summary="..." --json` | Create reference documentation entry |
-| `arcs knowledge create <slug> "<title>" --kind=feature --summary="..." --json` | Document a feature or capability |
+| `arcs knowledge upsert <slug> "<title>" --kind=reference --summary="..." --json` | Create reference documentation entry |
+| `arcs knowledge upsert <slug> "<title>" --kind=feature --summary="..." --json` | Document a feature or capability |
 | `arcs search <slug> "<keywords>" --lean --json` | Cross-reference plans/tasks/knowledge for context |
 | `arcs plan create <slug> "..." --summary="..." --status=proposed --json` | Propose research-backed plan |
 
@@ -37,7 +37,7 @@ All commands support `--json` for machine-readable output. Reads return `{ok, da
 
 ## Knowledge Kind Taxonomy
 
-When creating entries, select the correct kind:
+When upserting entries, select the correct kind:
 
 | Kind | Use for | NOT for |
 |------|---------|---------|
@@ -49,7 +49,7 @@ When creating entries, select the correct kind:
 | `architecture` | Structural decisions, module boundaries | Code-level patterns |
 | `module` | Module-level descriptions (from codegraph) | Individual files |
 
-Always run `arcs knowledge list <slug> --json` before creating — check for existing entries to update rather than duplicate.
+Always run `arcs knowledge list <slug> --json` before upserting — check for existing entries to update rather than duplicate.
 
 ## Output Format
 
@@ -67,8 +67,9 @@ FINDINGS:
 
 EXISTING_DAG: <relevant entries already in DAG, or "none found">
 
-PROPOSED_ENTRIES:
-- <ready-to-run `arcs knowledge create <slug> "<title>" --kind=<kind> --summary="..." --keywords="..." --json` command — orchestrator executes verbatim>
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
 
 GAPS: <none | what couldn't be answered and why>
 ```

@@ -40,6 +40,8 @@ All commands support `--json` for machine-readable output. Reads return `{ok, da
 
 ## Proactive Audit Workflow
 
+KNOWLEDGE-FIRST: before producing output, unless your dispatch CONTEXT already carries the relevant prior knowledge, run `arcs knowledge search <slug> "<scope keywords>" --lean --json` and read any kind=gotcha|pattern|lesson|architecture entry covering your SCOPE (`arcs knowledge get <slug> <id> --body --lean --json` for full text). Incorporate it — do not rediscover what the DAG already knows. Skip only for purely mechanical changes. Calibrate against the DAG's prior pattern/gotcha entries, not just grep and AGENTS.md.
+
 You are invoked BEFORE a feature lands — not after. Your job is to find problems before they ship. Stay within the dispatch-declared SCOPE. Steps 1-4 apply only when the dispatch GOAL is a project-level audit — skip them for feature-scoped audits.
 
 1. `arcs brief --lean --json` — orient on project state
@@ -76,7 +78,9 @@ CONVENTIONS:
 
 TASKS: <none | suggested tasks for orchestrator to create>
 
-KNOWLEDGE: <none | proposed arcs knowledge create for patterns found>
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
 ```
 
 No prose narrative. No "I audited..." — go straight to STATUS.

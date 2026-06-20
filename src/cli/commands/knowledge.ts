@@ -15,6 +15,7 @@ import {
 } from "../../utils/project-memory.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import { readStdin } from "../../utils/stdin.js";
+import { type FileRef, KNOWLEDGE_AUDIENCES } from "../../utils/storage-utils.js";
 import {
   type CLIResult,
   type CommandFlags,
@@ -43,6 +44,19 @@ function requireProject(slug: string): CLIResult | string {
     });
   }
   return dir;
+}
+/**
+ * Parse a comma-separated "path[:anchor]" string into FileRef objects.
+ * Returns undefined when no input is provided. Shared by create, upsert,
+ * and update-meta so the parsing logic stays identical.
+ */
+function parseSourceFiles(raw: string | undefined): FileRef[] | undefined {
+  return raw
+    ? raw.split(",").map((s) => {
+        const [path, anchor] = s.trim().split(":");
+        return anchor ? { path, anchor } : { path };
+      })
+    : undefined;
 }
 // --- knowledge list ---
 const knowledgeListParams = {
@@ -151,6 +165,7 @@ const knowledgeCreateParams = {
     description:
       'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
   },
+  audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -173,18 +188,14 @@ async function handleKnowledgeCreate(
   const bodyInline = params.body;
   const bodyFile = params["body-file"];
   const sourceFilesRaw = params["source-files"];
+  const audience = params.audience;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
   if (bodyFile && !existsSync(bodyFile)) {
     return failure(ERROR_CODES.ENTITY_NOT_FOUND, `Body file not found: ${bodyFile}`);
   }
-  const sourceFiles = sourceFilesRaw
-    ? sourceFilesRaw.split(",").map((s) => {
-        const [path, anchor] = s.trim().split(":");
-        return anchor ? { path, anchor } : { path };
-      })
-    : undefined;
+  const sourceFiles = parseSourceFiles(sourceFilesRaw);
   if (flags.dryRun) {
     const id = normalizeIdentifier(title);
     const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : [];
@@ -199,6 +210,7 @@ async function handleKnowledgeCreate(
         slug,
         hasBody: !!(bodyInline || bodyFile),
         ...(sourceFiles && { sourceFiles }),
+        ...(audience && { audience }),
       },
     });
   }
@@ -219,6 +231,7 @@ async function handleKnowledgeCreate(
       ...(summary && { summary }),
       ...(content && { content }),
       ...(sourceFiles && { sourceFiles }),
+      ...(audience && { audience }),
     });
     return success(entry);
   } catch (err) {
@@ -233,6 +246,12 @@ const knowledgeUpdateMetaParams = {
   kind: { type: "string", description: "New kind", enum: KIND_ENUM },
   summary: { type: "string", description: "New summary" },
   keywords: { type: "string", description: "Comma-separated keywords" },
+  "source-files": {
+    type: "string",
+    description:
+      'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
+  },
+  audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -253,6 +272,8 @@ async function handleKnowledgeUpdateMeta(
   const kind = params.kind;
   const summary = params.summary;
   const keywordsRaw = params.keywords;
+  const sourceFiles = parseSourceFiles(params["source-files"]);
+  const audience = params.audience;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -260,7 +281,16 @@ async function handleKnowledgeUpdateMeta(
     const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : undefined;
     return success({
       dryRun: true,
-      wouldUpdate: { slug, entryId, title, kind, summary, keywords },
+      wouldUpdate: {
+        slug,
+        entryId,
+        title,
+        kind,
+        summary,
+        keywords,
+        ...(sourceFiles && { sourceFiles }),
+        ...(audience && { audience }),
+      },
     });
   }
   const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : undefined;
@@ -271,6 +301,8 @@ async function handleKnowledgeUpdateMeta(
       kind: kind || undefined,
       summary: summary || undefined,
       keywords,
+      ...(sourceFiles && { sourceFiles }),
+      ...(audience && { audience }),
     });
     return success({ meta });
   } catch (err) {
@@ -356,6 +388,12 @@ const knowledgeUpsertParams = {
   keywords: { type: "string", description: "Comma-separated keywords" },
   body: { type: "string", description: "Inline markdown body content" },
   "body-file": { type: "string", description: "Path to markdown file with entry body" },
+  "source-files": {
+    type: "string",
+    description:
+      'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
+  },
+  audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -377,6 +415,8 @@ async function handleKnowledgeUpsert(
   const keywordsRaw = params.keywords;
   const bodyInline = params.body;
   const bodyFile = params["body-file"];
+  const sourceFiles = parseSourceFiles(params["source-files"]);
+  const audience = params.audience;
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
@@ -401,6 +441,8 @@ async function handleKnowledgeUpsert(
         kind,
         summary: summary || undefined,
         keywords,
+        ...(sourceFiles && { sourceFiles }),
+        ...(audience && { audience }),
       });
       if (content) {
         const existing = validateJson(
@@ -419,6 +461,8 @@ async function handleKnowledgeUpsert(
       keywords,
       ...(summary && { summary }),
       ...(content && { content }),
+      ...(sourceFiles && { sourceFiles }),
+      ...(audience && { audience }),
     });
     return success({ created: true, id, meta: entry });
   } catch (err) {

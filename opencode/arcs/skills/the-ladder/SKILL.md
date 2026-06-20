@@ -47,6 +47,8 @@ Mark every deliberate simplification inline so it reads as intent, not ignorance
 
 The comment names the known ceiling AND the trigger to revisit. Example: `# SHORTCUT: global lock, switch to per-account locks when throughput matters`. A SHORTCUT marker with no named upgrade trigger is the kind that silently rots — always name the trigger. (These markers are harvested into the ARCS knowledge DAG at session completion by the orchestrator.)
 
+When a SHORTCUT's ceiling is durable and non-obvious — a real trap the next person could step into, not just a local stub — don't rely on the orchestrator harvest alone: also capture it directly with `arcs knowledge upsert <slug> "<ceiling title>" --kind=gotcha --summary="<the ceiling and its upgrade trigger>" --keywords="<k1,k2>" --source-files="<path,...>" --json`. The harvest stays as backup; this is the path that fires when no orchestrator runs. Upsert is idempotent by title — skip the dedup search.
+
 ## Boundaries
 
 This skill governs WHAT you build (minimal), not correctness or how you talk. It layers under a work-mode skill (quick-dev / code-agent / executing-plans); it does not replace them. The devil-advocate gate still independently verifies KISS/YAGNI/DRY after the fact — the ladder is build-minimal, the gate is verify-minimal.

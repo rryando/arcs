@@ -128,6 +128,10 @@ Mapping to the orchestrator's Standard Return Envelope: DONE→done, DONE_WITH_C
 Include in every dispatch prompt:
 > "Return format: brief prose findings first, then the JSON envelope (status + typed payload) from your role's prompt template as the LAST thing in your message — nothing after it."
 
+## Knowledge Capture at Fan-In
+
+The `concerns`, `scopeChanges`, and `DONE_WITH_CONCERNS` payloads already collected from each subagent are near-free durable signal — don't discard them. At fan-in, route the durable items (a non-obvious trap hit, a convention that had to be discovered, a plan-vs-reality delta) into the DAG: `arcs knowledge upsert <slug> "<title>" --kind=<gotcha|pattern> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path,...>" --json`. Skip purely mechanical or task-local notes; capture only what the next agent would otherwise re-investigate. Upsert is idempotent by title.
+
 ## Git State Discipline
 
 - Sub-agents MUST NOT run `git stash` — ever, under any circumstance

@@ -91,6 +91,28 @@ defineCommand({
       .slice(0, 5)
       .map((e) => ({ id: e.id, title: e.title, kind: e.kind }));
 
+    // --- Knowledge health (thin/stale) over the full index ---
+    // thin: missing summary OR missing sourceFiles; stale: not updated in 180+ days.
+    const STALE_KNOWLEDGE_DAYS = 180;
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    let thinCount = 0;
+    let staleCount = 0;
+    for (const e of knowledgeIndex.entries) {
+      const missingSummary = !e.summary || e.summary.trim().length === 0;
+      const missingSourceFiles = !e.sourceFiles || e.sourceFiles.length === 0;
+      if (missingSummary || missingSourceFiles) thinCount++;
+      if (e.updatedAt) {
+        const ageDays = Math.floor((now - new Date(e.updatedAt).getTime()) / MS_PER_DAY);
+        if (ageDays > STALE_KNOWLEDGE_DAYS) staleCount++;
+      }
+    }
+    const knowledgeHealth = {
+      total: knowledgeIndex.entries.length,
+      thin: thinCount,
+      stale: staleCount,
+    };
+
     const operatingBrief = deriveOperatingBrief({
       tasks: allTasks.map((t) => ({
         id: t.id,
@@ -119,6 +141,7 @@ defineCommand({
       openTasksCount: openTasks.length,
       topOpenTasks,
       topKnowledge,
+      knowledgeHealth,
     };
 
     if (!flags.json) {

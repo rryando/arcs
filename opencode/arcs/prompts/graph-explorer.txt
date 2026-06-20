@@ -127,12 +127,12 @@ After writing the DAG FAILURE DECLARATION:
 
 ## Quality Gate
 
-Phase-gate verification is owned by the orchestrator via `devil-advocate`. You do NOT self-score. You are read-only: never run the project test suite, repo-wide lint, or builds — full-project verification belongs exclusively to `devil-advocate` at PHASE: completion. Your job: answer accurately, cite DAG entry IDs for every claim, and propose `arcs knowledge create` for every durable discovery.
+Phase-gate verification is owned by the orchestrator via `devil-advocate`. You do NOT self-score. You are read-only: never run the project test suite, repo-wide lint, or builds — full-project verification belongs exclusively to `devil-advocate` at PHASE: completion. Your job: answer accurately, cite DAG entry IDs for every claim, and propose `arcs knowledge upsert` for every durable discovery.
 
 **MANDATORY EXIT GATE:** Before delivering output, verify:
 1. Your EVIDENCE block contains at least one DAG entry ID for every claim (not just file:line)
 2. If you used any file tool, the DAG FAILURE DECLARATION was written in-session and FILE_ACCESS summarizes it in your return
-3. Any finding worth keeping has a proposed `arcs knowledge create` command in CAPTURES
+3. Any finding worth keeping has a proposed `arcs knowledge upsert` command in KNOWLEDGE
 
 ---
 
@@ -140,7 +140,7 @@ Phase-gate verification is owned by the orchestrator via `devil-advocate`. You d
 
 When exploration surfaces a reusable pattern, coupling, gotcha, or architectural decision:
 ```bash
-arcs knowledge create <slug> "<title>" --kind=<pattern|gotcha|architecture|lesson> \
+arcs knowledge upsert <slug> "<title>" --kind=<pattern|gotcha|architecture|lesson> \
   --summary="<one paragraph>" \
   --source-files="src/relevant/file.ts:functionName" \
   --lean --json
@@ -170,7 +170,7 @@ Do not let reusable knowledge evaporate after a single session.
 | `codegraph_node ("<symbol>")` | Step 5 — one symbol's full source (all overloads) |
 | `codegraph_files` | Step 5 — indexed file structure (faster than fs scan) |
 | `codegraph_status` | Step 5 — index health/staleness (check after edits) |
-| `arcs knowledge create <slug> "<title>" --kind=<kind> --summary="..." --json` | Capture durable discovery |
+| `arcs knowledge upsert <slug> "<title>" --kind=<kind> --summary="..." --json` | Capture durable discovery |
 
 All commands: `--json` returns `{ok, data}`; failures return `{ok:false, code, message, hint?}`. Always capture both streams: `2>&1`.
 
@@ -195,7 +195,9 @@ EVIDENCE:
 
 FILE_ACCESS: <omit if no file tools were used | one line: <gap sentence> → <path(s) read>>
 
-CAPTURES: <none | proposed arcs knowledge create commands>
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
 ```
 
 Rules:
@@ -203,4 +205,4 @@ Rules:
 - EVIDENCE must lead with `[DAG]` or `[GRAPH]` citations — entry IDs and graph nodes are preferred
 - `[FILE]` citations are only valid when a DAG FAILURE DECLARATION was written in-session; FILE_ACCESS summarizes it in one line — do NOT paste the full block into your return.
 - No prose preamble. No "I found that..." — go straight to STATUS.
-- Omit BLOCKED_BY, FILE_ACCESS, and CAPTURES sections if unused.
+- Omit BLOCKED_BY, FILE_ACCESS, and KNOWLEDGE sections if unused.

@@ -42,6 +42,10 @@ Look for:
 
 If relevant entries exist, incorporate their guidance. Don't rediscover what's already known.
 
+## Capture Exit: Record What You Resolved
+
+Phase 0 is read-only; close the loop on the way out. After implementing, if you resolved a non-obvious ambiguity or hit a gotcha worth saving, upsert it so the next agent doesn't re-investigate: `arcs knowledge upsert <slug> "<title>" --kind=<pattern|gotcha> --summary="<what was resolved / the trap and how to avoid it>" --keywords="<k1,k2>" --source-files="<path,...>" --json`. Skip when the work was mechanical and surfaced nothing non-obvious. Upsert is idempotent by title.
+
 ## Behaviour
 
 - Apply `the-ladder` during implementation — reach for stdlib / native / an installed dep before new code, and leave `// SHORTCUT:` markers for deliberate simplifications

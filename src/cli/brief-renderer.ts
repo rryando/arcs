@@ -29,6 +29,7 @@ export interface BriefData {
   openTasksCount: number;
   topOpenTasks?: BriefTask[];
   topKnowledge: BriefKnowledge[];
+  knowledgeHealth?: { total: number; thin: number; stale: number };
 }
 
 /**
@@ -94,6 +95,14 @@ export function renderBrief(data: BriefData): string {
     for (const entry of data.topKnowledge) {
       lines.push(`- ${entry.title} (${entry.kind})`);
     }
+    lines.push("");
+  }
+
+  // Knowledge Health — only surface when there is something to act on
+  const kh = data.knowledgeHealth;
+  if (kh && (kh.thin > 0 || kh.stale > 0)) {
+    lines.push("## Knowledge Health");
+    lines.push(`- ${kh.thin} thin, ${kh.stale} stale of ${kh.total} entries`);
     lines.push("");
   }
 

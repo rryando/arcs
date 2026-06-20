@@ -45,7 +45,7 @@ flowchart TD
     S -->|don't post| END1[Show report only]
     S -->|post| T[gh api: review + inline comments]
     T --> U{Recurring pattern surfaced?}
-    U -->|yes + opt-in| V[Propose knowledge:create]
+    U -->|yes| V[Propose arcs knowledge upsert in report — ARCS-write opt-in to apply]
     U -->|no| END2[Done]
     V --> END2
 ```
@@ -180,6 +180,10 @@ gh api POST /repos/{owner}/{repo}/pulls/{number}/reviews \
 | 4 (summary only) | `gh pr review <number> --comment --body "..."` — **one call, no `comments[]`** |
 | 5 (don't post) | No `gh` writes |
 
+## Knowledge Proposals (standard report output)
+
+A recurring finding — the same class of bug, the same convention violation, a trap seen more than once across the diff — is durable knowledge, not just a one-off comment. Make proposing it a standard part of the report, not an afterthought: for each recurring finding, include a proposed `arcs knowledge upsert <slug> "<title>" --kind=<pattern|gotcha> --summary="<the recurring issue and the fix convention>" --keywords="<k1,k2>" --source-files="<path,...>" --json` in the report. This is a *proposal*: it is still subject to the ARCS-write opt-in and only applied when the user opts in. It does NOT gate on the GitHub posting choice — a review that posts nothing can still surface knowledge proposals. Upsert is idempotent by title.
+
 ## Report Structure
 
 ```
@@ -189,6 +193,7 @@ gh api POST /repos/{owner}/{repo}/pulls/{number}/reviews \
 ## Rubric Selection (which dimensions activated, why)
 ## Findings (grouped by severity)
 ## Cleared Dimensions (with evidence)
+## Knowledge Proposals (recurring findings → proposed arcs knowledge upsert, ARCS-write opt-in)
 ## Architectural / Performance Handoffs (if any)
 ## Posting Plan (mode chosen → exact comments to be posted)
 ## Confidence & Gaps

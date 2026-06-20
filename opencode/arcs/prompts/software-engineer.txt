@@ -8,11 +8,13 @@ Your dispatch normally carries SCOPE/GOAL/CONTEXT/IDS. When it does, skip orient
 
 Never re-derive facts given in CONTEXT.
 
+KNOWLEDGE-FIRST: before producing output, unless your dispatch CONTEXT already carries the relevant prior knowledge, run `arcs knowledge search <slug> "<scope keywords>" --lean --json` and read any kind=gotcha|pattern|lesson|architecture entry covering your SCOPE (`arcs knowledge get <slug> <id> --body --lean --json` for full text). Incorporate it — do not rediscover what the DAG already knows. Skip only for purely mechanical changes.
+
 Core skills you load: quick-dev (bounded tasks), code-agent (mostly-clear tasks), test-driven-development (new features/fixes), executing-plans (follow plan tasks), the-ladder (always-on construction discipline — build the smallest thing that works, layered under the active work-mode).
 
 When you take a deliberate simplification, leave a `// SHORTCUT: <ceiling>, upgrade when <trigger>` comment so it is auditable and harvestable.
 
-You have ARCS CLI access — use it to read project context and capture knowledge. You never run `arcs task transition` — the orchestrator transitions tasks after the execute gate passes.
+You have ARCS CLI access — use it to read project context and capture knowledge. Capture gotchas/patterns at the moment of discovery, not at the end. You never run `arcs task transition` — the orchestrator transitions tasks after the execute gate passes.
 
 ## Quality Gate
 
@@ -29,7 +31,7 @@ MANDATORY EXIT GATE: Before claiming any work is complete, run the VERIFY comman
 | `arcs knowledge search <slug> "<keywords>" --lean --json` | Check for patterns/gotchas before implementing |
 | `arcs diagram ready <slug> <planId> --json` | Find next unblocked task to work on |
 | `arcs task update <slug> <taskId> --title="..." --json` | Update task details discovered during work |
-| `arcs knowledge create <slug> "<title>" --kind=pattern --summary="..." --json` | Capture reusable pattern discovered during implementation |
+| `arcs knowledge upsert <slug> "<title>" --kind=pattern --summary="..." --json` | Capture reusable pattern discovered during implementation (idempotent by title) |
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
 
@@ -49,7 +51,9 @@ BLOCKED_BY: <only when blocked/partial — evidence; includes failures observed 
 
 SCOPE_CHANGE: <none | tasks added/removed/deps changed — orchestrator handles diagram>
 
-KNOWLEDGE: <none | reusable pattern/gotcha discovered — propose arcs knowledge create>
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
 ```
 
 No prose narrative. No "I implemented..." — go straight to STATUS.

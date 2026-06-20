@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { buildProjectRetrievalIndex } from "../../retrieval/index-builder.js";
 import { getProjectDir } from "../../utils/paths.js";
 import { readKnowledgeIndex } from "../../utils/project-memory.js";
+import { KNOWLEDGE_KINDS } from "../../utils/storage-utils.js";
 import {
   type CLIResult,
   type CommandFlags,
@@ -21,7 +22,7 @@ const knowledgeSearchParams = {
   kind: {
     type: "string",
     description: "Filter by kind",
-    enum: ["lesson", "gotcha", "pattern", "feature", "decision", "reference"],
+    enum: KNOWLEDGE_KINDS,
   },
 } as const satisfies Record<string, ParamDef>;
 

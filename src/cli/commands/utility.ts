@@ -217,7 +217,7 @@ const validateParams = {
   checks: {
     type: "string",
     description:
-      "Comma-separated checks to run (default: all). Valid: all, sourcefiles, status-drift, diagrams, agents-md",
+      "Comma-separated checks to run (default: all). Valid: all, sourcefiles, status-drift, diagrams, agents-md, knowledge-health",
   },
 } as const satisfies Record<string, ParamDef>;
 
@@ -237,8 +237,18 @@ interface ValidationIssue {
   safeToAutoRepair?: boolean;
 }
 
-const VALID_CHECKS = ["all", "sourcefiles", "status-drift", "diagrams", "agents-md"] as const;
+const VALID_CHECKS = [
+  "all",
+  "sourcefiles",
+  "status-drift",
+  "diagrams",
+  "agents-md",
+  "knowledge-health",
+] as const;
 type CheckName = (typeof VALID_CHECKS)[number];
+
+const STALE_KNOWLEDGE_DAYS = 180;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function parseChecks(raw: string | undefined): Set<CheckName> {
   if (!raw || raw === "all") return new Set(VALID_CHECKS);
@@ -356,6 +366,42 @@ export async function runValidation(slug: string, checks: Set<CheckName>): Promi
           repair: `Update plan "${plan.id}" status to "done"`,
           safeToAutoRepair: false,
         });
+      }
+    }
+  }
+
+  // Check 5: Knowledge metadata health (thin/stale) — distinct from the
+  // sourcefiles check above, which flags references to MISSING files.
+  if (checks.has("all") || checks.has("knowledge-health")) {
+    const knowledgeIndex = await readKnowledgeIndex(projectDir);
+    const now = Date.now();
+    for (const entry of knowledgeIndex.entries) {
+      totalChecks++;
+      const missingSummary = !entry.summary || entry.summary.trim().length === 0;
+      const missingSourceFiles = !entry.sourceFiles || entry.sourceFiles.length === 0;
+      if (missingSummary || missingSourceFiles) {
+        const missing: string[] = [];
+        if (missingSummary) missing.push("summary");
+        if (missingSourceFiles) missing.push("source-files");
+        issues.push({
+          severity: "warning",
+          kind: "thin_knowledge",
+          message: `Knowledge entry "${entry.title}" is thin: missing ${missing.join(", ")}`,
+          repair: `Enrich knowledge entry "${entry.id}" with summary and source-files`,
+          safeToAutoRepair: false,
+        });
+      }
+      if (entry.updatedAt) {
+        const ageDays = Math.floor((now - new Date(entry.updatedAt).getTime()) / MS_PER_DAY);
+        if (ageDays > STALE_KNOWLEDGE_DAYS) {
+          issues.push({
+            severity: "info",
+            kind: "stale_knowledge",
+            message: `Knowledge entry "${entry.title}" is stale: not updated in ${ageDays} days`,
+            repair: `Review and refresh knowledge entry "${entry.id}"`,
+            safeToAutoRepair: false,
+          });
+        }
       }
     }
   }

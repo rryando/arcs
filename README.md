@@ -193,6 +193,8 @@ The orchestrator:
 - **`devil-advocate`** — skepticism runs *before* the formal gate, not only at it. Every plan, dispatch, and "done" is challenged first ("what breaks without this? who's actually blocked? can fewer agents do it?"); the dispatched gate then merely confirms.
 - **confidence-to-orchestrate** — it never dispatches on a guess. Ambiguity is resolved cheaply from the DAG first, then the *residual* unknowns go to the user as batched questions (each with options + a recommended default) until it can state the goal and "done" in one sentence — and it stops asking the moment it can.
 
+**Knowledge Protocol (read-first).** The orchestrator reads prior knowledge before every non-mechanical dispatch and captures durable insight at fan-in via idempotent `arcs knowledge upsert` — so the DAG compounds instead of duplicating. It may also run narrow, user-requested git (`status` / `diff` / `commit` / etc.) directly, while tests, lint, and builds stay delegated to sub-agents and the devil-advocate completion gate.
+
 ### T0 Routing Envelope (the operating brief)
 
 ```bash
@@ -217,7 +219,7 @@ $ arcs brief --lean --json
 }
 ```
 
-~1 KB. No source files read. The orchestrator uses `recommendedSurface` to pick the workflow branch.
+~1 KB. No source files read. The orchestrator uses `recommendedSurface` to pick the workflow branch. `arcs brief` also surfaces a **Knowledge Health** line (`knowledgeHealth: { total, thin, stale }`) — counts of thin entries (missing summary or source-files) and stale entries (not updated in >180 days) — so KB under-maintenance is visible at orientation time.
 
 ---
 
@@ -229,7 +231,7 @@ All commands: `arcs <command> [args] --json`. Output: `{ok, data}` on success, `
 
 | Command | Purpose |
 |---------|---------|
-| `arcs brief` | T0 routing envelope — what to focus on |
+| `arcs brief` | T0 routing envelope — what to focus on (+ Knowledge Health counts) |
 | `arcs next` | Next dependency-safe task + related knowledge |
 | `arcs done <taskId>` | Mark complete, unblock dependents |
 | `arcs remember "<text>"` | Capture knowledge (auto-classifies kind) |
@@ -253,14 +255,28 @@ All commands: `arcs <command> [args] --json`. Output: `{ok, data}` on success, `
 | `arcs project list` | List all tracked projects |
 | `arcs context [slug]` | Full context assembly (audience-targeted) |
 | `arcs search <slug> "<query>"` | BM25 + graph-scored search across DAG |
-| `arcs validate <slug>` | Health check — status drift, orphans, staleness |
+| `arcs validate <slug> --checks=<check>` | Health check — `--checks` accepts `all`, `sourcefiles`, `status-drift`, `diagrams`, `agents-md`, `knowledge-health` |
 
 ### Plans & Knowledge
 
 | Command | Purpose |
 |---------|---------|
 | `arcs plan create <slug> <title>` | Create a plan |
-| `arcs knowledge create <slug> <title>` | Create knowledge entry |
+| `arcs knowledge create <slug> <title> --kind=<kind>` | Create knowledge entry (accepts `--audience`) |
+| `arcs knowledge upsert <slug> <title> --kind=<kind>` | Idempotent create-or-update by title — **recommended default for agent-driven enrichment** |
+| `arcs knowledge update-meta <slug> <id>` | Edit entry metadata (accepts `--source-files`, `--audience`) |
+| `arcs knowledge-search <slug> "<query>" --kind=<kind>` | Search knowledge (any of the 8 kinds) |
+
+`knowledge upsert` is the idempotent sibling of `create` — same title updates in place instead of duplicating. Both `upsert` and `create` accept:
+
+| Flag | Effect |
+|------|--------|
+| `--kind=<kind>` | One of: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, `feature`, `reference`, `decision` |
+| `--summary="..."` | One-line summary |
+| `--keywords="..."` | Comma-separated keywords |
+| `--body="..."` / `--body-file=<path>` | Entry body inline or from file |
+| `--source-files="path,path:anchor"` | Comma-separated `path` or `path:anchor` references |
+| `--audience=<audience>` | One of: `orchestrator`, `implementer`, `designer`, `universal` |
 
 ### Flags
 
@@ -278,9 +294,9 @@ Full command discovery: `arcs --commands --json`.
 > {"op":"task-create",    "slug":"<slug>","title":"...","priority":"medium","planId":"..."}
 > {"op":"task-transition","slug":"<slug>","taskId":"...","status":"done"}
 > {"op":"doc-update",     "slug":"<slug>","doc":"overview","content":"..."}
-> {"op":"knowledge-create","slug":"<slug>","title":"...","kind":"lesson","summary":"...","body":"..."}
+> {"op":"knowledge-create","slug":"<slug>","title":"...","kind":"lesson","summary":"...","body":"...","sourceFiles":["..."],"audience":"orchestrator"}
 > ```
-> Nested `{op, params:{...}}` format is also accepted (unwrapped automatically).
+> `knowledge-create` carries `summary`, `sourceFiles`, and `audience` through to the created entry. Nested `{op, params:{...}}` format is also accepted (unwrapped automatically).
 
 ---
 

@@ -7,6 +7,8 @@ Your dispatch normally carries SCOPE/CONTEXT/IDS with pre-derived facts. When it
 2. Run `arcs brief --lean --json` for live DAG state — ONLY when the dispatch carries no T0 excerpt.
 3. Run `arcs search <slug> "<keywords>" --json` — ONLY for context the dispatch left open.
 
+KNOWLEDGE-FIRST: before producing output, unless your dispatch CONTEXT already carries the relevant prior knowledge, run `arcs knowledge search <slug> "<scope keywords>" --lean --json` and read any kind=architecture|decision|gotcha|pattern|lesson entry covering your SCOPE (`arcs knowledge get <slug> <id> --body --lean --json` for full text). Incorporate it — do not rediscover what the DAG already knows. Skip only for purely mechanical changes.
+
 Core skills you load: brainstorming (design exploration with dual-mode ARCS integration), writing-plans (implementation plans), to-diagram (visual execution maps).
 
 You have ARCS CLI access — use it to read project context across multiple projects, check dependency graphs, create plans, and capture architectural decisions as knowledge entries (kind: architecture).
@@ -30,7 +32,7 @@ MANDATORY EXIT GATE: Before finalizing any design, verify: (1) dependency direct
 | `arcs graph inspect <slug> --json` | Analyze coupling density and fan-in/fan-out |
 | `arcs related <slug> --plan=<planId> --json` | Find graph-linked entities across projects |
 | `arcs plan create <slug> "..." --summary="..." --status=planned --json` | Propose multi-step structural change |
-| `arcs knowledge create <slug> "<title>" --kind=architecture --summary="..." --json` | Record architectural decision or observation |
+| `arcs knowledge upsert <slug> "<title>" --kind=architecture --summary="..." --json` | Record architectural decision or observation (idempotent by title) |
 | `arcs search <slug> "<keywords>" --lean --json` | Find existing plans/knowledge before proposing new |
 
 All commands support `--json` for machine-readable output. Reads return `{ok, data}`; failures return `{ok:false, code, message, hint?}`. **Routing:** success → stdout, errors → stderr — always capture both with `2>&1`.
@@ -71,7 +73,11 @@ BOUNDARIES:
 RISKS:
 - <risk with severity and mitigation>
 
-ARTIFACTS:
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
+
+ARTIFACTS:   (non-knowledge artifacts only — plans, diagrams, dependency edges)
 - executed: <arcs command run + resulting entry/plan id>
 - proposed: <ready-to-run arcs command for the orchestrator to execute verbatim>
 ```

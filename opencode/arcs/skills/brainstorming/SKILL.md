@@ -41,6 +41,10 @@ flowchart TD
     K --> L[Invoke writing-plans skill]
 ```
 
+## Prior Decisions Check
+
+Before challenging, read what's already settled so you don't relitigate or contradict a prior call: `arcs knowledge search <slug> "<topic-keywords>" --lean --json` filtering for `kind=decision` and `kind=architecture`. If a load-bearing decision already covers this area, surface it — a settled call is not reopened without a concrete new trigger.
+
 ## Challenge Protocol
 
 Before designing anything, interrogate the request:
@@ -123,6 +127,8 @@ arcs plan create <slug> --title="YYYY-MM-DD <topic> Design" --summary="..." --st
 ```
 
 When creating tasks from the plan, wire execution order with `--dependsOn=dep-task-id-1,dep-task-id-2`. The `dependsOn` graph determines what `arcs next` returns — priority is a tiebreaker within the same topological level.
+
+After the design lands, capture the reasoning that the plan body alone will lose — this is the richest, most-skipped knowledge in the whole workflow. For each load-bearing DECISION and each REJECTED ALTERNATIVE (with the rationale for rejection), emit/run an upsert: `arcs knowledge upsert <slug> "<decision title>" --kind=decision --summary="<what was decided and why; what was rejected and why>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json`. Upsert is idempotent by title, so no dedup search is needed. (When the orchestrator drives this skill, emit the upsert command for it to run; standalone with bash, run it directly.)
 
 After storage: _"Spec saved to plan `<planId>`. Review it. Push back if anything's wrong."_
 

@@ -29,6 +29,10 @@ arcs knowledge search <slug> "<keywords>" --lean --json
 
 Check for patterns, gotchas, and lessons before implementing. Skip only if the change is purely mechanical (rename, config nudge).
 
+## Capture Exit (lightweight)
+
+If a "bounded" change surfaced a non-obvious gotcha along the way, capture it before finishing: `arcs knowledge upsert <slug> "<title>" --kind=gotcha --summary="<the trap in 1-2 sentences>" --keywords="<k1,k2>" --source-files="<path,...>" --json`. Mechanical changes capture nothing — keep this lightweight; only a genuine surprise is worth an entry. Upsert is idempotent by title.
+
 ## Behaviour
 
 0. Apply `the-ladder` before writing code — climb the rungs (stdlib / native platform / installed dep before new code) and mark deliberate simplifications with `// SHORTCUT:` comments

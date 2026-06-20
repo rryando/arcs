@@ -103,6 +103,14 @@ RECOMMENDATION:
 
 Omit sections that don't apply (e.g., no TEST RESULT for brainstorm phase).
 
+After the verdict, OPTIONALLY append a KNOWLEDGE block. When the SAME KISS/YAGNI/DRY violation recurs across sessions, propose it as kind=gotcha here so the gate can teach the codebase to stop reproducing it. You cannot edit code or write knowledge — you only PROPOSE; the orchestrator persists:
+
+```
+KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  (upsert is idempotent by title — no dedup search needed)>
+```
+
 ## Behavioral Rules
 
 1. You CANNOT edit files. `edit: deny`. You read and judge.
