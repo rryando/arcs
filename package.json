@@ -57,5 +57,8 @@
     "vite": "^6.4.1",
     "vitest": "^3.2.4",
     "@types/bun": "latest"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }
