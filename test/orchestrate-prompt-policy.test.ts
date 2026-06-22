@@ -154,7 +154,7 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     "systematic-debugging",
     "requesting-code-review",
     "writing-plans",
-    "subagent-driven-development",
+    "writing-knowledge",
     "to-diagram",
     "init-project",
     "enriching-codegraph-proposals",
@@ -186,7 +186,6 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
       "systematic-debugging",
       "requesting-code-review",
       "writing-plans",
-      "subagent-driven-development",
       "enriching-codegraph-proposals",
     ];
     for (const skill of supportSkills) {

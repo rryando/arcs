@@ -26,7 +26,7 @@ flowchart TD
     F -->|no| H[Skip graph step, log gap]
     G --> G2[ingestGraph → ≤20 proposals]
     G2 --> G3[codegraph MCP explore / impact for enrichment]:::sub
-    H & G3 --> I[Fan out: system-architect + docs-researcher + tech-architect]:::sub
+    H & G3 --> I[Fan out: tech-architect + docs-researcher]:::sub
     I --> J[Collect proposals → dedup → arcs knowledge create × N]
     J --> K[Done]
 ```
@@ -87,10 +87,9 @@ Update via `arcs project update-doc <slug> <doc> --content="..."`.
 
 | Sub-agent | Owns | Knowledge kinds it produces |
 |-----------|------|----------------------------|
-| `system-architect` | Module boundaries, clusters, dependency direction | `architecture`, `module` |
+| `tech-architect` | Module boundaries, clusters, dependency direction, cross-module couplings, structural gotchas, lessons | `architecture`, `module`, `gotcha`, `lesson` |
 | `docs-researcher` | Tech stack, third-party libraries, key files, features | `reference`, `feature` |
-| `tech-architect` | Cross-module couplings, structural gotchas, lessons | `gotcha`, `lesson` |
-| `qa-analyst` (optional) | Coding-style + convention scan from existing code | `pattern` |
+| `code-reviewer` (audit mode, optional) | Coding-style + convention scan from existing code | `pattern` |
 
 Dispatch in parallel — all agents in one message, per the orchestrator's Parallelism rules. Each agent receives:
 - The relevant `KnowledgeProposal` records from `ingestGraph` (so they don't rediscover what codegraph already found)
@@ -105,14 +104,14 @@ Each agent returns finalized proposals: `{title, kind, summary, keywords, source
 |----------|------|------------------|---------------|
 | tech stack | `architecture` | Languages, frameworks, runtimes, build tools, versions | `docs-researcher` |
 | key files | `reference` | Entry points, config files, main modules, purposes | `docs-researcher` (use `codegraph_search "entry points"`) |
-| code patterns | `pattern` | Recurring design patterns, abstractions, error handling | `qa-analyst` or `system-architect` |
-| coding style | `pattern` | Formatting, linting, import ordering, file organization | `qa-analyst` |
-| core modules | `module` | Core modules / shared functions — what, where, interconnections | `system-architect` (god nodes from codegraph) |
+| code patterns | `pattern` | Recurring design patterns, abstractions, error handling | `code-reviewer` (audit mode) or `tech-architect` |
+| coding style | `pattern` | Formatting, linting, import ordering, file organization | `code-reviewer` (audit mode) |
+| core modules | `module` | Core modules / shared functions — what, where, interconnections | `tech-architect` (god nodes from codegraph) |
 | external services | `module` | APIs, databases, message queues the project interacts with | `docs-researcher` |
 | third-party libraries | `reference` | Key dependencies and why they are used | `docs-researcher` |
 | features | `feature` | Major user-facing or system-facing features | `docs-researcher` |
 | cross-module couplings | `gotcha` | Hot edges between modules surfaced by codegraph | `tech-architect` (auto from `ingestGraph`) |
-| architecture clusters | `architecture` | Pseudo-community / directory groupings from codegraph | `system-architect` (auto from `ingestGraph`) |
+| architecture clusters | `architecture` | Pseudo-community / directory groupings from codegraph | `tech-architect` (auto from `ingestGraph`) |
 
 ## Worked Example
 
@@ -137,9 +136,8 @@ arcs proposal promote foo <id> --title="..." --summary="..." --body-file=... --k
 arcs proposal drop foo <id> --reason="..." --json
 
 # 5. Fan out typed agents (parallel) for entries beyond proposal scope
-#    system-architect → architecture/module entries
+#    tech-architect   → architecture/module/gotcha/lesson entries
 #    docs-researcher  → reference/feature entries
-#    tech-architect   → gotcha/lesson entries
 
 # 6. Write any non-proposal-derived knowledge entries directly
 arcs knowledge create foo "Tech stack: TypeScript + Node 20" --kind=architecture --summary="..." --body="..." --json

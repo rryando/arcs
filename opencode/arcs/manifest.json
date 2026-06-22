@@ -10,10 +10,8 @@
   "agents": [
     { "source": "prompts/software-engineer.txt", "destination": "prompts/software-engineer.txt" },
     { "source": "prompts/tech-architect.txt", "destination": "prompts/tech-architect.txt" },
-    { "source": "prompts/qa-analyst.txt", "destination": "prompts/qa-analyst.txt" },
     { "source": "prompts/oncall-ops.txt", "destination": "prompts/oncall-ops.txt" },
     { "source": "prompts/arcs-docs.txt", "destination": "prompts/arcs-docs.txt" },
-    { "source": "prompts/system-architect.txt", "destination": "prompts/system-architect.txt" },
     { "source": "prompts/code-reviewer.txt", "destination": "prompts/code-reviewer.txt" },
     { "source": "prompts/docs-researcher.txt", "destination": "prompts/docs-researcher.txt" },
     { "source": "prompts/devil-advocate.txt", "destination": "prompts/devil-advocate.txt" },
@@ -245,27 +243,6 @@
       {
         "path": [
           "agent",
-          "qa-analyst"
-        ],
-        "value": {
-          "description": "Quality enforcement specialist. Proactive code audits, review dispatch, convention compliance.",
-          "mode": "subagent",
-          "model": "github-copilot/claude-haiku-4.5",
-          "temperature": 0.3,
-          "permission": {
-            "edit": "deny",
-            "bash": "allow",
-            "webfetch": "allow",
-            "mcp": "allow",
-            "external_directory": { "*": "allow" }
-          },
-          "prompt": "{file:./prompts/qa-analyst.txt}"
-        },
-        "mode": "merge"
-      },
-      {
-        "path": [
-          "agent",
           "devil-advocate"
         ],
         "value": {
@@ -317,27 +294,6 @@
       },
       {
         "path": [
-          "agent",
-          "system-architect"
-        ],
-        "value": {
-          "description": "Architecture and design specialist. Module boundaries, dependency graphs, migration strategies, and cross-project design decisions.",
-          "mode": "subagent",
-          "model": "github-copilot/claude-opus-4.6",
-          "temperature": 0.5,
-          "permission": {
-            "edit": "deny",
-            "bash": "allow",
-            "webfetch": "allow",
-            "mcp": "allow",
-            "external_directory": { "*": "allow" }
-          },
-          "prompt": "{file:./prompts/system-architect.txt}"
-        },
-        "mode": "merge"
-      },
-      {
-        "path": [
           "small_model"
         ],
         "value": "github-copilot/claude-haiku-4.5",
@@ -367,26 +323,6 @@
         "path": [
           "agent",
           "tech-architect",
-          "permission",
-          "edit"
-        ],
-        "value": "deny",
-        "mode": "overwrite"
-      },
-      {
-        "path": [
-          "agent",
-          "qa-analyst",
-          "permission",
-          "edit"
-        ],
-        "value": "deny",
-        "mode": "overwrite"
-      },
-      {
-        "path": [
-          "agent",
-          "system-architect",
           "permission",
           "edit"
         ],

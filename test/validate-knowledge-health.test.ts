@@ -5,6 +5,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { renderTemplate } from "../src/utils/knowledge-templates.js";
 import { runCommand } from "./helpers/cli-runner.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
@@ -39,8 +40,13 @@ function seedProject(dir: string, slug: string, knowledge: unknown[]) {
     JSON.stringify({ entries: knowledge }),
     "utf-8",
   );
-  for (const k of knowledge as Array<{ normalizedId: string }>) {
+  for (const k of knowledge as Array<{ normalizedId: string; file?: string; body?: string }>) {
     writeFileSync(resolve(knowledgeDir, `${k.normalizedId}.meta.json`), JSON.stringify(k), "utf-8");
+    // Write the body file when a `body` is supplied so the shallow-body check
+    // has real content to measure; omit it to simulate an empty/missing body.
+    if (typeof k.body === "string" && k.file) {
+      writeFileSync(resolve(projDir, k.file), k.body, "utf-8");
+    }
   }
 }
 
@@ -189,6 +195,103 @@ describe("validate knowledge-health check", () => {
       const result = await runCommand("validate", ["kh-all"]);
       const issues = healthOf(result as { ok: boolean; data: unknown });
       expect(issues.find((iss) => iss.kind === "thin_knowledge")).toBeDefined();
+    });
+  });
+
+  it("emits shallow_knowledge when the body is empty/one-sentence", async () => {
+    await withTempDataDir(async (dir) => {
+      seedProject(dir, "kh-shallow", [
+        {
+          id: "k1",
+          normalizedId: "k1",
+          title: "One Liner",
+          kind: "lesson",
+          keywords: [],
+          summary: "complete",
+          sourceFiles: [{ path: "src/a.ts" }],
+          file: "knowledge/k1.md",
+          body: "# One Liner\n\nIt broke.\n",
+          createdAt: daysAgoISO(1),
+          updatedAt: daysAgoISO(1),
+        },
+      ]);
+      const result = await runCommand("validate", ["kh-shallow", "--checks=knowledge-health"]);
+      const issues = healthOf(result as { ok: boolean; data: unknown });
+      const shallow = issues.find((iss) => iss.kind === "shallow_knowledge");
+      expect(shallow).toBeDefined();
+      expect(shallow!.severity).toBe("warning");
+      expect(shallow!.message).toContain("One Liner");
+      expect(shallow!.message).toContain("shallow");
+      expect(shallow!.safeToAutoRepair).toBe(false);
+    });
+  });
+
+  it("does not emit shallow_knowledge for a richly filled body", async () => {
+    await withTempDataDir(async (dir) => {
+      const richBody = [
+        "# Rich Entry",
+        "",
+        "## Expectation",
+        "",
+        "We assumed the watcher would index writes synchronously and that reads",
+        "would always observe the latest state without any propagation delay.",
+        "",
+        "## What happened",
+        "",
+        "The file watcher lagged behind writes by roughly a second, so reads",
+        "issued immediately after a write returned stale rows from the index.",
+        "",
+        "## Next time",
+        "",
+        "Poll the index until the expected row appears instead of reading once.",
+        "",
+      ].join("\n");
+      seedProject(dir, "kh-rich", [
+        {
+          id: "k1",
+          normalizedId: "k1",
+          title: "Rich Entry",
+          kind: "lesson",
+          keywords: [],
+          summary: "complete",
+          sourceFiles: [{ path: "src/a.ts" }],
+          file: "knowledge/k1.md",
+          body: richBody,
+          createdAt: daysAgoISO(1),
+          updatedAt: daysAgoISO(1),
+        },
+      ]);
+      const result = await runCommand("validate", ["kh-rich", "--checks=knowledge-health"]);
+      const issues = healthOf(result as { ok: boolean; data: unknown });
+      expect(issues.filter((iss) => iss.kind === "shallow_knowledge")).toHaveLength(0);
+      // And it stays clean on the metadata checks too.
+      expect(issues.filter((iss) => iss.kind === "thin_knowledge")).toHaveLength(0);
+      expect(issues.filter((iss) => iss.kind === "stale_knowledge")).toHaveLength(0);
+    });
+  });
+
+  it("flags a fresh render-template body (headings + hints only) as shallow", async () => {
+    await withTempDataDir(async (dir) => {
+      seedProject(dir, "kh-tpl", [
+        {
+          id: "k1",
+          normalizedId: "k1",
+          title: "Unfilled Template",
+          kind: "gotcha",
+          keywords: [],
+          summary: "complete",
+          sourceFiles: [{ path: "src/a.ts" }],
+          file: "knowledge/k1.md",
+          body: `# Unfilled Template\n\n${renderTemplate("gotcha")}`,
+          createdAt: daysAgoISO(1),
+          updatedAt: daysAgoISO(1),
+        },
+      ]);
+      const result = await runCommand("validate", ["kh-tpl", "--checks=knowledge-health"]);
+      const issues = healthOf(result as { ok: boolean; data: unknown });
+      const shallow = issues.find((iss) => iss.kind === "shallow_knowledge");
+      expect(shallow).toBeDefined();
+      expect(shallow!.message).toContain("Unfilled Template");
     });
   });
 });

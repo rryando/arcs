@@ -75,7 +75,7 @@ git diff {BASE_SHA}..{HEAD_SHA}
 
 No prose narrative. No "Overall this looks..." — open with the Standard Return Envelope, then VERDICT, then FINDINGS grouped by severity.
 
-When dispatched via subagent-driven-development, return its JSON envelope instead (see code-quality-reviewer-prompt.md).
+When dispatched via executing-plans parallel mode, return its JSON envelope instead (see code-quality-reviewer-prompt.md).
 
 ```
 STATUS: done | blocked | partial

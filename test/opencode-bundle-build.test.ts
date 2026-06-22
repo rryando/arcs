@@ -364,15 +364,14 @@ describe("opencode bundle runtime manifest", () => {
         "code-agent": ["SKILL.md"],
         "deep-pr-review": ["SKILL.md", "review-template.md", "codegraph-diff.md"],
         "enriching-codegraph-proposals": ["SKILL.md"],
-        "executing-plans": ["SKILL.md"],
-        "quick-dev": ["SKILL.md"],
-        "requesting-code-review": ["SKILL.md", "code-reviewer.md"],
-        "subagent-driven-development": [
+        "executing-plans": [
           "SKILL.md",
           "code-quality-reviewer-prompt.md",
           "implementer-prompt.md",
           "spec-reviewer-prompt.md",
         ],
+        "quick-dev": ["SKILL.md"],
+        "requesting-code-review": ["SKILL.md", "code-reviewer.md"],
         "systematic-debugging": [
           "SKILL.md",
           "condition-based-waiting.md",
@@ -388,6 +387,7 @@ describe("opencode bundle runtime manifest", () => {
           "testing-anti-patterns.md",
         ],
         "to-diagram": ["SKILL.md", "scripts/manage-diagram.mjs"],
+        "writing-knowledge": ["SKILL.md"],
         "writing-plans": ["SKILL.md", "plan-document-reviewer-prompt.md"],
       },
       agents: [],

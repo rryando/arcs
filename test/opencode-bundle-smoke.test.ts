@@ -89,10 +89,8 @@ describe("opencode ARCS bundle bundle", () => {
     expect(manifest.agents).toEqual([
       { source: "prompts/software-engineer.txt", destination: "prompts/software-engineer.txt" },
       { source: "prompts/tech-architect.txt", destination: "prompts/tech-architect.txt" },
-      { source: "prompts/qa-analyst.txt", destination: "prompts/qa-analyst.txt" },
       { source: "prompts/oncall-ops.txt", destination: "prompts/oncall-ops.txt" },
       { source: "prompts/arcs-docs.txt", destination: "prompts/arcs-docs.txt" },
-      { source: "prompts/system-architect.txt", destination: "prompts/system-architect.txt" },
       { source: "prompts/code-reviewer.txt", destination: "prompts/code-reviewer.txt" },
       { source: "prompts/docs-researcher.txt", destination: "prompts/docs-researcher.txt" },
       { source: "prompts/devil-advocate.txt", destination: "prompts/devil-advocate.txt" },

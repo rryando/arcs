@@ -114,7 +114,7 @@ Expected: PASS
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use arcs:subagent-driven-development (if subagents available) or arcs:executing-plans to implement this plan.
+> **For agentic workers:** REQUIRED: Use arcs:executing-plans to implement this plan (sequential single-agent by default, or parallel mode when independent tasks can fan out).
 
 **Goal:** [One sentence]
 
@@ -173,8 +173,7 @@ Then extract the plan's "why this structure" rationale into a durable entry — 
 
 > "Plan complete and saved via `arcs plan get <slug> <planId>` in project `<slug>`. Ready to execute?"
 
-- **Subagents available** → REQUIRED: use `arcs:subagent-driven-development`
-- **No subagents** → use `arcs:executing-plans`
+- REQUIRED: use `arcs:executing-plans` — its parallel mode fans out independent tasks to subagents when available, falling back to sequential single-agent execution otherwise
 
 ## Constraints
 

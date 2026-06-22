@@ -173,7 +173,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     }
 
     p.note(
-      "Used by: software-engineer, docs-researcher, arcs-docs, oncall-ops, system-architect, plan, general",
+      "Used by: software-engineer, docs-researcher, arcs-docs, oncall-ops, plan, general",
       "Heavy tier agents",
     );
 
@@ -201,7 +201,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       process.exit(0);
     }
 
-    p.note("Used by: explore, code-reviewer, tech-architect, qa-analyst", "Light tier agents");
+    p.note("Used by: explore, code-reviewer, tech-architect", "Light tier agents");
 
     // T004 will wire modelConfig into agent registration calls below.
     const modelConfig: ModelTierConfig = {
@@ -228,14 +228,12 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         { name: "docs-researcher", tier: "heavy" },
         { name: "arcs-docs", tier: "heavy" },
         { name: "oncall-ops", tier: "heavy" },
-        { name: "system-architect", tier: "heavy" },
         { name: "plan", tier: "heavy" },
         { name: "general", tier: "heavy" },
         { name: "build", tier: "standard" },
         { name: "explore", tier: "light" },
         { name: "code-reviewer", tier: "light" },
         { name: "tech-architect", tier: "light" },
-        { name: "qa-analyst", tier: "light" },
       ];
 
       p.note("Select a model for each agent, or keep the tier default.", "Per-Agent Customization");
@@ -374,7 +372,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         "ARCS agents are grouped into three tiers.\n" +
           "  Heavy  — reasoning & synthesis (software-engineer, arcs-docs, oncall-ops…)\n" +
           "  Standard — orchestration (arcs-orchestrate, devil-advocate…)\n" +
-          "  Light  — read-only exploration (code-reviewer, tech-architect, qa-analyst…)\n\n" +
+          "  Light  — read-only exploration (code-reviewer, tech-architect…)\n\n" +
           'Use "inherit" to delegate model choice to Claude Code defaults.',
         "Claude Code Model Tiers",
       );

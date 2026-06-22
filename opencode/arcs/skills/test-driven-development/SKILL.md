@@ -9,7 +9,7 @@ description: Use when implementing any feature or bugfix, before writing impleme
 
 Implementing any feature, bugfix, or behavior change. No production code without a failing test first.
 
-> **Note:** This skill is typically invoked BY `code-agent` when new non-trivial behavior needs test-first implementation. Rarely loaded directly by orchestrators — prefer routing through `code-agent` which will invoke TDD as needed.
+> **Note:** This skill is loaded DIRECTLY by the orchestrator when test-first is a hard requirement (the decision tree's "test-first valuable" trigger). It is also available as a sub-flow within `code-agent`, which invokes TDD when new non-trivial behavior needs test-first implementation.
 
 ## Flow
 

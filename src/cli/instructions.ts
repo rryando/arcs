@@ -61,7 +61,6 @@ const AGENT_TIER_MAP: Record<string, "heavy" | "standard" | "light"> = {
   "docs-researcher": "heavy",
   "arcs-docs": "heavy",
   "oncall-ops": "heavy",
-  "system-architect": "heavy",
   plan: "heavy",
   general: "heavy",
   build: "standard",
@@ -72,7 +71,6 @@ const AGENT_TIER_MAP: Record<string, "heavy" | "standard" | "light"> = {
   "graph-explorer": "light",
   "code-reviewer": "light",
   "tech-architect": "light",
-  "qa-analyst": "light",
 };
 
 /**

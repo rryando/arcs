@@ -59,10 +59,8 @@ describe("checked-in opencode bundle pruning", () => {
       "prompts/docs-researcher.txt",
       "prompts/graph-explorer.txt",
       "prompts/oncall-ops.txt",
-      "prompts/qa-analyst.txt",
       "prompts/software-engineer.txt",
       "prompts/arcs-docs.txt",
-      "prompts/system-architect.txt",
       "prompts/tech-architect.txt",
       // Orchestrator prompt files generated from src/cli/arcs-orchestrate*.ts
       // by build-opencode-bundle.mjs and committed to the repo bundle.

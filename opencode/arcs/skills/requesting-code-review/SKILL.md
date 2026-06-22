@@ -39,7 +39,7 @@ When gathering conventions, also pull what the DAG already knows so the reviewer
 ## When to Request
 
 **Mandatory:** after major features, before merge to main.
-**Already scheduled:** when `subagent-driven-development` drives the loop, its pipeline dispatches this review as stage 2 (code-quality-reviewer applies this template's checklist but returns the SDD JSON envelope) — do not schedule it twice for the same task.
+**Already scheduled:** when `executing-plans` parallel mode drives the loop, its pipeline dispatches this review as stage 2 (code-quality-reviewer applies this template's checklist but returns the parallel-mode JSON envelope) — do not schedule it twice for the same task.
 **Optional:** when stuck, before refactoring, after complex bugfix.
 
 ## Red Flags
