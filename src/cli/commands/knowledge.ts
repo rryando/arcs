@@ -26,10 +26,33 @@ import {
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
 import {
+  extractBodyContentLength,
   getTemplateSections,
+  isBodyShallow,
   renderTemplate,
+  SHALLOW_BODY_MIN_CHARS,
 } from "../../utils/knowledge-templates.js";
+import { buildBody } from "../../utils/storage-utils.js";
 import type { KnowledgeKind } from "../../utils/storage-utils.js";
+
+/**
+ * Build the non-fatal shallow-body warning for a knowledge write. Returns the
+ * warning string when the persisted body falls below the real-content floor and
+ * the author has not opted out via --allow-thin; otherwise returns undefined.
+ *
+ * Uses the same `isBodyShallow` primitive as the knowledge-health validator so
+ * write-time and validate-time agree by construction. Warn-only: callers add
+ * this to `warnings[]` and never change `ok` or block the write.
+ */
+function shallowBodyWarning(
+  finalBody: string,
+  kind: string,
+  allowThin: boolean | undefined,
+): string | undefined {
+  if (allowThin) return undefined;
+  if (!isBodyShallow(finalBody)) return undefined;
+  return `shallow body: ${extractBodyContentLength(finalBody)} chars of real content (floor ${SHALLOW_BODY_MIN_CHARS}) — scaffold with: arcs knowledge template --kind=${kind}`;
+}
 
 const KIND_ENUM = [
   "lesson",
@@ -171,6 +194,10 @@ const knowledgeCreateParams = {
       'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
   },
   audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
+  "allow-thin": {
+    type: "boolean",
+    description: "Suppress the shallow-body warning for an intentional stub",
+  },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -227,6 +254,10 @@ async function handleKnowledgeCreate(
     : bodyFile
       ? await readFile(bodyFile, "utf-8")
       : undefined;
+  const finalBody = buildBody(title, content);
+  const warnings = [shallowBodyWarning(finalBody, kind, params["allow-thin"])].filter(
+    (w): w is string => w !== undefined,
+  );
   try {
     const entry = await createKnowledgeEntry(projectDir, {
       id,
@@ -238,7 +269,7 @@ async function handleKnowledgeCreate(
       ...(sourceFiles && { sourceFiles }),
       ...(audience && { audience }),
     });
-    return success(entry);
+    return success({ ...entry, ...(warnings.length > 0 && { warnings }) });
   } catch (err) {
     return failure("knowledge_create_error", err instanceof Error ? err.message : String(err));
   }
@@ -321,6 +352,10 @@ const knowledgeUpdateBodyParams = {
   body: { type: "string", required: false, description: "Inline markdown body content" },
   "body-file": { type: "string", description: "Path to markdown file with entry body" },
   "body-stdin": { type: "boolean", description: "Read body from stdin" },
+  "allow-thin": {
+    type: "boolean",
+    description: "Suppress the shallow-body warning for an intentional stub",
+  },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -380,9 +415,12 @@ async function handleKnowledgeUpdateBody(
   } else {
     body = await readStdin();
   }
+  const warnings = [
+    shallowBodyWarning(body, existingMeta.kind, params["allow-thin"]),
+  ].filter((w): w is string => w !== undefined);
   await writeFile(bodyPath, body, "utf-8");
   const meta = await updateKnowledgeEntry(projectDir, { id: entryId });
-  return success({ meta, body });
+  return success({ meta, body, ...(warnings.length > 0 && { warnings }) });
 }
 // --- knowledge upsert ---
 const knowledgeUpsertParams = {
@@ -399,6 +437,10 @@ const knowledgeUpsertParams = {
       'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
   },
   audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
+  "allow-thin": {
+    type: "boolean",
+    description: "Suppress the shallow-body warning for an intentional stub",
+  },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -438,6 +480,7 @@ async function handleKnowledgeUpsert(
     : bodyFile
       ? await readFile(bodyFile, "utf-8")
       : undefined;
+  const allowThin = params["allow-thin"];
   try {
     if (exists) {
       const meta = await updateKnowledgeEntry(projectDir, {
@@ -449,6 +492,12 @@ async function handleKnowledgeUpsert(
         ...(sourceFiles && { sourceFiles }),
         ...(audience && { audience }),
       });
+      // On the update path the body is only rewritten when new content is
+      // supplied; with no content the existing body is untouched, so there is
+      // no newly-persisted body to warn about.
+      const warning =
+        content !== undefined ? shallowBodyWarning(content, kind, allowThin) : undefined;
+      const warnings = warning ? [warning] : [];
       if (content) {
         const existing = validateJson(
           await readJsonSafe<unknown>(metaPath),
@@ -457,8 +506,12 @@ async function handleKnowledgeUpsert(
         );
         await writeFile(resolve(projectDir, existing.file), content, "utf-8");
       }
-      return success({ created: false, id, meta });
+      return success({ created: false, id, meta, ...(warnings.length > 0 && { warnings }) });
     }
+    const finalBody = buildBody(title, content);
+    const warnings = [shallowBodyWarning(finalBody, kind, allowThin)].filter(
+      (w): w is string => w !== undefined,
+    );
     const entry = await createKnowledgeEntry(projectDir, {
       id,
       title,
@@ -469,7 +522,7 @@ async function handleKnowledgeUpsert(
       ...(sourceFiles && { sourceFiles }),
       ...(audience && { audience }),
     });
-    return success({ created: true, id, meta: entry });
+    return success({ created: true, id, meta: entry, ...(warnings.length > 0 && { warnings }) });
   } catch (err) {
     return failure("knowledge_upsert_error", err instanceof Error ? err.message : String(err));
   }
