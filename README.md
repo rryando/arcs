@@ -10,82 +10,84 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-*Persistent workflow continuity for AI agents — start from context, not a blank slate.*
+*Stop re-explaining your project to the AI every session.*
 
 </div>
 
 ---
 
-ARCS gives AI coding agents a queryable project DAG so they never start cold. Instead of scanning a codebase from scratch, an agent calls `arcs brief` and gets back: what to work on, what was decided, and what went wrong last time — in a single ~1 KB JSON envelope.
+Your AI coding agent is stateless. Every session, it scans the codebase from scratch, forgets what failed last time, and has no idea which task is safe to start. **ARCS is the durable memory that fixes that.**
 
-> **arcs** `/ɑːrks/` — Directed edges in graph theory. Also: **A**gent **R**outing & **C**ontext **S**ystem.
+It's a CLI-native tool that gives agents a persistent, queryable project **DAG** — with real dependency semantics. An agent calls `arcs brief` and gets back an *operating brief*: what to work on, what's blocked, what was decided, and what already broke — in a single ~1 KB JSON envelope, with zero source files read. Work happens, results flow back into the graph, and the next session starts from context instead of a blank slate.
 
----
-
-
-## The Problem
-
-Every AI coding session starts fresh. The agent doesn't know:
-- What task to pick up next (and which tasks are blocked by incomplete work)
-- What was already tried and failed
-- What architectural decisions were made
-- What the current plan looks like
-
-ARCS solves this with three persistent surfaces:
-
-| Surface | Storage | Purpose |
-|---------|---------|---------|
-| **Queue** | `tasks/index.json` | Work items with dependency ordering via `dependsOn` |
-| **Plan** | `plans/*.md` + `.diagram.mmd` | Multi-step feature work with Mermaid execution maps |
-| **Memory** | `knowledge/*.md` | Durable discoveries: lessons, patterns, gotchas, architecture |
+> **arcs** `/ɑːrks/` — directed edges in graph theory. Also: **A**gent **R**outing & **C**ontext **S**ystem.
 
 ---
 
+## Before / After
 
+A normal session vs. a session with ARCS:
+
+| | Without ARCS | With ARCS |
+|---|---|---|
+| **Orientation** | Re-scan the repo, re-read files, re-derive the architecture | `arcs brief` → operating brief in ~1 KB |
+| **Picking work** | Guess what's next; trip over half-finished dependencies | `arcs next` → first task whose deps are *all* satisfied |
+| **Prior knowledge** | Re-discover the same gotcha you hit last week | Related knowledge surfaces alongside the task |
+| **Finishing** | Result evaporates when the session ends | `arcs done` unblocks dependents; `arcs remember` captures the lesson |
+
+The DAG is the shared, durable memory *between* otherwise-disconnected agent sessions. The knowledge base only compounds — instead of re-deriving — when entries are substantive **and** read before work. ARCS enforces both (see [Knowledge Depth](#knowledge-depth)).
+
+---
+
+## Three Surfaces
+
+ARCS persists everything onto three surfaces, plus a dependency graph and auto-generated Mermaid diagrams that tie them together.
+
+| Surface | Storage | What it holds |
+|---------|---------|---------------|
+| **Queue** | `tasks/index.json` (rendered to `tasks.md`) | Immediate work items, ordered by `dependsOn` edges |
+| **Plan** | `plans/*.md` + `.diagram.mmd` | Durable multi-step change records with Mermaid execution maps |
+| **Memory** | `knowledge/*.md` | Reusable discoveries: gotchas, lessons, patterns, architecture, decisions |
+
+Dependency-aware selection runs across all three: `arcs next` returns the next unblocked task, and `arcs diagram ready` returns the unblocked nodes of a plan's execution map.
+
+---
 
 ## Quick Start
 
-**1. First Time Setup: Install / Update**
+**1. Install**
 
 ```bash
 npm install -g @rryando/arcs
-
-# setup models
 arcs init
 ```
 
-Registers `arcs` CLI, creates `~/.arcs/`, and runs an interactive TUI wizard that:
-- Detects **OpenCode** and/or **Claude Code** on PATH
-- Selects which platforms to configure (or both)
-- For **OpenCode**: picks heavy / standard / light model tiers from authenticated providers
-- For **Claude Code**: picks heavy / standard / light model tiers from the full Claude model list (opus / sonnet / haiku families), pre-filled from `~/.claude/settings.json`
-- Deploys agents + skills to the appropriate config directories
+`arcs init` runs an interactive setup wizard that:
+- Detects **OpenCode** and/or **Claude Code** on your PATH
+- Lets you pick which platform(s) to configure
+- Selects heavy / standard / light model tiers from your authenticated providers
+- Deploys the ARCS agent + skill bundle to the right config directories
 
-**2. Init Existing Project to arcs**
+**2. Onboard a project**
 
 ```bash
 cd your-project
-
-opencode
-
-send `arch init` on ARCS Orchestrator subagent
-
-and follow thru initiation process
 ```
 
-<img width="948" height="499" alt="image" src="https://github.com/user-attachments/assets/2795bd80-f1bb-4c34-9a60-9b6ef9d81d04" />
+Open OpenCode (or Claude Code), select the **ARCS Orchestrator** agent, and ask it to initialize. It scans the repo and populates the DAG — overview, tasks, plans, and an initial pass of structural knowledge.
 
+<img width="948" height="499" alt="ARCS Orchestrator init" src="https://github.com/user-attachments/assets/2795bd80-f1bb-4c34-9a60-9b6ef9d81d04" />
 
-**3. Use it**
+**3. Use it — by hand or via the orchestrator**
 
 ```bash
-arcs brief              # What should I work on?
-arcs next               # Get next unblocked task
+arcs brief              # What should I work on? (operating brief)
+arcs next               # Next dependency-safe task + related knowledge
 arcs done <taskId>      # Mark complete, unblock dependents
-arcs remember "..."     # Capture what I learned
+arcs remember "..."     # Capture what you learned
 ```
 
-Or select **ARCS Orchestrator** in OpenCode for full automation.
+Or hand the loop to the **ARCS Orchestrator** for full automation.
 
 ---
 
@@ -93,25 +95,27 @@ Or select **ARCS Orchestrator** in OpenCode for full automation.
 
 | Tool | Required | Notes |
 |------|----------|-------|
-| [Node.js](https://nodejs.org/) v20+ | Yes | Runtime |
-| [OpenCode](https://opencode.ai/) | Recommended | Agent host (orchestrator + sub-agents) |
-| [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host — `arcs init` deploys ARCS sub-agents with full model-tier selection |
-| [codegraph](https://github.com/colbymchenry/codegraph) | No | Optional code-intelligence: per-project index, MCP-based exploration, structural knowledge extraction |
-| [rtk](https://github.com/rtk-ai/rtk) | No | Optional token-optimized command proxy (60-90% savings on shell output) — `arcs init` and bundle deploys auto-wire it for OpenCode and Claude Code when present |
+| [Node.js](https://nodejs.org/) 20+ | Yes | Runtime |
+| [OpenCode](https://opencode.ai/) | Recommended | Agent host — orchestrator + sub-agents |
+| [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host; `arcs init` deploys the sub-agents with full model-tier selection |
+| [codegraph](https://github.com/colbymchenry/codegraph) | Optional | Per-project code-intelligence index, queried via MCP; degrades gracefully when absent |
+| [rtk](https://github.com/rtk-ai/rtk) | Optional | Token-optimized command proxy; auto-wired into both hosts when present |
+
+ARCS itself is **CLI-only** — pure TypeScript, no MCP server, no preview server. The optional tools above are about the agent *host*, not ARCS.
 
 ---
 
 ## How It Works
 
-### The Core Loop
+### The core loop
 
 ```
 arcs next  →  [agent works]  →  arcs done <id>  →  arcs remember "..."
-     │                                │                      │
-     │ returns first task             │ completes task,      │ captures durable
-     │ whose dependencies             │ unblocks dependents  │ knowledge for
-     │ are ALL satisfied              │                      │ future sessions
-     ▼                                ▼                      ▼
+     │                              │                      │
+     │ first task whose             │ completes task,      │ captures durable
+     │ dependencies are             │ unblocks dependents  │ knowledge for
+     │ ALL satisfied                │                      │ future sessions
+     ▼                              ▼                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    ~/.arcs/projects/{slug}/                      │
 │                                                                  │
@@ -121,11 +125,9 @@ arcs next  →  [agent works]  →  arcs done <id>  →  arcs remember "..."
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Three commands: `arcs next` → work → `arcs done`. The DAG handles ordering.
+### Task dependencies — the actual DAG
 
-### Task Dependencies — The Actual DAG
-
-Tasks declare dependencies. ARCS enforces acyclicity and uses topological sort to determine execution order:
+Tasks declare dependencies. ARCS enforces acyclicity and uses topological sort to decide execution order:
 
 ```bash
 arcs task create myapp "Design database schema" --priority=high
@@ -152,50 +154,9 @@ flowchart TD
     classDef blocked fill:#ef4444,color:#fff
 ```
 
-`arcs next` returns "Write integration tests" (T003) — it's the first task whose dependencies are all done. T004 is blocked because T003 isn't done yet. Priority is a tiebreaker within the same topological level, not the primary sort.
+`arcs next` returns **"Write integration tests"** — the first task whose dependencies are all done. "Deploy to staging" stays blocked until it is. Priority is only a tiebreaker *within* the same topological level, never the primary sort.
 
-### The Orchestrator
-
-When used with [OpenCode](https://opencode.ai/), ARCS ships a full orchestrator that automates the loop:
-
-```mermaid
-flowchart TD
-    User(["User Request"])
-    T0["arcs brief → T0 envelope"]
-    Classify{"Classify Intent"}
-
-    Init["INIT\nScan repo → populate DAG"]
-    Brain["BRAINSTORM\nCreate plan → wire dependsOn\n→ generate diagram"]
-    Exec["EXECUTE\narcs next → dispatch sub-agent\n→ arcs done → unblock dependents"]
-    Sync["SYNC\nAudit DAG → reconcile drift"]
-
-    DAG[("Project DAG\ntasks + plans + knowledge\n+ dependency graph")]
-
-    User --> T0 --> Classify
-    Classify -- "new project" --> Init
-    Classify -- "plan features" --> Brain
-    Classify -- "do work" --> Exec
-    Classify -- "update docs" --> Sync
-    Init & Brain & Exec & Sync --> DAG
-```
-
-The orchestrator:
-1. **Orients** — calls `arcs brief` for the T0 routing envelope (~1 KB)
-2. **Classifies** — detects intent (INIT / BRAINSTORM / EXECUTE / SYNC / EXPLORE)
-3. **Delegates** — dispatches specialist sub-agents in parallel when possible
-4. **Consumes** — parses structured sub-agent output (STATUS, FILES_TOUCHED, VERIFY, BLOCKED_BY)
-5. **Persists** — writes to DAG: task transitions, knowledge captures, plan updates
-6. **Advances** — `arcs done` completes tasks, automatically unblocking dependents
-
-**Operating values — held directly, not just delegated.** The orchestrator applies the same disciplines it hands to sub-agents to its *own* routing decisions:
-
-- **`the-ladder`** — minimalism is the default for orchestration itself. The cheapest rung that answers the need wins: *answer from context → one `arcs` CLI call → `graph-explorer` → typed agent*, with the fewest tasks and the smallest disjoint scope per dispatch. Over-dispatching and over-decomposing are the orchestrator's form of over-engineering.
-- **`devil-advocate`** — skepticism runs *before* the formal gate, not only at it. Every plan, dispatch, and "done" is challenged first ("what breaks without this? who's actually blocked? can fewer agents do it?"); the dispatched gate then merely confirms.
-- **confidence-to-orchestrate** — it never dispatches on a guess. Ambiguity is resolved cheaply from the DAG first, then the *residual* unknowns go to the user as batched questions (each with options + a recommended default) until it can state the goal and "done" in one sentence — and it stops asking the moment it can.
-
-**Knowledge Protocol (read-first).** The orchestrator reads prior knowledge before every non-mechanical dispatch and captures durable insight at fan-in via idempotent `arcs knowledge upsert` — so the DAG compounds instead of duplicating. It may also run narrow, user-requested git (`status` / `diff` / `commit` / etc.) directly, while tests, lint, and builds stay delegated to sub-agents and the devil-advocate completion gate.
-
-### T0 Routing Envelope (the operating brief)
+### The operating brief (`arcs brief`)
 
 ```bash
 $ arcs brief --lean --json
@@ -219,92 +180,141 @@ $ arcs brief --lean --json
 }
 ```
 
-~1 KB. No source files read. The orchestrator uses `recommendedSurface` to pick the workflow branch. `arcs brief` also surfaces a **Knowledge Health** line (`knowledgeHealth: { total, thin, stale }`) — counts of thin entries (missing summary or source-files) and stale entries (not updated in >180 days) — so KB under-maintenance is visible at orientation time.
+~1 KB, no source files read. `recommendedSurface` (QUEUE / PLAN / MEMORY) tells the agent which workflow branch to take. `brief` also reports a `knowledgeHealth` line (`{ total, thin, stale }`) so an under-maintained knowledge base is visible right at orientation.
 
 ---
 
-## CLI Reference
+## The Agent Bundle
 
-All commands: `arcs <command> [args] --json`. Output: `{ok, data}` on success, `{ok, code, message}` on error.
+ARCS ships an OpenCode / Claude Code bundle: a **delegation-first orchestrator**, **8 typed sub-agents**, and **15 skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
 
-### Core Agent Loop
+### The orchestrator
+
+It never reads code, runs tests, or explores directly — it routes. It also holds its own operating values rather than only delegating them:
+
+- **`the-ladder`** — minimalism applies to orchestration itself. The cheapest rung that answers the need wins: *answer from context → one `arcs` CLI call → `graph-explorer` → typed agent*, with the fewest tasks and smallest disjoint scope per dispatch.
+- **`devil-advocate`** — every plan, dispatch, and "done" is challenged *before* the formal gate ("what breaks without this? who's actually blocked? can fewer agents do it?"); the gate then merely confirms.
+- **confidence-to-orchestrate** — it never dispatches on a guess. Ambiguity is resolved cheaply from the DAG first, then residual unknowns go to the user as batched questions — and it stops asking the moment it can state the goal and "done" in one sentence.
+
+A **read-first knowledge protocol** runs throughout: prior knowledge is read before every non-mechanical dispatch, and durable insight is captured at fan-in via idempotent `arcs knowledge upsert` — so the DAG compounds instead of duplicating.
+
+### Sub-agents
+
+Each has a sharp niche; survivors carry explicit modes. The orchestrator dispatches them with self-contained scoped prompts (SCOPE / GOAL / CONTEXT / IDS / CONSTRAINTS / SKILL / VERIFY / RETURN) and consumes their structured, non-prose output.
+
+| Sub-agent | Role |
+|-----------|------|
+| **graph-explorer** | DAG-first + codegraph-MCP exploration — "where is X / what depends on Y" |
+| **software-engineer** | Writes code; verifies only the files it touched |
+| **tech-architect** | Deep structural analysis, refactor guidance, trade-off evaluation |
+| **oncall-ops** | Debugging, log triage, bisect, root-cause analysis |
+| **code-reviewer** | Read-only review — reactive diff/PR review **and** proactive convention/architecture audit |
+| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate; its completion gate is the single full-project verification |
+| **arcs-docs** | DAG health, plan/knowledge/diagram curation |
+| **docs-researcher** | External research and documentation; tech-stack scans |
+
+Every sub-agent opens with the standard return envelope so the orchestrator can parse, not re-read:
+
+```
+STATUS: done | blocked | partial
+FILES_TOUCHED: src/foo.ts
+VERIFY: vitest run test/foo.test.ts → pass
+BLOCKED_BY: <only when blocked/partial — evidence>
+KNOWLEDGE: none
+```
+
+Sub-agents verify only the files they touched. The **devil-advocate completion gate** runs the session's single full-project pass (full suite + `tsc --noEmit`); on a block, the orchestrator re-dispatches scoped fixes and re-gates.
+
+### Skills (loaded per dispatch)
+
+| Category | Skills |
+|----------|--------|
+| **Work mode** (pick one) | `quick-dev`, `code-agent`, `test-driven-development`, `brainstorming` |
+| **Lifecycle** | `writing-plans`, `executing-plans` (sequential or parallel), `writing-knowledge` |
+| **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
+| **Discipline** | `the-ladder` (auto-layers under work modes — not a mode you pick) |
+| **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-codegraph-proposals` |
+
+`the-ladder` climbs to the lowest rung that solves the problem — **YAGNI → standard library → native feature → existing dependency → one line → the minimum that works** — while never simplifying away hard carve-outs (trust-boundary validation, data-loss handling, security, accessibility, anything explicitly requested).
+
+---
+
+## Knowledge Depth
+
+Thin, one-sentence memory doesn't compound. ARCS treats knowledge depth as a first-class concern:
+
+- **Per-kind body templates** — each of the 8 knowledge kinds has a fillable skeleton. Scaffold one with `arcs knowledge template --kind=<kind>`.
+- **Write-time guard** — `knowledge create` / `upsert` warn on shallow bodies (and on missing summary or source files) unless you explicitly opt out with `--allow-thin`.
+- **`knowledge-health` validator** — `arcs validate <slug> --checks=knowledge-health` flags thin and stale entries; the same counts surface in `arcs brief`.
+
+The throughline: substantive entries, written once and read before work, are what turn the knowledge base into compounding memory rather than a graveyard.
+
+---
+
+## Command Cheat-Sheet
+
+All commands take `--json` for structured output (`{ok, data}` on success, `{ok, code, message}` on error) and `--lean` to strip timestamps and save tokens. Full discovery: `arcs --commands --json`.
+
+### Core loop
 
 | Command | Purpose |
 |---------|---------|
-| `arcs brief` | T0 routing envelope — what to focus on (+ Knowledge Health counts) |
-| `arcs next` | Next dependency-safe task + related knowledge |
-| `arcs done <taskId>` | Mark complete, unblock dependents |
-| `arcs remember "<text>"` | Capture knowledge (auto-classifies kind) |
-| `arcs status` | Progress overview across all surfaces |
+| `arcs brief <slug>` | Operating brief — focus + knowledge-health counts |
+| `arcs next <slug>` | Next dependency-safe task + related knowledge |
+| `arcs done <slug> <taskId>` | Mark complete, unblock dependents |
+| `arcs remember <slug> "<text>"` | Capture knowledge (auto-classifies kind) |
+| `arcs status <slug>` | Progress across all three surfaces |
 
-### Tasks & Dependencies
+### Tasks & plans
 
 | Command | Purpose |
 |---------|---------|
-| `arcs task create <slug> <title> --dependsOn=id1,id2` | Create task with dependency edges |
-| `arcs task update <slug> <id> --dependsOn=id1` | Add/update dependencies |
-| `arcs task transition <slug> <id> <status>` | Move through lifecycle |
+| `arcs task create <slug> <title> --dependsOn=id1,id2` | Create a task with dependency edges |
+| `arcs task update <slug> <id>` | Update a task (incl. `--dependsOn`) |
+| `arcs task transition <slug> <id> <status>` | Move a task through its lifecycle |
+| `arcs plan create <slug> <title>` | Create a durable plan record |
 | `arcs diagram ready <slug> <planId>` | Get unblocked diagram nodes |
 
-### Project Management
+### Knowledge
 
 | Command | Purpose |
 |---------|---------|
-| `arcs project init` | Register current directory as a project |
+| `arcs knowledge template --kind=<kind>` | Emit the fillable body skeleton for a kind |
+| `arcs knowledge upsert <slug> <title> --kind=<kind>` | Idempotent create-or-update by title — **recommended for agents** |
+| `arcs knowledge create <slug> <title> --kind=<kind>` | Create a new entry |
+| `arcs knowledge search <slug> "<query>"` | Search the knowledge base |
+| `arcs knowledge list <slug>` | List entries |
+
+The 8 knowledge kinds: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, `feature`, `reference`, `decision`. `create` / `upsert` accept `--summary`, `--keywords`, `--body` / `--body-file`, `--source-files`, and `--audience`.
+
+### Project, search & maintenance
+
+| Command | Purpose |
+|---------|---------|
+| `arcs project init` | Register the current directory as a project |
+| `arcs project list` | List tracked projects |
 | `arcs project update-doc <slug> <doc> --content="..."` | Update a project doc inline |
-| `arcs project list` | List all tracked projects |
-| `arcs context [slug]` | Full context assembly (audience-targeted) |
-| `arcs search <slug> "<query>"` | BM25 + graph-scored search across DAG |
-| `arcs validate <slug> --checks=<check>` | Health check — `--checks` accepts `all`, `sourcefiles`, `status-drift`, `diagrams`, `agents-md`, `knowledge-health` |
+| `arcs context <slug>` | Full audience-targeted context assembly |
+| `arcs search <slug> "<query>"` | BM25 + graph-scored search across the DAG |
+| `arcs related <slug> <id>` | Graph-related entities for a node |
+| `arcs validate <slug> --checks=<check>` | Health checks: `all`, `sourcefiles`, `status-drift`, `diagrams`, `agents-md`, `knowledge-health` |
+| `arcs batch <slug>` | Apply multiple DAG ops in one call |
 
-### Plans & Knowledge
+### Bundle
 
 | Command | Purpose |
 |---------|---------|
-| `arcs plan create <slug> <title>` | Create a plan |
-| `arcs knowledge create <slug> <title> --kind=<kind>` | Create knowledge entry (accepts `--audience`) |
-| `arcs knowledge upsert <slug> <title> --kind=<kind>` | Idempotent create-or-update by title — **recommended default for agent-driven enrichment** |
-| `arcs knowledge update-meta <slug> <id>` | Edit entry metadata (accepts `--source-files`, `--audience`) |
-| `arcs knowledge-search <slug> "<query>" --kind=<kind>` | Search knowledge (any of the 8 kinds) |
-
-`knowledge upsert` is the idempotent sibling of `create` — same title updates in place instead of duplicating. Both `upsert` and `create` accept:
-
-| Flag | Effect |
-|------|--------|
-| `--kind=<kind>` | One of: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, `feature`, `reference`, `decision` |
-| `--summary="..."` | One-line summary |
-| `--keywords="..."` | Comma-separated keywords |
-| `--body="..."` / `--body-file=<path>` | Entry body inline or from file |
-| `--source-files="path,path:anchor"` | Comma-separated `path` or `path:anchor` references |
-| `--audience=<audience>` | One of: `orchestrator`, `implementer`, `designer`, `universal` |
-
-### Flags
-
-| Flag | Effect |
-|------|--------|
-| `--json` | Structured JSON output (always use for agents) |
-| `--lean` | Strip timestamps (saves tokens) |
-| `--dry-run` | Validate without mutation |
-| `--help` | Per-command usage |
-
-Full command discovery: `arcs --commands --json`.
-
-> **Batch op format** — fields at top level, NOT nested under `params`:
-> ```json
-> {"op":"task-create",    "slug":"<slug>","title":"...","priority":"medium","planId":"..."}
-> {"op":"task-transition","slug":"<slug>","taskId":"...","status":"done"}
-> {"op":"doc-update",     "slug":"<slug>","doc":"overview","content":"..."}
-> {"op":"knowledge-create","slug":"<slug>","title":"...","kind":"lesson","summary":"...","body":"...","sourceFiles":["..."],"audience":"orchestrator"}
-> ```
-> `knowledge-create` carries `summary`, `sourceFiles`, and `audience` through to the created entry. Nested `{op, params:{...}}` format is also accepted (unwrapped automatically).
+| `arcs lint-bundle` | Validate agent/skill bundle integrity |
+| `arcs deploy-superpowers` | Deploy the bundle to OpenCode (`~/.config/opencode/`) |
+| `arcs deploy-claudecode-superpowers` | Deploy the bundle to Claude Code |
 
 ---
 
 ## Graph & Retrieval
 
-ARCS builds a relationship graph across all project entities:
+ARCS builds a weighted relationship graph across every project entity:
 
-| Edge Type | Weight | Connects |
+| Edge type | Weight | Connects |
 |-----------|--------|----------|
 | `task_belongs_to_plan` | 1.0 | Task → Plan |
 | `task_blocks_task` | 0.95 | Task → Task (from `dependsOn`) |
@@ -313,53 +323,7 @@ ARCS builds a relationship graph across all project entities:
 | `plan_contains_task` | 0.8 | Plan → Task |
 | `shares_keywords` | 0.5 | Knowledge → Knowledge |
 
-Queries: `arcs search` uses BM25 for text + graph traversal (weighted BFS) for relationship scoring. `arcs next` enriches results with related knowledge from the graph.
-
----
-
-## Sub-Agents
-
-The orchestrator is **delegation-first** — it never reads code, runs tests, or explores. It dispatches specialist sub-agents with self-contained scoped prompts (SCOPE / GOAL / CONTEXT / IDS / CONSTRAINTS / SKILL / VERIFY / RETURN) and consumes their structured (non-prose) output:
-
-| Sub-Agent | Role | When |
-|-----------|------|------|
-| **graph-explorer** | DAG-first knowledge + code exploration via codegraph MCP tools | Any "where is X / what depends on Y" query |
-| **software-engineer** | Writes code, verifies only its touched files | EXECUTE — bounded tasks |
-| **tech-architect** | Single-project deep analysis + multi-project topology/migration/boundary design | Architecture/design work; BRAINSTORM — design-open |
-| **oncall-ops** | Debugging, log triage, bisect | Bugs, test failures |
-| **code-reviewer** | Read-only code-quality: reactive diff/PR review + proactive scope-wide convention/architecture-health audit | PR review, phase gates, convention audits |
-| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries (mandatory); completion gate = the single full-project verification |
-| **arcs-docs** | DAG health, knowledge curation | SYNC workflow |
-| **docs-researcher** | External research, documentation | INIT tech-stack scan |
-
-All sub-agents return **structured output** (not prose) opening with the standard return envelope:
-
-```
-STATUS: done | blocked | partial
-FILES_TOUCHED:
-src/foo.ts
-VERIFY: vitest run test/foo.test.ts → pass
-BLOCKED_BY: <only when blocked/partial — evidence>
-KNOWLEDGE: none
-```
-
-The orchestrator parses STATUS/VERDICT first, forwards FILES_TOUCHED + VERIFY into the devil-advocate execute gate, extracts KNOWLEDGE/CAPTURES for DAG persistence, and routes SCOPE_CHANGE to diagram regeneration. Sub-agents verify only the files they touched; the devil-advocate completion gate runs the session's single full-project pass (full suite + `tsc --noEmit`), and on BLOCK the orchestrator re-dispatches scoped fixes from the gate's FAILURES attribution and re-gates.
-
-### Skills (loaded per-dispatch)
-
-| Category | Skills |
-|----------|--------|
-| **Work mode** (pick one) | `quick-dev`, `code-agent`, `test-driven-development`, `brainstorming` |
-| **Lifecycle** | `writing-plans`, `executing-plans` (sequential or parallel mode) |
-| **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
-| **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-codegraph-proposals` |
-
-### Minimalism Reflex — `the-ladder`
-
-`the-ladder` auto-layers under the construction work modes (`quick-dev` / `code-agent` / `executing-plans`) — it is not a work mode you pick. Before writing code, it climbs the rungs and stops at the lowest one that solves the problem: **YAGNI → standard library → native platform feature → already-installed dependency → one line → the minimum that works.** Hard carve-outs are never simplified away — input validation at trust boundaries, data-loss handling, security, accessibility, and anything explicitly requested. Non-trivial logic ships with one runnable check.
-
-- **`// SHORTCUT:` markers** — deliberate simplifications are marked inline as `// SHORTCUT: <ceiling>, upgrade when <trigger>`. The orchestrator harvests these into the knowledge DAG at session completion so deferrals don't rot.
-- **Bloat-audit pass** — `deep-pr-review` gained an over-engineering pass (delete / stdlib / native / yagni / shrink tags, `net: -N lines` output) distinct from correctness review.
+`arcs search` combines BM25 text scoring with weighted-BFS graph traversal; `arcs next` enriches its result with related knowledge pulled from the graph.
 
 ---
 
@@ -375,41 +339,19 @@ The orchestrator parses STATUS/VERDICT first, forwards FILES_TOUCHED + VERIFY in
     ├── tasks/index.json              # Structured tasks + dependsOn edges
     ├── plans/
     │   ├── {id}.meta.json            # Plan status + keywords
-    │   ├── {id}.md                   # Plan body
-    │   └── {id}.diagram.mmd          # Mermaid execution map (auto-generated arrows)
+    │   ├── {id}.md                   # Plan body (plans/*.md)
+    │   └── {id}.diagram.mmd          # Mermaid execution map
     └── knowledge/
         ├── index.json                # Knowledge index
         ├── {id}.meta.json            # Metadata (kind, audience, sourceFiles)
-        └── {id}.md                   # Entry body
+        └── {id}.md                   # Entry body (knowledge/*.md)
 ```
-
-### Knowledge Kinds
-
-8 structured categories: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, `feature`, `reference`, `decision`.
 
 ---
 
-## Codegraph (Optional)
+## Codegraph (optional)
 
-When [codegraph](https://github.com/colbymchenry/codegraph) is on PATH, ARCS builds a per-project index (`codegraph index`) during INIT and SYNC and auto-extracts structural knowledge proposals:
-
-| Category | Cap | What |
-|----------|-----|------|
-| God nodes | 8 | Highest-connectivity symbols (ranked by callers + callees / impact) |
-| Clusters | 8 | Directory-based module boundaries (pseudo-communities) |
-| Couplings | 5 | Cross-module dependency links |
-
-Codegraph is CLI-driven (Node ≥20 — no extra runtime), self-contained, 100% local, and auto-syncs its index via its own file watcher. All features degrade gracefully when the binary is absent.
-
-### Graph-Explorer Integration
-
-The `graph-explorer` sub-agent uses codegraph's **MCP tools** as **Step 5** in its query protocol — after ARCS DAG queries (Steps 1–4) but before any file-system fallback. When a `.codegraph/` index exists, the agent answers structural questions with near-zero file reads via:
-
-- **`codegraph_explore`** — primary: "how does X work" / "how does X reach Y" / survey an area, returning verbatim source grouped by file plus a relationship map
-- **`codegraph_search` / `codegraph_node`** — locate a symbol / fetch its full source
-- **`codegraph_callers` / `codegraph_callees` / `codegraph_impact`** — walk call flow and blast radius before edits
-
-This provides fine-grained structural answers (individual call chains, coupling paths, symbol neighborhoods) that are richer than ARCS knowledge entries without resorting to grep/find.
+When [codegraph](https://github.com/colbymchenry/codegraph) is on PATH, ARCS builds a per-project index during onboarding and sync, and auto-extracts structural knowledge proposals (god nodes, module clusters, cross-module couplings). The `graph-explorer` sub-agent queries codegraph's MCP tools to answer structural questions — call chains, blast radius, symbol neighborhoods — with near-zero raw file reads. Every codegraph feature degrades gracefully when the binary is absent.
 
 ---
 
@@ -423,29 +365,24 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Vitest suite (~842 tests) |
-| `npm run typecheck` | Type check without emit |
-| `npm run lint` | Biome lint + format |
+| `npm test` | Run the Vitest suite (900+ tests across 82 files) |
+| `npm run typecheck` | Type-check without emit (`tsc --noEmit`) |
+| `npm run lint` | Biome lint + format check (`src/`, `test/`) |
+| `npm run format` | Rewrite files with Biome formatting |
 
-### Bundle Workflow
+**Tech stack:** pure TypeScript (ES2022, strict), Node 20+, `zod` (schemas), `@clack/prompts` (interactive setup), `picocolors`; Biome for lint/format, Vitest for tests.
+
+> Tests that touch DAG data must run in an isolated temp directory via the `withTempDataDir()` helper — see [`CLAUDE.md`](CLAUDE.md) for the testing-isolation rule.
+
+### Bundle workflow
 
 ```bash
-npm run build:opencode-bundle    # Build agent/skill bundle
+npm run build:opencode-bundle    # Build the agent/skill bundle
 arcs lint-bundle                 # Validate bundle integrity
 arcs deploy-superpowers          # Deploy to ~/.config/opencode/
 ```
 
-**What `deploy-superpowers` writes to `opencode.json`:**
-
-The bundle merges a small set of keys into your `~/.config/opencode/opencode.json`. Each merge entry has a `mode`:
-
-| Mode | Behavior | Used for |
-|------|----------|----------|
-| `overwrite` (default) | Always sets the value, even on re-deploy | Plugin registration |
-| `if-absent` | Only sets if the key isn't already present | User-preference keys: `model`, `small_model`, `agent.{build,plan,general}.model`, `lsp` |
-| `merge` | Deep-merge: adds new keys, never overwrites existing user values | Sub-agent definitions, `permission.external_directory` |
-
-This means: **your config is always respected.** Provider/model routing seeds on first install but never re-stamps. Sub-agent definitions get new fields (prompt paths, descriptions) on re-deploy but your model overrides survive. JSONC comments in `opencode.json` are supported.
+`deploy-superpowers` merges a small set of keys into `~/.config/opencode/opencode.json` with per-key modes — `overwrite` for plugin registration, `if-absent` for model/preference keys, and deep `merge` for sub-agent definitions. The upshot: **your config is always respected** — model routing seeds on first install but never re-stamps, and JSONC comments are preserved.
 
 ---
 
