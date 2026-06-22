@@ -96,6 +96,10 @@ function formatKnowledgeGet(d: Rec): string {
   return lines.join("\n").trimEnd();
 }
 
+function formatKnowledgeTemplate(d: Rec): string {
+  return String(d.markdown ?? "").trimEnd();
+}
+
 function formatKnowledgeBody(d: Rec): string {
   const rec = (d.meta ? d.meta : d) as Rec;
   const lines: string[] = [];
@@ -405,6 +409,8 @@ export function renderMarkdown(command: string, data: unknown): string | null {
     case "knowledge create":
     case "knowledge update-meta":
       return formatKnowledgeGet(d);
+    case "knowledge template":
+      return formatKnowledgeTemplate(d);
 
     // Group B
     case "task list":

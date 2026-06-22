@@ -154,6 +154,7 @@ describe("orchestrate prompt policy — skill routing coverage", () => {
     "systematic-debugging",
     "requesting-code-review",
     "writing-plans",
+    "writing-knowledge",
     "subagent-driven-development",
     "to-diagram",
     "init-project",

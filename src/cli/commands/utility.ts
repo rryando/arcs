@@ -7,6 +7,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildProjectRetrievalIndex } from "../../retrieval/index-builder.js";
 import { extractOverviewContent } from "../../utils/content-assembly.js";
+import {
+  extractBodyContentLength,
+  isBodyShallow,
+  SHALLOW_BODY_MIN_CHARS,
+} from "../../utils/knowledge-templates.js";
 import { getProjectDir } from "../../utils/paths.js";
 import {
   KNOWLEDGE_AUDIENCES,
@@ -402,6 +407,17 @@ export async function runValidation(slug: string, checks: Set<CheckName>): Promi
             safeToAutoRepair: false,
           });
         }
+      }
+      const bodyPath = resolve(projectDir, entry.file);
+      const body = existsSync(bodyPath) ? await readFile(bodyPath, "utf-8") : "";
+      if (isBodyShallow(body)) {
+        issues.push({
+          severity: "warning",
+          kind: "shallow_knowledge",
+          message: `Knowledge entry "${entry.title}" is shallow: body has ${extractBodyContentLength(body)} chars of real content (floor ${SHALLOW_BODY_MIN_CHARS}) — fill the kind's template sections`,
+          repair: `Enrich the body of "${entry.id}" — scaffold with: arcs knowledge template --kind=${entry.kind}`,
+          safeToAutoRepair: false,
+        });
       }
     }
   }

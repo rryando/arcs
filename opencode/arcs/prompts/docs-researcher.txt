@@ -68,7 +68,8 @@ FINDINGS:
 EXISTING_DAG: <relevant entries already in DAG, or "none found">
 
 KNOWLEDGE: <none | one ready-to-run command per durable, reusable insight surfaced this dispatch:
-  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<1-2 sentences>" --body="<the substance — fill every section of the kind's template>" --keywords="<k1,k2>" --source-files="<path[:anchor],...>" --json
+  Scaffold the body first — run `arcs knowledge template --kind=<kind> --json` for the section skeleton, then fill every section; a summary-only entry is a stub, not a capture.
   (upsert is idempotent by title — no dedup search needed)>
 
 GAPS: <none | what couldn't be answered and why>

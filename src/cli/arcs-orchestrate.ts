@@ -84,9 +84,17 @@ The knowledge base only pays for its upkeep if it is READ. A write-only KB rots;
 
 **WRITE at the moment of discovery, not at session end.** When any return surfaces a durable insight — a gotcha, a resolved ambiguity, a pattern, an architectural decision, a rejected-alternative-with-rationale, a SHORTCUT ceiling — persist it immediately at that round's fan-in with \`arcs knowledge upsert\`. Session-end capture is the safety net, not the primary path; insight deferred to session end is insight lost in a verbose return.
 
-**\`upsert\` is your default knowledge write.** \`arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="…" --keywords="…" --source-files="<path[:anchor],…>" --json\` create-or-updates by title — idempotent, so NO \`arcs search\` dedup dance. Reach for \`arcs knowledge create\` only when creation MUST fail on an existing title. Every entry tied to specific files carries \`--source-files\` so \`validate --checks=knowledge-health\` can keep it honest.
+**WRITE with substance — a one-sentence entry is a stub, not knowledge.** The single most common KB failure is an entry whose \`--summary\` merely restates its title and whose body is empty: structurally "healthy," worthless to the next dispatch. The summary is the headline; the value lives in the \`--body\`, which EVERY non-mechanical entry MUST carry (\`--body="…"\` inline, or \`--body-file=<path>\` once it's long enough to fight shell-escaping). Write the body to the anatomy of its kind:
+- **gotcha** → symptom (how it surfaces) · root cause · the fix/workaround · the trigger that reproduces it
+- **lesson** → what was expected · what actually happened · why · what to do differently next time
+- **pattern** → when to reach for it · its shape (signature/skeleton or a code snippet) · a real call site · when NOT to use it
+- **architecture** → the structure · the invariant/constraint it enforces · what breaks if violated
+- **decision** → the choice · the forces behind it · the alternatives rejected AND why · the consequences accepted
+Self-check before writing: "Could someone ACT on this in six months without re-deriving it?" If the insight cost you reasoning, a debug session, or a dead-end, capture that reasoning — not just its one-line conclusion. (Inverse, per the-ladder: if anyone could re-derive it in ten seconds, don't write it at all.)
 
-**The KB is a maintenance target, not just an append log.** Treat thin entries (no summary, no source-files), stale entries, and contradictions as defects: when \`validate --checks=knowledge-health\` or a sub-agent surfaces them, enrich or prune. A dispatch that has to rediscover something the DAG should have told it up front is a signal the DAG was under-maintained — close that gap in the same session.
+**\`upsert\` is your default knowledge write.** \`arcs knowledge upsert <slug> "<title>" --kind=<lesson|gotcha|pattern|architecture|decision> --summary="<one-line headline>" --body="<the substance — anatomy above>" --keywords="…" --source-files="<path[:anchor],…>" --json\` create-or-updates by title — idempotent, so NO \`arcs search\` dedup dance. \`--summary\` AND \`--body\` AND \`--source-files\` together are the floor for a file-specific entry; summary-only is a stub, not a write. Reach for \`arcs knowledge create\` only when creation MUST fail on an existing title. (\`validate --checks=knowledge-health\` keeps \`--summary\`/\`--source-files\` honest, but it cannot see a vapid one-line body — body substance is on YOU.) Scaffold the \`--body\` from \`arcs knowledge template --kind=<k>\` (the authoritative per-kind section skeleton) and author it to the \`writing-knowledge\` skill.
+
+**The KB is a maintenance target, not just an append log.** Treat thin entries as defects — both the *structural* thinness \`validate --checks=knowledge-health\` flags (no summary, no source-files) AND the *semantic* thinness it cannot see (an empty body, or a lone sentence that just echoes the title). When a search you ran for a dispatch returns an entry too shallow to act on, ENRICH it to the quality bar right then — same idempotent \`upsert\`, now with a real \`--body\` — or prune it if it never deserved to exist. A dispatch that has to rediscover something the DAG should have told it up front is a signal the DAG was under-maintained — close that gap in the same session.
 
 **Boundary (the-ladder, applied to knowledge).** Eager ≠ indiscriminate. Do NOT force a knowledge search or capture onto purely mechanical work — a rename, a config nudge, a diagram regen, a commit message. Read when prior art could change the approach; capture when the insight would save a future dispatch. Everything in between, do it.
 
@@ -171,7 +179,7 @@ BLOCKED_BY: <only when blocked/partial — evidence; includes failures observed 
   out-of-scope files, which the agent left untouched>
 \`\`\`
 
-followed by agent-specific sections (VERDICT, FINDINGS, ARTIFACTS, SCOPE_CHANGE, TASKS, and the single canonical capture slot **KNOWLEDGE**). \`KNOWLEDGE\` is the ONE place durable insight surfaces — \`<none | ready-to-run \`arcs knowledge upsert\` commands, one per insight>\`. Older prompts may still emit \`CAPTURES\` or \`PROPOSED_ENTRIES\`; treat both as exact aliases of \`KNOWLEDGE\`. Gate dispatches (devil-advocate) return their verdict-first format instead.
+followed by agent-specific sections (VERDICT, FINDINGS, ARTIFACTS, SCOPE_CHANGE, TASKS, and the single canonical capture slot **KNOWLEDGE**). \`KNOWLEDGE\` is the ONE place durable insight surfaces — \`<none | ready-to-run \`arcs knowledge upsert\` commands, one per insight, each carrying \`--summary\` AND a substantive \`--body\`>\`. A proposed command with only \`--summary\` is an incomplete capture: enrich it from the agent's FINDINGS before you run it — never persist the stub. Older prompts may still emit \`CAPTURES\` or \`PROPOSED_ENTRIES\`; treat both as exact aliases of \`KNOWLEDGE\`. Gate dispatches (devil-advocate) return their verdict-first format instead.
 
 Consuming a return — read STATUS/VERDICT first, it determines the next action:
 - \`done\` → forward FILES_TOUCHED + VERIFY + declared SCOPE verbatim into the devil-advocate PHASE: execute dispatch; on PASS, write to DAG
@@ -264,7 +272,7 @@ Edge cases: FAILURES lines marked \`pre-existing\` (breakage the session's chang
 
 Every session ends with:
 1. **Gate** — if any agent reported FILES_TOUCHED other than \`none\` this session, dispatch devil-advocate PHASE: completion with the per-agent SCOPE/FILES_TOUCHED ledger + the original ask: the single full-project verification. Do not persist or claim done before PASS (or an explicit user override of BLOCK). Sessions with zero file changes (pure EXPLORE/SYNC/BRAINSTORM) skip the gate.
-2. **Persist to DAG (safety net, not primary path)** — most knowledge should already be captured at each round's fan-in (Knowledge Protocol). Here, sweep anything not yet persisted with \`arcs knowledge upsert\` (idempotent — no \`arcs search\` dedup dance), kind lesson/pattern/gotcha/architecture/decision, plus \`--source-files\` for anything file-specific. Then transition completed tasks and update plan status if a milestone is reached. Triggers: any non-obvious fix, pattern, gotcha, architectural decision, rejected alternative, or constraint learned. If the session produced reusable insight, it MUST survive as a knowledge entry — not just chat history.
+2. **Persist to DAG (safety net, not primary path)** — most knowledge should already be captured at each round's fan-in (Knowledge Protocol). Here, sweep anything not yet persisted with \`arcs knowledge upsert\` (idempotent — no \`arcs search\` dedup dance), kind lesson/pattern/gotcha/architecture/decision, each with \`--summary\` + a substantive \`--body\` (the per-kind anatomy from the Knowledge Protocol) + \`--source-files\` for anything file-specific. While here, enrich any one-sentence stub the session's searches surfaced in this scope — leaving a known-thin entry un-enriched is itself an unfinished task. Then transition completed tasks and update plan status if a milestone is reached. Triggers: any non-obvious fix, pattern, gotcha, architectural decision, rejected alternative, or constraint learned. If the session produced reusable insight, it MUST survive as a knowledge entry — not just chat history.
 3. **SHORTCUT harvest** — after the gate PASSES, grep the session's touched files for deferral markers (\`grep -rnE '(#|//) ?SHORTCUT:' <touched-paths>\`). For each deliberate simplification, capture it into the DAG as knowledge (\`arcs knowledge create ... --kind=gotcha\`) or a follow-up task so deferrals don't rot.
 4. **Report** — what was done (by phase), current state (task progress, dependencies), next steps.
 
@@ -274,7 +282,7 @@ After \`arcs brief\`:
 1. \`lastSyncedAt\` > 7 days → surface warning
 2. Active plans → \`arcs validate <slug> --json\` silently; surface issues
 3. \`arcs validate <slug> --checks=status-drift --json\` silently; surface drift
-4. \`arcs validate <slug> --checks=knowledge-health --json\` silently → surface "KB under-maintained: N thin / M stale" when entries lack summary/source-files or sit long-untouched, and bias the session toward enrichment. The T0 brief also carries a thin-knowledge count — read it.
+4. \`arcs validate <slug> --checks=knowledge-health --json\` silently → surface "KB under-maintained: N thin / M stale" when entries lack summary/source-files or sit long-untouched, and bias the session toward enrichment. The check sees only *structural* thinness — treat its count as a FLOOR, not the truth: any one-sentence, bodyless entry you pass over during a search is also thin and is fair game to enrich this session. The T0 brief also carries a thin-knowledge count — read it.
 
 ## Skill Selection
 
@@ -290,7 +298,7 @@ Auto-layer signals (announce, don't ask):
 - 2+ independent sub-problems → \`subagent-driven-development\`
 - GitHub PR + "deep review" → \`deep-pr-review\` on \`code-reviewer\`
 
-Full catalogue (15 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals, the-ladder
+Full catalogue (16 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, writing-knowledge, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals, the-ladder
 
 > **Note:** \`confidence-gate\` and \`verification-before-completion\` have been replaced by the \`devil-advocate\` subagent dispatched at phase checkpoints.
 
@@ -356,7 +364,7 @@ Key commands:
 - T0: \`arcs brief --lean --json\`
 - Tasks: \`arcs task list/create/transition <slug> ...\`
 - Plans: \`arcs plan list/create/update-meta <slug> ...\`
-- Knowledge (write): \`arcs knowledge upsert <slug> <title> --kind=<kind> --summary="..." --keywords="..." --source-files="path:anchor"\` (idempotent-by-title — DEFAULT) | \`arcs knowledge create ...\` (fail-if-title-exists)
+- Knowledge (write): \`arcs knowledge upsert <slug> <title> --kind=<kind> --summary="..." --body="..." --keywords="..." --source-files="path:anchor"\` (idempotent-by-title — DEFAULT; \`--body-file=<path>\` for long bodies) | \`arcs knowledge create ...\` (fail-if-title-exists)
 - Knowledge (read): \`arcs knowledge search <slug> "<q>" --lean --json\` | \`arcs knowledge get <slug> <id> --body --lean --json\` | \`arcs knowledge list <slug> --kind=<kind> --json\`
 - Search: \`arcs search <slug> "<query>" --json\`
 - Diagram: \`arcs diagram ready/init/sort-metadata <slug> <planId> --json\`

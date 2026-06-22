@@ -25,6 +25,11 @@ import {
   type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
+import {
+  getTemplateSections,
+  renderTemplate,
+} from "../../utils/knowledge-templates.js";
+import type { KnowledgeKind } from "../../utils/storage-utils.js";
 
 const KIND_ENUM = [
   "lesson",
@@ -508,4 +513,28 @@ async function handleKnowledgeDelete(
   } catch (err) {
     return failure("knowledge_delete_error", err instanceof Error ? err.message : String(err));
   }
+}
+// --- knowledge template ---
+// Project-independent: emits the per-kind body skeleton. No slug positional —
+// the dispatcher longest-matches "knowledge template" on path alone, and --kind
+// is a named flag, so this routes without project context.
+const knowledgeTemplateParams = {
+  kind: { type: "string", required: true, description: "Knowledge kind", enum: KIND_ENUM },
+} as const satisfies Record<string, ParamDef>;
+
+defineCommand({
+  path: "knowledge template",
+  description: "Emit the fillable body skeleton for a knowledge kind",
+  params: knowledgeTemplateParams,
+  handler: handleKnowledgeTemplate,
+});
+
+async function handleKnowledgeTemplate(
+  params: ParsedParams<typeof knowledgeTemplateParams>,
+  _flags: CommandFlags,
+): Promise<CLIResult> {
+  const kind = params.kind as KnowledgeKind;
+  const sections = getTemplateSections(kind);
+  const markdown = renderTemplate(kind);
+  return success({ kind, sections, markdown });
 }
