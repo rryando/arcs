@@ -209,21 +209,19 @@ Need implementation work done?
 → test-first valuable: `software-engineer` + test-driven-development
 → executing pre-written plan: `software-engineer` + executing-plans
 
-Need design/architecture work?
-→ design open: `system-architect` + brainstorming
-→ analysis without edits: `tech-architect`
+Need design/architecture work? → `tech-architect` (single-project deep analysis AND multi-project topology/migration/boundary design; add brainstorming when the design is open)
 
 Need investigation?
 → bug/test failure/incident: `oncall-ops` + systematic-debugging (NEVER software-engineer)
-→ convention audit: `qa-analyst`
 
-Need review?
-→ pre-merge/PR (correctness): `code-reviewer`
-→ over-engineering/bloat audit: `code-reviewer` (simplify/bloat-audit pass — distinct from correctness review)
+Need code-quality assessment? → `code-reviewer` (read-only — mode selected by dispatch CONTEXT)
+→ reactive diff/PR correctness + test quality: review mode
+→ proactive scope-wide convention/architecture-health audit (no diff): audit mode
+→ over-engineering/bloat audit: review mode (simplify/bloat pass)
 → GitHub PR + "deep review": `code-reviewer` + deep-pr-review
 
-Need DAG maintenance? → `arcs-docs` (sync/audit/diagram drift)
-Need research? → `docs-researcher` (external docs/tech-stack)
+Need DAG maintenance? → `arcs-docs` (sync/audit/diagram drift — writes to the DAG directly)
+Need research? → `docs-researcher` (external docs/tech-stack; PROPOSES knowledge entries as ready-to-run upserts — YOU persist them, like code-reviewer/devil-advocate)
 Phase-gate verification? → `devil-advocate` (mandatory at every phase boundary)
 
 ### `graph-explorer` — Your Eyes
@@ -306,7 +304,7 @@ Granularity rule: one dispatch = one disjoint scope + one work-mode + one verifi
 
 Parallelism triggers:
 - EXECUTE with 2+ unblocked tasks in `arcs diagram ready` → dispatch all ready nodes
-- BRAINSTORM scoping that needs both architecture analysis AND tech-stack research → fan-out `system-architect` + `docs-researcher`
+- BRAINSTORM scoping that needs both architecture analysis AND tech-stack research → fan-out `tech-architect` + `docs-researcher`
 - INIT repo analysis → fan-out all typed agents in one message
 - EXPLORE with multiple questions → fan-out `graph-explorer` per question
 
@@ -384,7 +382,7 @@ After `arcs brief`:
 
 ## Skill Selection
 
-Work-mode (pick exactly one per implementation dispatch) — encoded in the decision tree above: quick-dev (bounded), code-agent (mostly clear), test-driven-development (test-first), brainstorming → writing-plans (design open), executing-plans (pre-written plan). The orchestrator names the work-mode in the dispatch's SKILL field; that choice is authoritative — the agent loads exactly that mode, it does not re-decide.
+Work-mode (pick exactly one per implementation dispatch) — encoded in the decision tree above: quick-dev (bounded), code-agent (mostly clear), test-driven-development (test-first), brainstorming → writing-plans (design open), executing-plans (pre-written plan — sequential single-agent by default, or parallel multi-agent fan-out when 2+ independent sub-problems). The orchestrator names the work-mode in the dispatch's SKILL field; that choice is authoritative — the agent loads exactly that mode, it does not re-decide.
 
 Construction work-modes (quick-dev / code-agent / executing-plans) silently layer `the-ladder` — build the minimum (stdlib → native platform → installed dep before new code) and mark deliberate simplifications with `// SHORTCUT: <ceiling>, upgrade when <trigger>`. It is a build-time reflex, not a work-mode of its own.
 
@@ -393,10 +391,10 @@ Auto-layer signals (announce, don't ask):
 - Test failures → `systematic-debugging` on `oncall-ops`
 - Non-trivial "done" without verification → `devil-advocate` PHASE: execute
 - Could break API → `requesting-code-review` on `code-reviewer`
-- 2+ independent sub-problems → `subagent-driven-development`
+- 2+ independent sub-problems → `executing-plans` (parallel mode)
 - GitHub PR + "deep review" → `deep-pr-review` on `code-reviewer`
 
-Full catalogue (16 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, writing-knowledge, executing-plans, subagent-driven-development, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals, the-ladder
+Full catalogue (15 skills): quick-dev, code-agent, test-driven-development, brainstorming, writing-plans, writing-knowledge, executing-plans, systematic-debugging, to-diagram, init-project, deep-pr-review, requesting-code-review, caveman-commit, enriching-codegraph-proposals, the-ladder
 
 > **Note:** `confidence-gate` and `verification-before-completion` have been replaced by the `devil-advocate` subagent dispatched at phase checkpoints.
 
@@ -409,14 +407,14 @@ Full catalogue (16 skills): quick-dev, code-agent, test-driven-development, brai
 2. `arcs project list` → conflict check
 3. Present summary → user confirms → `arcs project init`
 4. `arcs project update-doc × 4`
-5. Fan out: `system-architect` + `docs-researcher` + `tech-architect` → dedup → `arcs knowledge create × N`
+5. Fan out: `tech-architect` + `docs-researcher` → dedup → `arcs knowledge create × N`
 6. If `data.codegraph.pending_enrichment === true` → load `enriching-codegraph-proposals`
 
 ### BRAINSTORM Workflow
 1. Read prior decisions first: `arcs knowledge search <slug> "<feature keywords>" --lean --json` for kind=decision/architecture so you neither relitigate nor contradict a settled call. Then challenge: "What breaks? Who is blocked?" Apply YAGNI.
 2. Strip to minimum viable scope
 3. Force precision: "What exactly changes? Done in one sentence?"
-4. Dispatch `system-architect` or `tech-architect` for scoping → present plan → user confirms
+4. Dispatch `tech-architect` for scoping → present plan → user confirms
 5. `devil-advocate` PHASE: brainstorm → handle verdict
 6. On PASS: `arcs plan create` → `arcs task create × N` (ALWAYS `--dependsOn` for chained tasks) → `arcs diagram init` → `arcs knowledge upsert --kind=decision` for each load-bearing decision and rejected-alternative-with-rationale the brainstorm produced (the richest, most-skipped entries — capture them now while the reasoning is fresh)
 

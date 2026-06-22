@@ -30,10 +30,8 @@ const preservedOutputFiles = new Set([
   // Agent prompt files (repo-authored, referenced via {file:} in manifest.json)
   "prompts/software-engineer.txt",
   "prompts/tech-architect.txt",
-  "prompts/qa-analyst.txt",
   "prompts/oncall-ops.txt",
   "prompts/arcs-docs.txt",
-  "prompts/system-architect.txt",
   "prompts/code-reviewer.txt",
   "prompts/docs-researcher.txt",
   "prompts/devil-advocate.txt",

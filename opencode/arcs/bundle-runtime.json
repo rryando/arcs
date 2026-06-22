@@ -22,7 +22,10 @@
       "SKILL.md"
     ],
     "executing-plans": [
-      "SKILL.md"
+      "SKILL.md",
+      "code-quality-reviewer-prompt.md",
+      "implementer-prompt.md",
+      "spec-reviewer-prompt.md"
     ],
     "quick-dev": [
       "SKILL.md"
@@ -30,12 +33,6 @@
     "requesting-code-review": [
       "SKILL.md",
       "code-reviewer.md"
-    ],
-    "subagent-driven-development": [
-      "SKILL.md",
-      "code-quality-reviewer-prompt.md",
-      "implementer-prompt.md",
-      "spec-reviewer-prompt.md"
     ],
     "systematic-debugging": [
       "SKILL.md",

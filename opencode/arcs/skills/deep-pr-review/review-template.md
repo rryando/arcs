@@ -25,7 +25,7 @@ Used as the `body` field of `gh api repos/{owner}/{repo}/pulls/{pull_number}/rev
 
 ### Architectural / Performance Handoffs
 <only if any; otherwise omit section>
-- [system-architect] <reason — e.g. crosses 3 modules, touches god node X>
+- [tech-architect] <reason — e.g. crosses 3 modules, touches god node X>
 - [oncall-ops] <reason — e.g. new query in render path>
 
 ### Citations Used

@@ -87,14 +87,12 @@ const agentTierMap = {
   "docs-researcher": "heavy",
   "arcs-docs": "heavy",
   "oncall-ops": "heavy",
-  "system-architect": "heavy",
   "arcs-orchestrate": "standard",
   "arcs-orchestrate-caveman": "standard",
   "devil-advocate": "standard",
   "graph-explorer": "light",
   "code-reviewer": "light",
   "tech-architect": "light",
-  "qa-analyst": "light",
 };
 
 // Agent descriptions mirror opencode/arcs/manifest.json (canonical) — keep in sync.
@@ -131,20 +129,6 @@ const agentMetadata = {
     name: "Code Reviewer",
     description:
       "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
-    tools: "Read, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "qa-analyst": {
-    name: "QA Analyst",
-    description:
-      "Quality enforcement specialist. Proactive code audits, review dispatch, convention compliance.",
-    tools: "Read, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "system-architect": {
-    name: "System Architect",
-    description:
-      "Architecture and design specialist. Module boundaries, dependency graphs, migration strategies, and cross-project design decisions.",
     tools: "Read, Glob, Grep, Bash",
     model: "inherit",
   },

@@ -325,14 +325,12 @@ The orchestrator is **delegation-first** — it never reads code, runs tests, or
 |-----------|------|------|
 | **graph-explorer** | DAG-first knowledge + code exploration via codegraph MCP tools | Any "where is X / what depends on Y" query |
 | **software-engineer** | Writes code, verifies only its touched files | EXECUTE — bounded tasks |
-| **system-architect** | Module boundaries, plan creation | BRAINSTORM — design-open |
-| **tech-architect** | Deep analysis, trade-offs | Analysis without edits |
+| **tech-architect** | Single-project deep analysis + multi-project topology/migration/boundary design | Architecture/design work; BRAINSTORM — design-open |
 | **oncall-ops** | Debugging, log triage, bisect | Bugs, test failures |
-| **code-reviewer** | Pre-merge review | PR review, phase gates |
+| **code-reviewer** | Read-only code-quality: reactive diff/PR review + proactive scope-wide convention/architecture-health audit | PR review, phase gates, convention audits |
 | **devil-advocate** | Adversarial KISS/YAGNI/DRY gate | Phase boundaries (mandatory); completion gate = the single full-project verification |
 | **arcs-docs** | DAG health, knowledge curation | SYNC workflow |
 | **docs-researcher** | External research, documentation | INIT tech-stack scan |
-| **qa-analyst** | Convention audits, compliance | Read-only audits |
 
 All sub-agents return **structured output** (not prose) opening with the standard return envelope:
 
@@ -352,7 +350,7 @@ The orchestrator parses STATUS/VERDICT first, forwards FILES_TOUCHED + VERIFY in
 | Category | Skills |
 |----------|--------|
 | **Work mode** (pick one) | `quick-dev`, `code-agent`, `test-driven-development`, `brainstorming` |
-| **Lifecycle** | `writing-plans`, `executing-plans`, `subagent-driven-development` |
+| **Lifecycle** | `writing-plans`, `executing-plans` (sequential or parallel mode) |
 | **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
 | **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-codegraph-proposals` |
 

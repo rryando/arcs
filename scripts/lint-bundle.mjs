@@ -34,10 +34,8 @@ const preservedFiles = new Set([
   // requiredMerges, not from bundle-runtime.json's `agents` array).
   "prompts/software-engineer.txt",
   "prompts/tech-architect.txt",
-  "prompts/qa-analyst.txt",
   "prompts/oncall-ops.txt",
   "prompts/arcs-docs.txt",
-  "prompts/system-architect.txt",
   "prompts/code-reviewer.txt",
   "prompts/docs-researcher.txt",
   "prompts/devil-advocate.txt",

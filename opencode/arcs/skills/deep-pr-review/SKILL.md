@@ -81,7 +81,7 @@ Agent picks dimensions from diff context. **Correctness is always evaluated.** O
 | **YAGNI** | Code written "for later" with no current caller; abstractions with one concrete use; configurable hooks with one known value; generic machinery built for hypothetical consumers |
 | **SOLID** | Module gains responsibilities, dependency direction shifts, large classes touched |
 | **Convention fit** | AGENTS.md or DAG `pattern`/`architecture` knowledge applies to changed files |
-| **Architectural risk** → handoff to the system-architect agent (structural audit) | Diff crosses module boundaries, touches god nodes, changes public API |
+| **Architectural risk** → handoff to the tech-architect agent (structural audit) | Diff crosses module boundaries, touches god nodes, changes public API |
 | **Performance risk** → handoff to the oncall-ops agent (performance investigation) | Hot paths, loops over external IO, new queries, allocations in render |
 
 Skipped dimensions are reported as `cleared (not applicable: <reason>)`. Never silently dropped.
@@ -151,7 +151,7 @@ GitHub `​```suggestion` blocks render an "Apply suggestion" button. Use **only
 
 - Multi-line code restructure → inline review comment with a fenced code block (no `suggestion` tag)
 - Missing block / new file content → top-level review body bullet
-- Cross-file refactor → handoff finding recommending the system-architect agent (structural audit)
+- Cross-file refactor → handoff finding recommending the tech-architect agent (structural audit)
 
 ## Posting Protocol (ONE `gh api` call — never per-finding)
 
@@ -207,7 +207,7 @@ A recurring finding — the same class of bug, the same convention violation, a 
 - Never post to GitHub before user picks a posting mode
 - Cite every finding — no uncited claims
 - ` ```suggestion ` blocks only for small line-replacement fixes
-- Defer to the system-architect agent (structural audit) for full structural drift; surface as handoff flag, do not run inline
+- Defer to the tech-architect agent (structural audit) for full structural drift; surface as handoff flag, do not run inline
 - Defer to the oncall-ops agent (performance investigation) for perf work; surface as risk flag
 - Review dimensions are defined in this skill (Adaptive Rubric); inline findings use the one-line format `<file>:L<line>: problem. fix.` — do not duplicate
 - Re-review detection: if AI has reviewed before, scope to diff since last review's commit_id
