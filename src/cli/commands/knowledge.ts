@@ -6,6 +6,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { readJsonSafe, validateJson } from "../../utils/json.js";
 import { knowledgeMetaSchema } from "../../utils/json-schemas.js";
+import {
+  extractBodyContentLength,
+  getTemplateSections,
+  isBodyShallow,
+  renderTemplate,
+  SHALLOW_BODY_MIN_CHARS,
+} from "../../utils/knowledge-templates.js";
 import { getProjectDir } from "../../utils/paths.js";
 import {
   createKnowledgeEntry,
@@ -15,7 +22,8 @@ import {
 } from "../../utils/project-memory.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import { readStdin } from "../../utils/stdin.js";
-import { type FileRef, KNOWLEDGE_AUDIENCES } from "../../utils/storage-utils.js";
+import type { KnowledgeKind } from "../../utils/storage-utils.js";
+import { buildBody, type FileRef, KNOWLEDGE_AUDIENCES } from "../../utils/storage-utils.js";
 import {
   type CLIResult,
   type CommandFlags,
@@ -25,15 +33,6 @@ import {
   type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
-import {
-  extractBodyContentLength,
-  getTemplateSections,
-  isBodyShallow,
-  renderTemplate,
-  SHALLOW_BODY_MIN_CHARS,
-} from "../../utils/knowledge-templates.js";
-import { buildBody } from "../../utils/storage-utils.js";
-import type { KnowledgeKind } from "../../utils/storage-utils.js";
 
 /**
  * Build the non-fatal shallow-body warning for a knowledge write. Returns the
@@ -415,9 +414,9 @@ async function handleKnowledgeUpdateBody(
   } else {
     body = await readStdin();
   }
-  const warnings = [
-    shallowBodyWarning(body, existingMeta.kind, params["allow-thin"]),
-  ].filter((w): w is string => w !== undefined);
+  const warnings = [shallowBodyWarning(body, existingMeta.kind, params["allow-thin"])].filter(
+    (w): w is string => w !== undefined,
+  );
   await writeFile(bodyPath, body, "utf-8");
   const meta = await updateKnowledgeEntry(projectDir, { id: entryId });
   return success({ meta, body, ...(warnings.length > 0 && { warnings }) });

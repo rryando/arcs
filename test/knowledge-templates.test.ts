@@ -89,15 +89,9 @@ describe("extractBodyContentLength", () => {
   });
 
   it("excludes multi-line HTML comments from the count", () => {
-    const body = [
-      "# Title",
-      "",
-      "<!--",
-      "this guidance spans",
-      "several lines",
-      "-->",
-      "",
-    ].join("\n");
+    const body = ["# Title", "", "<!--", "this guidance spans", "several lines", "-->", ""].join(
+      "\n",
+    );
     expect(extractBodyContentLength(body)).toBe(0);
   });
 
