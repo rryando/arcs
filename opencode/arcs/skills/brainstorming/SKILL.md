@@ -99,6 +99,7 @@ When the user's approach conflicts with established patterns, **don't ask if the
 - **Multiple choice when forcing a decision** — 2-3 options, each with clear trade-off stated
 - **Cut scope aggressively**: if request describes multiple independent concerns, split immediately. "That's 3 separate things. Which one is blocking you right now?"
 - No open-ended "what do you think?" — always propose a position and let user argue against it
+- When the user explicitly requests a grill, or an ordinary challenge leaves a material decision unresolved, investigate environment- or tool-discoverable facts before asking the user. Then ask exactly one user-owned decision at a time, with a recommended default.
 
 ## Design Presentation
 
