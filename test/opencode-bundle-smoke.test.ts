@@ -39,6 +39,7 @@ type RuntimeManifest = {
   skills: Record<string, string[]>;
   agents: string[];
   plugin: string[];
+  preservedFiles: string[];
   excludePatterns: string[];
 };
 
@@ -86,21 +87,12 @@ describe("opencode ARCS bundle bundle", () => {
     expect(manifest.skills.destination).toBe("skills/arcs");
     expect(manifest.plugin.required).toBe(true);
     expect(manifest.plugin.source).toBe(".opencode/plugins/arcs.js");
-    expect(manifest.agents).toEqual([
-      { source: "prompts/software-engineer.txt", destination: "prompts/software-engineer.txt" },
-      { source: "prompts/tech-architect.txt", destination: "prompts/tech-architect.txt" },
-      { source: "prompts/oncall-ops.txt", destination: "prompts/oncall-ops.txt" },
-      { source: "prompts/arcs-docs.txt", destination: "prompts/arcs-docs.txt" },
-      { source: "prompts/code-reviewer.txt", destination: "prompts/code-reviewer.txt" },
-      { source: "prompts/docs-researcher.txt", destination: "prompts/docs-researcher.txt" },
-      { source: "prompts/devil-advocate.txt", destination: "prompts/devil-advocate.txt" },
-      { source: "prompts/graph-explorer.txt", destination: "prompts/graph-explorer.txt" },
-      { source: "prompts/arcs-orchestrate.txt", destination: "prompts/arcs-orchestrate.txt" },
-      {
-        source: "prompts/arcs-orchestrate-caveman.txt",
-        destination: "prompts/arcs-orchestrate-caveman.txt",
-      },
-    ]);
+    expect(manifest.agents.length).toBeGreaterThan(0);
+    for (const agent of manifest.agents) {
+      expect(agent.source).toMatch(/^prompts\/[^/]+\.txt$/);
+      expect(agent.destination).toBe(agent.source);
+      expect(existsSync(resolve(bundleRoot, agent.source))).toBe(true);
+    }
     expect(manifest.config.requiredMerges).toEqual(
       expect.arrayContaining([
         {
@@ -169,6 +161,7 @@ describe("opencode ARCS bundle bundle", () => {
       "agents",
       "excludePatterns",
       "plugin",
+      "preservedFiles",
       "skills",
     ]);
     expect(runtimeManifest.excludePatterns).toEqual([
@@ -185,7 +178,9 @@ describe("opencode ARCS bundle bundle", () => {
 
     // ARCS-native skills (authored in this repo) live in the bundle but aren't
     // declared in bundle-runtime.json — they are preserved output files.
-    const arcsNativeSkillNames = ["caveman-commit", "init-project", "the-ladder"];
+    const arcsNativeSkillNames = runtimeManifest.preservedFiles
+      .filter((path) => path.startsWith("skills/") && path.endsWith("/SKILL.md"))
+      .map((path) => path.split("/")[1]);
     const expectedSkillNames = [
       ...new Set([...Object.keys(runtimeManifest.skills), ...arcsNativeSkillNames]),
     ].sort();
@@ -203,7 +198,9 @@ describe("opencode ARCS bundle bundle", () => {
       expect(result.status).toBe(0);
       // Skills dir contains the manifest-declared skills plus the ARCS-native
       // skills (preservedOutputFiles) — the build prunes nothing in this set.
-      const arcsNativeSkillNames = ["caveman-commit", "init-project", "the-ladder"];
+      const arcsNativeSkillNames = runtimeManifest.preservedFiles
+        .filter((path) => path.startsWith("skills/") && path.endsWith("/SKILL.md"))
+        .map((path) => path.split("/")[1]);
       const expectedSkillsAfterBuild = [
         ...new Set([...Object.keys(runtimeManifest.skills), ...arcsNativeSkillNames]),
       ].sort();

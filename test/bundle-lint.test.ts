@@ -67,7 +67,7 @@ describe("bundle linter", () => {
     }
   });
 
-  it("reports extra undeclared files in bundle", () => {
+  it("fails for unexpected undeclared shipped files", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-extra-"));
     const bundleRoot = resolve(tempRoot, "bundle");
 
@@ -77,6 +77,7 @@ describe("bundle linter", () => {
         skills: { planner: ["SKILL.md"] },
         agents: [],
         plugin: [],
+        preservedFiles: ["manifest.json", "bundle-runtime.json", ".opencode/plugins/arcs.js"],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
       writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
@@ -96,11 +97,12 @@ describe("bundle linter", () => {
       const result = JSON.parse(proc.stdout) as LintResult;
       expect(result.issues).toContainEqual(
         expect.objectContaining({
-          severity: "warning",
+          severity: "error",
           kind: "undeclared-file",
           file: "skills/planner/stale.md",
         }),
       );
+      expect(proc.status).toBe(1);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -237,6 +239,7 @@ describe("bundle linter", () => {
         skills: { planner: ["SKILL.md"] },
         agents: [],
         plugin: [],
+        preservedFiles: ["manifest.json", "bundle-runtime.json", ".opencode/plugins/arcs.js"],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
       writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
@@ -271,7 +274,6 @@ describe("bundle linter", () => {
 
     const result = JSON.parse(proc.stdout) as LintResult;
     expect(result.summary.errors).toBe(0);
-    // Warnings may exist (config drift) depending on env, that's OK
     expect(proc.status).toBe(0);
   });
 });

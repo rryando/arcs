@@ -5,6 +5,8 @@
 //   - requires no slug positional (project-independent)
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CLIResult } from "../src/cli/command-registry.js";
 import { KNOWLEDGE_KINDS } from "../src/utils/storage-utils.js";
@@ -23,6 +25,20 @@ function dataOf(result: CLIResult): TemplateData {
 }
 
 describe("knowledge template --kind", () => {
+  it("keeps landing-page guidance on the current knowledge CLI", () => {
+    const template = readFileSync(
+      resolve(import.meta.dirname, "../templates/knowledge.md.tmpl"),
+      "utf-8",
+    );
+
+    expect(template).toContain("arcs knowledge list");
+    expect(template).toContain("arcs knowledge search");
+    expect(template).toContain("arcs knowledge get");
+    expect(template).not.toContain("list_project_knowledge_entries");
+    expect(template).not.toContain("get_project_knowledge_entry");
+    expect(template).not.toContain("init or sync prompt");
+  });
+
   it("gotcha → ok with Symptom section and matching markdown heading", async () => {
     await withTempDataDir(async () => {
       const result = await runCommand("knowledge template", ["--kind=gotcha", "--json"]);

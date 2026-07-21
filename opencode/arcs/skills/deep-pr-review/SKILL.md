@@ -69,6 +69,8 @@ Run these three commands once at the start. Cache the results. All downstream st
 | File list / LOC delta | `PR_META.files` |
 | Diff text | `DIFF` |
 
+`codegraph-diff.md` receives this cached `DIFF` snapshot; it must not run a second diff fetch.
+
 ## Adaptive Rubric
 
 Agent picks dimensions from diff context. **Correctness is always evaluated.** Other dimensions activate when the diff signals them:

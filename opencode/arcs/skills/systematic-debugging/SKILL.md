@@ -125,30 +125,17 @@ Include: root cause summary, evidence, affected files, fix approach.
 
 ### Capture Resolution as Knowledge
 
-After resolving the issue, persist the learning:
+After resolving the issue, choose the kind and obtain its required anatomy before authoring a complete entry:
 
 ```bash
-# For a surprising behavior or trap
-arcs knowledge create <slug> "Redis connection pool exhaustion under load" \
-  --kind=gotcha \
-  --summary="Pool size defaults to 10; under concurrent requests >50, connections time out silently" \
-  --body="Root cause: default pool size. Fix: set poolSize to max(50, expectedConcurrency). Symptoms: intermittent 503s with no error logs." \
-  --json
-
-# For a reusable debugging technique or resolution pattern
-arcs knowledge create <slug> "Diagnosing silent connection failures" \
-  --kind=lesson \
-  --summary="Enable connection-level event logging before load testing" \
-  --body="Attach listeners to pool 'error' and 'timeout' events. Default Node.js behavior swallows these." \
-  --json
-
-# For a pattern that should be followed going forward
-arcs knowledge create <slug> "Connection pool sizing formula" \
-  --kind=pattern \
-  --summary="Pool size = max(50, 2x expected peak concurrency)" \
-  --body="Applies to Redis, Postgres, and HTTP agent pools. Validated under load test 2026-05-26." \
-  --json
+arcs knowledge template <slug> --kind=gotcha --json
+# Fill every returned section with observed evidence, affected files, and the fix approach.
+arcs knowledge upsert <slug> "<specific debugging discovery>" \
+  --kind=gotcha --summary="<durable takeaway>" --body-file=<complete-body.md> \
+  --source-files=<affected-paths> --json
 ```
+
+Use the same template-first flow for `lesson` and `pattern`; do not copy a body-shaped example that omits the selected kind's required sections.
 
 **Kind selection guide:**
 - `gotcha` — surprising behavior, trap, or non-obvious failure mode

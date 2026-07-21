@@ -13,7 +13,7 @@ The CLI surfaced raw codegraph proposals and is waiting for an agent to turn the
 - `arcs codegraph-sync` returned `pending_enrichment: true`.
 - User said "enrich the proposals", "process the codegraph queue", "promote the pending proposals", or similar.
 
-> **Read-write skill.** This skill mutates the DAG via `arcs proposal promote/drop`. Self-score ≥80% via `confidence-gate` before each promote.
+> **Read-write skill.** This skill mutates the DAG via `arcs proposal promote/drop`. Before each promote, meet an evidence threshold: verify the proposal's structural facts, dedup candidates, natural kind, and source files support the authored entry. If that evidence is incomplete, drop or defer it; the orchestrator/devil-advocate gate independently checks the resulting workflow.
 
 ## Flow
 

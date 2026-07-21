@@ -201,7 +201,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       process.exit(0);
     }
 
-    p.note("Used by: explore, code-reviewer, tech-architect", "Light tier agents");
+    p.note("Used by: graph-explorer, code-reviewer, tech-architect", "Light tier agents");
 
     // T004 will wire modelConfig into agent registration calls below.
     const modelConfig: ModelTierConfig = {
@@ -231,7 +231,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         { name: "plan", tier: "heavy" },
         { name: "general", tier: "heavy" },
         { name: "build", tier: "standard" },
-        { name: "explore", tier: "light" },
+        { name: "graph-explorer", tier: "light" },
         { name: "code-reviewer", tier: "light" },
         { name: "tech-architect", tier: "light" },
       ];
@@ -273,9 +273,8 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       opencodeAgentActive = true;
       p.note(
         [
-          `${color.green("✔")} Updated agent entries in ${color.dim(displayPath(agentResult.configPath))}`,
-          `${color.green("✔")} Refreshed orchestrator prompt at ${color.dim(displayPath(agentResult.promptPath))}`,
-          `${color.green("✔")} Refreshed Caveman prompt at ${color.dim(displayPath(agentResult.cavemanPromptPath))}`,
+          `${color.green("✔")} Updated agents: ${color.dim(displayPath(agentResult.configPath))}`,
+          `${color.green("✔")} Refreshed prompts: ${color.dim(displayPath(agentResult.promptPath))}, ${color.dim(displayPath(agentResult.cavemanPromptPath))}`,
         ].join("\n"),
         "OpenCode Agent",
       );
@@ -296,9 +295,8 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         const verb = agentResult.action === "created" ? "Created" : "Updated";
         p.note(
           [
-            `${color.green("✔")} ${verb} agent entries in ${color.dim(displayPath(agentResult.configPath))}`,
-            `${color.green("✔")} Wrote orchestrator prompt to ${color.dim(displayPath(agentResult.promptPath))}`,
-            `${color.green("✔")} Wrote Caveman prompt to ${color.dim(displayPath(agentResult.cavemanPromptPath))}`,
+            `${color.green("✔")} ${verb} agents: ${color.dim(displayPath(agentResult.configPath))}`,
+            `${color.green("✔")} Wrote prompts: ${color.dim(displayPath(agentResult.promptPath))}, ${color.dim(displayPath(agentResult.cavemanPromptPath))}`,
             "",
             `Switch to ${color.cyan("ARCS - (Orchestrator)")} or ${color.cyan("ARCS - Caveman")} with ${color.bold("Tab")} in OpenCode.`,
             `${color.dim("Caveman = same capabilities, ~65% fewer output tokens.")}`,

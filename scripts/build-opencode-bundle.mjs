@@ -12,37 +12,6 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const defaultManifestPath = resolve(repoRoot, "opencode/arcs/bundle-runtime.json");
 const defaultOutputRoot = resolve(repoRoot, "opencode/arcs");
-// Files that are repo-authored and must not be pruned. The repo bundle
-// directory IS the source of truth — there is no external mirror.
-const preservedOutputFiles = new Set([
-  "manifest.json",
-  "bundle-runtime.json",
-  ".opencode/plugins/arcs.js",
-  // ARCS-native skills (authored in this repo, no upstream source)
-  // init-project skill — ARCS-native (mirrors orchestrator INIT workflow with
-  // codegraph sub-flow, typed-agent dispatch, knowledge categories).
-  "skills/init-project/SKILL.md",
-  // Caveman commit skill — adapted from https://github.com/JuliusBrussee/caveman (MIT).
-  "skills/caveman-commit/SKILL.md",
-  // the-ladder skill — ARCS-native build-time minimalism discipline (auto-layers
-  // under construction work-modes; not a work-mode itself).
-  "skills/the-ladder/SKILL.md",
-  // Agent prompt files (repo-authored, referenced via {file:} in manifest.json)
-  "prompts/software-engineer.txt",
-  "prompts/tech-architect.txt",
-  "prompts/oncall-ops.txt",
-  "prompts/arcs-docs.txt",
-  "prompts/code-reviewer.txt",
-  "prompts/docs-researcher.txt",
-  "prompts/devil-advocate.txt",
-  "prompts/graph-explorer.txt",
-  // Orchestrator prompt files — generated from src/cli/arcs-orchestrate*.ts during
-  // bundle build (see generateOrchestratorPrompts() below). TS modules remain the
-  // canonical source; these .txt files are committed mirrors so the bundle is
-  // self-describing and all prompts live in one directory.
-  "prompts/arcs-orchestrate.txt",
-  "prompts/arcs-orchestrate-caveman.txt",
-]);
 
 function ensureParentDirectory(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
@@ -145,10 +114,6 @@ async function main() {
     : defaultOutputRoot;
 
   const declaredFiles = listDeclaredFiles(runtimeManifest);
-  const allowedOutputFiles = new Set([
-    ...declaredFiles.map((entry) => entry.declaredPath),
-    ...preservedOutputFiles,
-  ]);
 
   defaultOutputRootCurrent = outputRoot;
 
@@ -163,6 +128,16 @@ async function main() {
     }
     ensureParentDirectory(outputPath);
   }
+
+  const sourceManifestPath = resolve(outputRoot, "manifest.json");
+  const sourceManifest = existsSync(sourceManifestPath)
+    ? JSON.parse(readFileSync(sourceManifestPath, "utf-8"))
+    : { agents: [] };
+  const allowedOutputFiles = new Set([
+    ...declaredFiles.map((entry) => entry.declaredPath),
+    ...(runtimeManifest.preservedFiles ?? []),
+    ...(sourceManifest.agents ?? []).map((agent) => agent.source),
+  ]);
 
   mkdirSync(outputRoot, { recursive: true });
   pruneUndeclaredFiles(outputRoot, allowedOutputFiles);

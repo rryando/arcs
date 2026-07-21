@@ -17,9 +17,9 @@ flowchart TD
 
     A[arcs project list → big picture] --> B{Question answered by DAG?}
     B -->|yes| C[Report from DAG data]
-    B -->|no| D[Dispatch explore sub-agent]:::sub
+    B -->|no| D[Dispatch graph-explorer sub-agent]:::sub
     D --> E{Durable discovery?}
-    E -->|yes| F[arcs knowledge create]
+    E -->|yes| F[arcs knowledge upsert]
     E -->|no| C
     F --> C
 ```
@@ -54,4 +54,4 @@ Discovery: `arcs --commands --json`
 - Start with `arcs project list` for the big picture
 - Use `knowledge` docs to quickly understand unfamiliar codebases
 - Check `status` to know if a dependency is still actively maintained
-- Persist durable discoveries via `arcs knowledge create`
+- Persist durable discoveries via `arcs knowledge upsert`

@@ -1,5 +1,5 @@
 import * as childProcess from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runSetup } from "../src/cli/setup.js";
@@ -263,6 +263,55 @@ describe("OpenCode setup flow", () => {
       const agents = updated.agent as Record<string, unknown>;
       const arcsAgent = agents?.["ARCS Orchestrator"] as Record<string, unknown>;
       expect(arcsAgent?.prompt).not.toBe("stale-prompt-text");
+    });
+  });
+
+  it("offers graph-explorer, not legacy explore, for light-tier customization", async () => {
+    const prompts = await import("@clack/prompts");
+
+    vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(true); // customizeAgents
+    vi.mocked((prompts as any).__text)
+      .mockResolvedValueOnce("heavy-model")
+      .mockResolvedValueOnce("standard-model")
+      .mockResolvedValueOnce("light-model")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("graph-explorer-model")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("");
+
+    await withTempHomeDir(async (homeDir) => {
+      const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+      writeFileSync(
+        configFile,
+        JSON.stringify({
+          agent: {
+            "ARCS Orchestrator": { mode: "primary", prompt: "old-prompt" },
+            explore: { model: "legacy-model" },
+            "graph-explorer": { model: "old-graph-model" },
+          },
+        }),
+      );
+
+      await runSetup("config");
+
+      const agents = JSON.parse(readFileSync(configFile, "utf-8")).agent as Record<
+        string,
+        Record<string, unknown>
+      >;
+      expect(agents["graph-explorer"].model).toBe("graph-explorer-model");
+      expect(agents.explore.model).toBe("legacy-model");
+      expect((prompts as any).__text).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining("graph-explorer [light:") }),
+      );
+      expect((prompts as any).__text).not.toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining("explore [light:") }),
+      );
     });
   });
 

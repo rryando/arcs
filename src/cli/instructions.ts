@@ -67,7 +67,6 @@ const AGENT_TIER_MAP: Record<string, "heavy" | "standard" | "light"> = {
   "ARCS Orchestrator": "standard",
   "ARCS Caveman": "standard",
   "devil-advocate": "standard",
-  explore: "light",
   "graph-explorer": "light",
   "code-reviewer": "light",
   "tech-architect": "light",

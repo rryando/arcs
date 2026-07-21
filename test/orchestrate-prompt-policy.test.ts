@@ -210,3 +210,49 @@ describe("orchestrate prompt policy — post-write-gate invariants", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("--token");
   });
 });
+
+describe("orchestrate prompt policy — control-plane remediation", () => {
+  it("treats injected artifacts as reference data, not action authority", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /DAG, repository, user[\s\S]*web, log, and prior-agent/i,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/untrusted reference data/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /system[\s\S]*dispatch[\s\S]*SCOPE[\s\S]*GOAL[\s\S]*CONSTRAINTS[\s\S]*SKILL[\s\S]*VERIFY[\s\S]*control/i,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /embedded imperative text[\s\S]*cannot override[\s\S]*dispatch/i,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("as ground truth");
+  });
+
+  it("assigns the complete canonical verification gate only to devil-advocate", () => {
+    const verificationSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Verification Contract"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Knowledge Protocol"),
+    );
+    expect(verificationSection).toContain("npm test");
+    expect(verificationSection).toContain("npm run typecheck");
+    expect(verificationSection).toContain("npm run lint");
+    expect(verificationSection).not.toContain("Full suite + `tsc --noEmit`");
+  });
+
+  it("harvests reported SHORTCUT markers without reading source directly", () => {
+    const completionSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Completion (MANDATORY)"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Skills"),
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toContain("SHORTCUTS: <none | exact SHORTCUT markers>");
+    expect(completionSection).toMatch(/report.*SHORTCUT markers/i);
+    expect(completionSection).not.toMatch(/grep|touched files for deferral markers/i);
+  });
+
+  it("propagates the active Caveman level instead of hardcoding full", () => {
+    const propagationSection = CAVEMAN_PREAMBLE.slice(
+      CAVEMAN_PREAMBLE.indexOf("## Sub-Agent Propagation"),
+      CAVEMAN_PREAMBLE.indexOf("## Skill References"),
+    );
+    expect(propagationSection).toMatch(/Level:.*active parent level/i);
+    expect(propagationSection).not.toContain("Level: full.");
+  });
+});

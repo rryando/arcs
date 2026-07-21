@@ -57,6 +57,7 @@ describe("opencode bundle builder", () => {
         },
         agents: ["agents/helper.md"],
         plugin: [".opencode/plugins/runtime.js"],
+        preservedFiles: ["manifest.json", "bundle-runtime.json"],
       };
 
       writeFileSync(runtimeManifestPath, JSON.stringify(runtimeManifest, null, 2));
@@ -66,8 +67,8 @@ describe("opencode bundle builder", () => {
       writeRuntimeFile(outputRoot, "agents/helper.md", "agent");
       writeRuntimeFile(outputRoot, ".opencode/plugins/runtime.js", "plugin");
 
-      // Manifest + bundle-runtime are preserved (preservedOutputFiles).
-      writeRuntimeFile(outputRoot, "manifest.json", "keep manifest");
+      // The source manifest owns repo-authored prompt inventory.
+      writeRuntimeFile(outputRoot, "manifest.json", JSON.stringify({ agents: [] }));
       writeRuntimeFile(outputRoot, "bundle-runtime.json", "keep runtime manifest");
       // Undeclared files that should be pruned by the build.
       writeRuntimeFile(outputRoot, "skills/planner/stale.md", "remove me");
@@ -89,7 +90,9 @@ describe("opencode bundle builder", () => {
       expect(existsSync(resolve(outputRoot, "skills/planner/ignored.md"))).toBe(false);
       expect(existsSync(resolve(outputRoot, "skills/planner/stale.md"))).toBe(false);
       expect(existsSync(resolve(outputRoot, "extra/nested.txt"))).toBe(false);
-      expect(readFileSync(resolve(outputRoot, "manifest.json"), "utf-8")).toBe("keep manifest");
+      expect(readFileSync(resolve(outputRoot, "manifest.json"), "utf-8")).toBe(
+        JSON.stringify({ agents: [] }),
+      );
       expect(readFileSync(resolve(outputRoot, "bundle-runtime.json"), "utf-8")).toBe(
         "keep runtime manifest",
       );
@@ -392,6 +395,14 @@ describe("opencode bundle runtime manifest", () => {
       },
       agents: [],
       plugin: [],
+      preservedFiles: [
+        "manifest.json",
+        "bundle-runtime.json",
+        ".opencode/plugins/arcs.js",
+        "skills/caveman-commit/SKILL.md",
+        "skills/init-project/SKILL.md",
+        "skills/the-ladder/SKILL.md",
+      ],
       excludePatterns: [
         "**/references/**",
         "**/examples/**",

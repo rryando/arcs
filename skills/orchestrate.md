@@ -84,7 +84,7 @@ Discovery: `arcs --commands --json`
 - `arcs loop cancel <slug> --json` — cancel active loop
 - `arcs loop status <slug> --json` — inspect loop state
 
-Pair with `loop` skill for iteration discipline.
+Use these `arcs loop` session commands only when iterative execution is explicitly needed; otherwise route work through the selected execution skill.
 
 ## Verification Contract
 

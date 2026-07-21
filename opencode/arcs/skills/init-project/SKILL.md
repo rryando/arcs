@@ -25,10 +25,10 @@ flowchart TD
     F -->|yes| G[codegraph index --force --quiet]
     F -->|no| H[Skip graph step, log gap]
     G --> G2[ingestGraph → ≤20 proposals]
-    G2 --> G3[codegraph MCP explore / impact for enrichment]:::sub
-    H & G3 --> I[Fan out: tech-architect + docs-researcher]:::sub
-    I --> J[Collect proposals → dedup → arcs knowledge create × N]
-    J --> K[Done]
+    G2 --> G3[Enrich queue: list → keep/merge/drop → promote/drop]
+    G3 --> I[Fan out: tech-architect + docs-researcher]:::sub
+    H --> I
+    I --> K[Done]
 ```
 
 ## CLI Primer
@@ -63,14 +63,14 @@ The orchestrator runs codegraph directly during INIT to produce structural **pro
    - 5 cross-module couplings (`kind=gotcha`, high-degree links across top-level dirs; relations hard-coded as `["calls"]`)
 
    Codegraph never writes directly to the knowledge surface. The init envelope returns `data.codegraph.pending_enrichment: true` to signal that proposals are waiting.
-5. **Enrich** with the `enriching-codegraph-proposals` skill — read `arcs proposal list <slug> --json`, decide per-proposal verdicts (keep / merge / drop), persist via `arcs proposal promote` and `arcs proposal drop`. The skill encodes the decision heuristics, output contract, and cost discipline; do not paraphrase.
+5. **Enrich** with the `enriching-codegraph-proposals` skill — read `arcs proposal list <slug> --json`, decide per-proposal verdicts (keep / merge / drop), then persist keeps and merges via `arcs proposal promote` and drops via `arcs proposal drop`. Pending codegraph proposals never bypass this lifecycle into knowledge.
 6. **Optional graph queries** for evidence during enrichment (sub-agents may run these via the codegraph MCP server, which auto-syncs through its own file watcher):
    - `codegraph_search "entry points and main commands"` → seeds for "key files" reference entries
    - `codegraph_explore` on core modules → seeds for "core modules" entries
    - `codegraph_node "<godNodeLabel>"` → structural summary for module entry bodies
    - `codegraph_impact "<critical-symbol>"` → reverse-impact map for high-risk modules
    - `codegraph_callers` / `codegraph_callees "<symbol>"` → dependency paths for architecture entries
-7. **Hand to typed agents** (in parallel) for code-grounded follow-up entries that go beyond what codegraph proposals cover — see **Agent Dispatch** below.
+7. **Hand to typed agents** (in parallel) for independently authored, code-grounded follow-up entries beyond the proposal queue — see **Agent Dispatch** below.
 
 ## Content Guidelines
 
@@ -96,7 +96,7 @@ Dispatch in parallel — all agents in one message, per the orchestrator's Paral
 - Targeted codegraph queries for evidence (e.g., `codegraph_node` / `codegraph_impact` output for the modules they own)
 - Explicit scope (which files / which kinds to produce)
 
-Each agent returns finalized proposals: `{title, kind, summary, keywords, sourceFiles, body}`. The orchestrator dedups, then writes the entries directly via `arcs knowledge create` (or `arcs batch`).
+Raw `KnowledgeProposal` records stay in the proposal lifecycle above. Each typed agent may instead return an independently authored finding: `{title, kind, summary, keywords, sourceFiles, body}`. After deduplication, the orchestrator may write only those independent findings directly via `arcs knowledge upsert`.
 
 ## Knowledge Categories for Analysis Sub-Agents
 
@@ -132,16 +132,20 @@ codegraph index . --force --quiet
 # init envelope: data.codegraph.pending_enrichment === true → load
 # `enriching-codegraph-proposals` and run the verdict loop:
 arcs proposal list foo --json
+# keep: promote only after authoring the required title, summary, body, and source files
 arcs proposal promote foo <id> --title="..." --summary="..." --body-file=... --kind=module --source-files=... --json
+# merge: promote with --merge-with=<existing-knowledge-id> and append graph evidence
+arcs proposal promote foo <id> --merge-with=<existing-knowledge-id> --body-file=... --source-files=... --json
 arcs proposal drop foo <id> --reason="..." --json
 
 # 5. Fan out typed agents (parallel) for entries beyond proposal scope
 #    tech-architect   → architecture/module/gotcha/lesson entries
 #    docs-researcher  → reference/feature entries
 
-# 6. Write any non-proposal-derived knowledge entries directly
-arcs knowledge create foo "Tech stack: TypeScript + Node 20" --kind=architecture --summary="..." --body="..." --json
-# ... repeat per entry, or use arcs batch
+# 6. Write only independently authored, non-proposal-derived findings directly.
+# Obtain the kind-specific body anatomy before authoring it:
+arcs knowledge template foo --kind=architecture --json
+arcs knowledge upsert foo "Tech stack: TypeScript + Node 20" --kind=architecture --summary="..." --body-file=... --source-files=package.json --json
 ```
 
 ## Exit Conditions

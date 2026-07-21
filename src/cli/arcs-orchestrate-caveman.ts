@@ -85,7 +85,7 @@ Carve-outs (write FULL PROSE, never caveman):
 - Security warnings, irreversible action confirmations, **pre-write confirmation summaries**.
 - Your return to the orchestrator: keep the Standard Return Envelope fields (STATUS / FILES_TOUCHED / VERIFY / BLOCKED_BY + agent-specific sections) byte-exact and complete — caveman applies only to free-text prose around them
 
-Level: full. Active every response. No drift.
+Level: active parent level (lite, full, or ultra). Active every response. No drift.
 
 ---
 

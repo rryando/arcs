@@ -220,7 +220,7 @@ describe("applyAgentModelConfig", () => {
       agent: {
         "ARCS Orchestrator": { prompt: "test" },
         "ARCS Caveman": { prompt: "test" },
-        explore: { prompt: "explore things" },
+        "graph-explorer": { prompt: "explore things" },
         "software-engineer": { prompt: "code stuff" },
         build: { prompt: "build stuff" },
       },
@@ -231,7 +231,7 @@ describe("applyAgentModelConfig", () => {
 
     const result = JSON.parse(await readFile(configFile, "utf-8"));
     // Sub-agents get tier models
-    expect(result.agent.explore.model).toBe("small/model");
+    expect(result.agent["graph-explorer"].model).toBe("small/model");
     expect(result.agent["software-engineer"].model).toBe("big/model");
     expect(result.agent.build.model).toBe("mid/model");
     // Primary agents are standard tier
@@ -242,7 +242,7 @@ describe("applyAgentModelConfig", () => {
   it("applies perAgent override to sub-agents", async () => {
     const config = {
       agent: {
-        explore: { prompt: "explore" },
+        "graph-explorer": { prompt: "explore" },
         "software-engineer": { prompt: "code" },
       },
     };
@@ -252,11 +252,11 @@ describe("applyAgentModelConfig", () => {
       heavy: "big/model",
       standard: "mid/model",
       light: "small/model",
-      perAgent: { explore: "custom/explorer" },
+      perAgent: { "graph-explorer": "custom/explorer" },
     });
 
     const result = JSON.parse(await readFile(configFile, "utf-8"));
-    expect(result.agent.explore.model).toBe("custom/explorer");
+    expect(result.agent["graph-explorer"].model).toBe("custom/explorer");
     expect(result.agent["software-engineer"].model).toBe("big/model");
   });
 
@@ -303,7 +303,8 @@ describe("applyAgentModelConfig", () => {
     const config = {
       agent: {
         "unknown-agent": { prompt: "mystery" },
-        explore: { prompt: "explore" },
+        explore: { prompt: "legacy explore" },
+        "graph-explorer": { prompt: "explore" },
       },
     };
     writeFileSync(configFile, JSON.stringify(config));
@@ -313,8 +314,10 @@ describe("applyAgentModelConfig", () => {
     const result = JSON.parse(await readFile(configFile, "utf-8"));
     // unknown-agent is not in AGENT_TIER_MAP and not a primary — no model field set
     expect(result.agent["unknown-agent"].model).toBeUndefined();
-    // explore IS in tier map
-    expect(result.agent.explore.model).toBe("small/model");
+    // Legacy explore config is tolerated but not actively assigned a model.
+    expect(result.agent.explore.model).toBeUndefined();
+    // graph-explorer is the active light-tier agent.
+    expect(result.agent["graph-explorer"].model).toBe("small/model");
   });
 });
 

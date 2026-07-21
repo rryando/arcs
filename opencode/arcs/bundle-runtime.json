@@ -62,6 +62,14 @@
   },
   "agents": [],
   "plugin": [],
+  "preservedFiles": [
+    "manifest.json",
+    "bundle-runtime.json",
+    ".opencode/plugins/arcs.js",
+    "skills/caveman-commit/SKILL.md",
+    "skills/init-project/SKILL.md",
+    "skills/the-ladder/SKILL.md"
+  ],
   "excludePatterns": [
     "**/references/**",
     "**/examples/**",

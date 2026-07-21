@@ -21,32 +21,6 @@ const bundleRoot = process.env.BUNDLE_LINT_BUNDLE_ROOT
   ? resolve(repoRoot, process.env.BUNDLE_LINT_BUNDLE_ROOT)
   : defaultBundleRoot;
 
-// Preserved files that are repo-authored, not sourced from manifest.
-const preservedFiles = new Set([
-  "manifest.json",
-  "bundle-runtime.json",
-  ".opencode/plugins/arcs.js",
-  "skills/loop/SKILL.md",
-  "skills/caveman-commit/SKILL.md",
-  "skills/init-project/SKILL.md",
-  "skills/the-ladder/SKILL.md",
-  // Sub-agent prompt files (repo-authored, referenced from manifest.json
-  // requiredMerges, not from bundle-runtime.json's `agents` array).
-  "prompts/software-engineer.txt",
-  "prompts/tech-architect.txt",
-  "prompts/oncall-ops.txt",
-  "prompts/arcs-docs.txt",
-  "prompts/code-reviewer.txt",
-  "prompts/docs-researcher.txt",
-  "prompts/devil-advocate.txt",
-  "prompts/graph-explorer.txt",
-  // Orchestrator prompt files — generated from src/cli/arcs-orchestrate*.ts
-  // by build-opencode-bundle.mjs. Committed mirrors so the bundle is
-  // self-describing alongside the static sub-agent prompts.
-  "prompts/arcs-orchestrate.txt",
-  "prompts/arcs-orchestrate-caveman.txt",
-]);
-
 /** @type {Array<{severity: 'error'|'warning', kind: string, message: string, file?: string, repair?: string}>} */const issues = [];
 
 function addIssue(severity, kind, message, file, repair) {
@@ -74,6 +48,12 @@ if (!existsSync(manifestPath)) {
 }
 
 const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+const sourceManifestPath = resolve(bundleRoot, "manifest.json");
+if (!existsSync(sourceManifestPath)) {
+  addIssue("error", "source-manifest-missing", `manifest.json not found at ${sourceManifestPath}`);
+  output();
+}
+const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, "utf-8"));
 
 // --- Check 1: Every manifest-declared bundled file exists ---
 const declaredFiles = new Set();
@@ -108,6 +88,30 @@ for (const pluginFile of manifest.plugin ?? []) {
   }
 }
 
+for (const agent of sourceManifest.agents ?? []) {
+  declaredFiles.add(agent.source);
+  if (!existsSync(resolve(bundleRoot, agent.source))) {
+    addIssue(
+      "error",
+      "missing-declared-file",
+      `Source manifest declares ${agent.source} but file is missing`,
+      agent.source,
+    );
+  }
+}
+
+const preservedFiles = new Set(manifest.preservedFiles ?? []);
+for (const preservedFile of preservedFiles) {
+  if (!existsSync(resolve(bundleRoot, preservedFile))) {
+    addIssue(
+      "error",
+      "missing-preserved-file",
+      `Runtime manifest preserves ${preservedFile} but file is missing`,
+      preservedFile,
+    );
+  }
+}
+
 // --- Check 2: No extra undeclared files in bundle ---
 const allBundleFiles = listAllFiles(bundleRoot);
 const allowedFiles = new Set([...declaredFiles, ...preservedFiles]);
@@ -115,7 +119,7 @@ const allowedFiles = new Set([...declaredFiles, ...preservedFiles]);
 for (const file of allBundleFiles) {
   if (!allowedFiles.has(file)) {
     addIssue(
-      "warning",
+      "error",
       "undeclared-file",
       `File ${file} exists in bundle but is not declared in manifest`,
       file,

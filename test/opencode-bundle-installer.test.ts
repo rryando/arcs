@@ -23,6 +23,7 @@ type RuntimeManifest = {
   skills: Record<string, string[]>;
   agents: string[];
   plugin: string[];
+  preservedFiles: string[];
 };
 
 type PackageJson = {
@@ -49,42 +50,18 @@ function readExpectedSourceBundleVersion(): string {
   return (JSON.parse(readFileSync(packageJsonPath, "utf-8")) as PackageJson).version;
 }
 
-// ARCS-native skill files: authored in this repo, not sourced from upstream.
-// Must match the skill entries in scripts/build-opencode-bundle.mjs preservedOutputFiles.
-const arcsNativeSkillFiles = [
-  "skills/caveman-commit/SKILL.md",
-  "skills/init-project/SKILL.md",
-  "skills/the-ladder/SKILL.md",
-];
-
 function curatedBundlePayloadFiles(): string[] {
   const runtimeManifest = readRuntimeManifest();
+  const sourceManifest = readSourceManifest();
 
   return [
-    // Repo-authored preserved files included in bundle identity
-    "bundle-runtime.json",
-    "manifest.json",
-    ".opencode/plugins/arcs.js",
+    ...runtimeManifest.preservedFiles,
     ...Object.entries(runtimeManifest.skills).flatMap(([skillName, files]) =>
       files.map((relativePath) => `skills/${skillName}/${relativePath}`),
     ),
     ...runtimeManifest.agents,
     ...runtimeManifest.plugin,
-    // ARCS-native skills live in the bundle but aren't declared in bundle-runtime.json
-    ...arcsNativeSkillFiles,
-    // Agent prompt files (repo-authored, referenced via {file:} in manifest.json)
-    "prompts/code-reviewer.txt",
-    "prompts/devil-advocate.txt",
-    "prompts/docs-researcher.txt",
-    "prompts/graph-explorer.txt",
-    "prompts/oncall-ops.txt",
-    "prompts/software-engineer.txt",
-    "prompts/arcs-docs.txt",
-    "prompts/tech-architect.txt",
-    // Orchestrator prompt files generated from src/cli/arcs-orchestrate*.ts by
-    // build-opencode-bundle.mjs and committed to the repo bundle.
-    "prompts/arcs-orchestrate.txt",
-    "prompts/arcs-orchestrate-caveman.txt",
+    ...sourceManifest.agents.map((agent) => agent.source),
   ].sort((a, b) => a.localeCompare(b));
 }
 
@@ -103,6 +80,7 @@ function computeBundleHash(relativePaths: string[]): string {
 
 function expectRuntimePayloadInstalled(homeDir: string): void {
   const runtimeManifest = readRuntimeManifest();
+  const sourceManifest = readSourceManifest();
 
   for (const [skillName, files] of Object.entries(runtimeManifest.skills)) {
     for (const relativePath of files) {
@@ -120,10 +98,8 @@ function expectRuntimePayloadInstalled(homeDir: string): void {
     ).toBe(true);
   }
 
-  for (const agentPath of runtimeManifest.agents) {
-    expect(
-      existsSync(resolve(homeDir, ".config", "opencode", agentPath.replace(/^agents\//, "agent/"))),
-    ).toBe(true);
+  for (const agent of sourceManifest.agents) {
+    expect(existsSync(resolve(homeDir, ".config", "opencode", agent.destination))).toBe(true);
   }
 }
 
