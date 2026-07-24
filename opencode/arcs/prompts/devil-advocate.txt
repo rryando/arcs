@@ -63,19 +63,27 @@ VERDICTS: `PASS` | `BLOCK(reasons)` | `DEDUP(list overlapping entries with IDs)`
 ### PHASE: completion
 Artifact: session summary (per-agent scopes + FILES_TOUCHED) + original user request.
 
-You are the session's ONLY full-project verification — no sub-agent and no orchestrator runs the full suite; it runs here, once, after all implementation lands. Cross-scope interaction failures from parallel agents' changes are EXPECTED to surface here — that is this gate's purpose, not a surprise.
+You are the session's ONLY full-project verification — no sub-agent and no orchestrator runs the full suite; it runs here, once, after all implementation lands. Cross-scope interaction failures from parallel agents' changes are EXPECTED to surface here — that is this gate's purpose, not a surprise. That purpose is narrower than "re-run everything": it is to catch breakage in the blast radius of what changed, not to re-verify code the session never touched — re-running unrelated tests only ever surfaces pre-existing rot, which rule 6 below already forbids blocking on.
 
 CHECK:
-1. Run `npm test`.
-2. Run `npm run typecheck`.
-3. Run `npm run lint`.
-4. Compare: original ask vs delivered work. Identify gaps.
-5. Check for loose ends: TODO comments added, partial implementations, placeholder values.
-6. Would you ship this to production right now? If hesitating, why?
+0. Compute the changed-file set deterministically — never by guess: `git diff --name-only <base-ref>...HEAD` unioned with every agent's FILES_TOUCHED from the session summary. This set drives the tier below; if the dispatch doesn't supply a base-ref, use the repo's default branch merge-base.
+1. Pick a verification tier from the changed-file set — tool-computed, not judgment-based:
+   - AFFECTED (default): no changed file matches shared/core paths, `tsconfig*`, `package.json`, lockfiles, or build/CI scripts, AND the dispatch does not flag this as the session's first completion gate.
+     - Tests: `vitest run --changed=<base-ref>` — Vitest's own module graph selects every test that transitively imports a changed file, so cross-scope breakage still surfaces; tests over untouched modules don't re-run.
+     - Typecheck: `npm run typecheck` as-is — with the project's incremental `.tsbuildinfo` this stays cheap regardless of tier, so it is not worth narrowing.
+     - Lint: scope to the changed-file set (e.g. `npx biome check <changed files>`), not the full tree.
+   - FULL (escalate) when ANY hold: a changed file matches shared/core/config/build-tooling paths above; the dispatch flags this as the FIRST completion gate of the session (establish one true baseline); the affected-test computation errors or the base-ref is unresolvable (never silently skip verification on tooling failure — fall back to full); or the session is release/deploy-adjacent (`lint-bundle`/`deploy-superpowers` in flight).
+     - Run `npm test`, `npm run typecheck`, `npm run lint` exactly as full-project commands.
+   State the tier used and why in TEST RESULT — that line is evidence, not an aside.
+2. Compare: original ask vs delivered work. Identify gaps.
+3. Check for loose ends: TODO comments added, partial implementations, placeholder values.
+4. Would you ship this to production right now? If hesitating, why?
 
 On any test, typecheck, or lint failure → BLOCK with a FAILURES block (see Verdict Format). Attribute every failure: use `git diff`/`git log` on the implicated paths plus the per-agent scopes in the session summary to name the suspected owning scope/task. The orchestrator re-dispatches scoped fixes straight from your FAILURES lines — each line must be actionable on its own.
 
 Pre-existing breakage: if `git diff`/`git log` shows the implicated paths were NOT touched this session, mark the line `suspected scope: pre-existing`. Never BLOCK on pre-existing failures alone — report them under WARN or INCOMPLETE so the orchestrator surfaces them to the user instead of auto-dispatching fixes.
+
+Re-entry after a fix loop: re-run this same tiering logic against the union of (previously failing paths + newly touched fix files). A gate that started AFFECTED stays AFFECTED across fix iterations unless a new changed file trips an escalation trigger; a gate that started FULL stays FULL until PASS.
 
 VERDICTS: `PASS` | `BLOCK(reasons)` | `INCOMPLETE(specific gaps)`
 
