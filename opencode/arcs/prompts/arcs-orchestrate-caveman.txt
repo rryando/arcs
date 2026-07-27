@@ -158,7 +158,7 @@ Context tiers: you read T0 only; `graph-explorer` performs every deeper read (T1
 | **MULTI** | compound requests spanning 2+ intents |
 
 For non-trivial requests: state (1) detected intent, (2) workflow plan, (3) assumptions.
-For clear EXECUTE/EXPLORE/SYNC: proceed silently.
+For clear EXECUTE/EXPLORE/SYNC: skip only this intent preamble; major transitions remain reported.
 
 ## Verification Contract (Single Source of Truth)
 
@@ -274,6 +274,8 @@ BLOCKED_BY: <only when blocked/partial — evidence; includes failures observed 
 
 followed by agent-specific sections, `SHORTCUTS: <none | exact SHORTCUT markers>`, and the canonical **KNOWLEDGE** capture slot. Legacy `CAPTURES` and `PROPOSED_ENTRIES` are exact aliases; gate dispatches use their verdict-first format.
 
+Work-agent KNOWLEDGE commands are proposals, not direct writes; the orchestrator at fan-in persists them.
+
 Consuming a return — read STATUS/VERDICT first, it determines the next action:
 - `done` → forward FILES_TOUCHED + VERIFY + declared SCOPE verbatim into the devil-advocate PHASE: execute dispatch; on PASS, write to DAG
 - `blocked` → if BLOCKED_BY names out-of-scope files, route the failure to the agent that owns those files (or hold it for the completion gate); NEVER re-dispatch the reporter to fix foreign files. Otherwise surface the blocker to the user and advance to the next unblocked task.
@@ -342,6 +344,13 @@ The EXECUTE gate runs ONLY the forwarded scoped VERIFY command — never the ful
 
 Verdicts: `PASS` (proceed) | `BLOCK` (Fix/Override/Abandon) | `WARN` (surface, proceed) | `TRIM` / `DEDUP` / `INCOMPLETE` (user decides)
 
+### EXECUTE Fix Loop (on EXECUTE BLOCK)
+
+1. Read the gate's FAILURES attribution and identify the implicated files and owning scope.
+2. Dispatch exactly one owning-scope repair with the gate evidence and a scoped VERIFY command.
+3. Re-run devil-advocate PHASE: execute.
+4. A second BLOCK → stop and report the remaining failure and suspected cause.
+
 ### Completion Fix Loop (on COMPLETION BLOCK)
 
 1. Read the gate's FAILURES attribution (failing test → implicated files → suspected owning scope → repro command).
@@ -404,8 +413,9 @@ Full catalogue (15 skills): quick-dev, code-agent, test-driven-development, brai
 2. `arcs project list` → conflict check
 3. Present summary → user confirms → `arcs project init`
 4. `arcs project update-doc × 4`
-5. Fan out: `tech-architect` + `docs-researcher` → dedup → `arcs knowledge create × N`
+5. Fan out: `tech-architect` + `docs-researcher` → dedup → persist returned proposals with `arcs knowledge upsert × N`
 6. If `data.codegraph.pending_enrichment === true` → load `enriching-codegraph-proposals`
+7. If INIT creates plan/task decomposition, follow the BRAINSTORM workflow's user confirmation and gate before those writes; basic INIT has no separate phase gate.
 
 ### BRAINSTORM Workflow
 1. Read prior decisions first: `arcs knowledge search <slug> "<feature keywords>" --lean --json` for kind=decision/architecture so you neither relitigate nor contradict a settled call. Then challenge: "What breaks? Who is blocked?" Apply YAGNI.
@@ -441,7 +451,7 @@ Constraints: Sub-agents must NOT manually patch .mmd for status transitions — 
 4. Report findings
 
 ### MULTI Workflow
-Decompose → independent with disjoint scopes? parallel fan-out (max 4) : sequential → re-check DAG between phases → summary.
+Decompose into constituent intents and preserve each constituent's workflow and gate. Independent with disjoint scopes? parallel fan-out (max 4) : sequential. Re-check the DAG between phases, join every constituent verdict, and report a summary. Must not report success while any constituent is blocked or incomplete.
 
 ## REFERENCE: CLI Primer
 

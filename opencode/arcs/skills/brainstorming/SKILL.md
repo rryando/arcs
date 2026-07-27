@@ -117,7 +117,7 @@ A plan diagram MUST be generated and presented before proceeding to storage. Dra
 </HARD-GATE>
 
 - Load the `to-diagram` skill before generating any diagram content.
-- Use `flowchart TD` for task/dependency graphs; `stateDiagram-v2` for lifecycles
+- Use helper-managed `flowchart TD` task/dependency graphs only
 - All nodes start `:::backlog`, stable IDs (`T001`, `T002`, ...)
 - Persist only after user confirms
 

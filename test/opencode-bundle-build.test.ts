@@ -45,7 +45,7 @@ function runBundleBuild(env: NodeJS.ProcessEnv) {
 }
 
 describe("opencode bundle builder", () => {
-  it("validates declared runtime files in the output root and prunes undeclared content", () => {
+  it("validates declared runtime files and closes output after prompt generation", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "opencode-bundle-build-"));
     const outputRoot = resolve(tempRoot, "output");
     const runtimeManifestPath = resolve(tempRoot, "bundle-runtime.json");
@@ -90,6 +90,8 @@ describe("opencode bundle builder", () => {
       expect(existsSync(resolve(outputRoot, "skills/planner/ignored.md"))).toBe(false);
       expect(existsSync(resolve(outputRoot, "skills/planner/stale.md"))).toBe(false);
       expect(existsSync(resolve(outputRoot, "extra/nested.txt"))).toBe(false);
+      expect(existsSync(resolve(outputRoot, "prompts/arcs-orchestrate.txt"))).toBe(false);
+      expect(existsSync(resolve(outputRoot, "prompts/arcs-orchestrate-caveman.txt"))).toBe(false);
       expect(readFileSync(resolve(outputRoot, "manifest.json"), "utf-8")).toBe(
         JSON.stringify({ agents: [] }),
       );
@@ -356,7 +358,6 @@ describe("opencode bundle runtime manifest", () => {
       skills: {
         brainstorming: [
           "SKILL.md",
-          "spec-document-reviewer-prompt.md",
           "visual-companion.md",
           "scripts/frame-template.html",
           "scripts/helper.js",

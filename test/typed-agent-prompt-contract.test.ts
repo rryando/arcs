@@ -59,6 +59,37 @@ describe("typed-agent prompt contract", () => {
     }
   });
 
+  it.each([
+    "oncall-ops.txt",
+    "tech-architect.txt",
+  ] as const)("returns knowledge upserts for orchestrator persistence instead of executing them: %s", (name) => {
+    const prompt = prompts[name];
+
+    expect(prompt).toMatch(/do not execute `arcs knowledge upsert`/i);
+    expect(prompt).toMatch(/ready-to-run.*proposal/i);
+    expect(prompt).toMatch(/orchestrator.*persist.*fan-in/i);
+    expect(prompt).toMatch(
+      /KNOWLEDGE:[^\n]*arcs knowledge upsert <slug>[^\n]*--kind=.*--summary=.*--body=.*--keywords=.*--source-files=.*--json/i,
+    );
+  });
+
+  it("preserves oncall's diagnosis-first scoped repair authority", () => {
+    const prompt = prompts["oncall-ops.txt"];
+
+    expect(prompt).toMatch(/no fixes without root cause investigation first/i);
+    expect(prompt).toMatch(/prove fix works with evidence/i);
+    expect(prompt).toMatch(/scoped tests covering only the files you touched/i);
+    expect(prompt).toMatch(/never run `arcs task transition`/i);
+  });
+
+  it("preserves tech-architect's read-only design authority", () => {
+    const prompt = prompts["tech-architect.txt"];
+
+    expect(prompt).toMatch(/you read and reason; you never write implementation code/i);
+    expect(prompt).toMatch(/you still mutate nothing directly/i);
+    expect(prompt).toMatch(/you do not execute these mutations yourself/i);
+  });
+
   it("uses canonical full-project verification only at the completion gate", () => {
     const prompt = prompts["devil-advocate.txt"];
     const completion = prompt.slice(

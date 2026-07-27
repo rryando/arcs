@@ -1,7 +1,10 @@
-const crypto = require('crypto');
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ========== WebSocket Protocol (RFC 6455) ==========
 
@@ -78,6 +81,24 @@ const HOST = process.env.BRAINSTORM_HOST || '127.0.0.1';
 const URL_HOST = process.env.BRAINSTORM_URL_HOST || (HOST === '127.0.0.1' ? 'localhost' : HOST);
 const SCREEN_DIR = process.env.BRAINSTORM_DIR || '/tmp/brainstorm';
 const OWNER_PID = process.env.BRAINSTORM_OWNER_PID ? Number(process.env.BRAINSTORM_OWNER_PID) : null;
+
+function isLiteralBindLoopback(host) {
+  return host === '127.0.0.1';
+}
+
+function isLoopbackUrlHost(host) {
+  return host === '127.0.0.1' || host === 'localhost';
+}
+
+if (!isLiteralBindLoopback(HOST)) {
+  console.error('Brainstorm server bind host must be a literal loopback address.');
+  process.exit(1);
+}
+
+if (!isLoopbackUrlHost(URL_HOST)) {
+  console.error('Brainstorm server URL host must be loopback-only.');
+  process.exit(1);
+}
 
 const MIME_TYPES = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -295,7 +316,10 @@ function startServer() {
   });
   watcher.on('error', (err) => console.error('fs.watch error:', err.message));
 
+  let shuttingDown = false;
   function shutdown(reason) {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(JSON.stringify({ type: 'server-stopped', reason }));
     const infoFile = path.join(SCREEN_DIR, '.server-info');
     if (fs.existsSync(infoFile)) fs.unlinkSync(infoFile);
@@ -320,10 +344,15 @@ function startServer() {
   }, 60 * 1000);
   lifecycleCheck.unref();
 
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+
   server.listen(PORT, HOST, () => {
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : Number(PORT);
     const info = JSON.stringify({
-      type: 'server-started', port: Number(PORT), host: HOST,
-      url_host: URL_HOST, url: 'http://' + URL_HOST + ':' + PORT,
+      type: 'server-started', port, host: HOST,
+      url_host: URL_HOST, url: 'http://' + URL_HOST + ':' + port,
       screen_dir: SCREEN_DIR
     });
     console.log(info);
@@ -331,8 +360,6 @@ function startServer() {
   });
 }
 
-if (require.main === module) {
-  startServer();
-}
+startServer();
 
-module.exports = { computeAcceptKey, encodeFrame, decodeFrame, OPCODES };
+export { computeAcceptKey, decodeFrame, encodeFrame, OPCODES };

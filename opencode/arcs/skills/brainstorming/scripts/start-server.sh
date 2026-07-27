@@ -8,9 +8,8 @@
 # Options:
 #   --project-dir <path>  Store session files under <path>/.superpowers/brainstorm/
 #                         instead of /tmp. Files persist after server stops.
-#   --host <bind-host>    Host/interface to bind (default: 127.0.0.1).
-#                         Use 0.0.0.0 in remote/containerized environments.
-#   --url-host <host>     Hostname shown in returned URL JSON.
+#   --host <bind-host>    Loopback host/interface to bind (default: 127.0.0.1).
+#   --url-host <host>     Loopback hostname shown in returned URL JSON.
 #   --foreground          Run server in the current terminal (no backgrounding).
 #   --background          Force background mode (overrides Codex auto-foreground).
 
@@ -51,12 +50,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+is_literal_bind_loopback() {
+  [[ "$1" == "127.0.0.1" ]]
+}
+
+is_loopback_url_host() {
+  [[ "$1" == "127.0.0.1" || "$1" == "localhost" ]]
+}
+
+if ! is_literal_bind_loopback "$BIND_HOST"; then
+  echo "{\"error\": \"Brainstorm server bind host must be a literal loopback address: $BIND_HOST\"}"
+  exit 1
+fi
+
 if [[ -z "$URL_HOST" ]]; then
   if [[ "$BIND_HOST" == "127.0.0.1" || "$BIND_HOST" == "localhost" ]]; then
     URL_HOST="localhost"
   else
     URL_HOST="$BIND_HOST"
   fi
+fi
+
+if ! is_loopback_url_host "$URL_HOST"; then
+  echo "{\"error\": \"Brainstorm server URL host must be loopback-only: $URL_HOST\"}"
+  exit 1
 fi
 
 # Some environments reap detached/background processes. Auto-foreground when detected.

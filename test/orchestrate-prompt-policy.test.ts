@@ -256,3 +256,60 @@ describe("orchestrate prompt policy — control-plane remediation", () => {
     expect(propagationSection).not.toContain("Level: full.");
   });
 });
+
+describe("orchestrate prompt policy — canonical lifecycle contracts", () => {
+  it("skips only the intent preamble for clear execution-style intents", () => {
+    const intentSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Intent Classification"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Verification Contract"),
+    );
+    expect(intentSection).toMatch(
+      /clear EXECUTE\/EXPLORE\/SYNC[\s\S]*skip only[\s\S]*intent preamble/i,
+    );
+    expect(intentSection).toMatch(/major transitions[\s\S]*report/i);
+  });
+
+  it("keeps basic INIT confirmed and idempotent, with decomposition using the brainstorm gate", () => {
+    const initSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("### INIT Workflow"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("### BRAINSTORM Workflow"),
+    );
+    expect(initSection).toMatch(/user confirms[\s\S]*arcs project init/i);
+    expect(initSection).toContain("arcs knowledge upsert");
+    expect(initSection).not.toContain("arcs knowledge create");
+    expect(initSection).toMatch(
+      /plan\/task decomposition[\s\S]*BRAINSTORM[\s\S]*user confirm[\s\S]*gate/i,
+    );
+  });
+
+  it("bounds EXECUTE BLOCK recovery to one attributed owning-scope repair", () => {
+    const gateSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Devil's Advocate Gate"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## Error Recovery"),
+    );
+    expect(gateSection).toMatch(/EXECUTE (?:Fix Loop|BLOCK)[\s\S]*FAILURES attribution/i);
+    expect(gateSection).toMatch(
+      /owning scope[\s\S]*one[\s\S]*repair|one[\s\S]*owning-scope repair/i,
+    );
+    expect(gateSection).toMatch(/re-run[\s\S]*PHASE: execute/i);
+    expect(gateSection).toMatch(/second BLOCK[\s\S]*stop[\s\S]*report/i);
+  });
+
+  it("joins MULTI constituent workflows and cannot hide blocked or incomplete work", () => {
+    const multiSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("### MULTI Workflow"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("## REFERENCE: CLI Primer"),
+    );
+    expect(multiSection).toMatch(/each constituent[\s\S]*workflow[\s\S]*gate/i);
+    expect(multiSection).toMatch(/must not report success[\s\S]*blocked or incomplete/i);
+  });
+
+  it("treats work-agent knowledge commands as fan-in proposals", () => {
+    const returnSection = ORCHESTRATE_PROMPT_TEXT.slice(
+      ORCHESTRATE_PROMPT_TEXT.indexOf("### Standard Return Envelope"),
+      ORCHESTRATE_PROMPT_TEXT.indexOf("### Context Hygiene"),
+    );
+    expect(returnSection).toMatch(/work-agent[\s\S]*knowledge commands[\s\S]*proposals/i);
+    expect(returnSection).toMatch(/orchestrator[\s\S]*fan-in[\s\S]*persist/i);
+  });
+});

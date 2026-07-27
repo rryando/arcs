@@ -21,6 +21,13 @@ type DeployResult = {
   rtkWired: boolean;
 };
 
+type DeployManifest = {
+  skills: { source: string; destination: string };
+  agents: Array<{ source: string; destination: string }>;
+  ownedPaths: string[];
+  plugin: { source: string; destination: string };
+};
+
 function writeFile(rootPath: string, relativePath: string, content: string) {
   const outputPath = resolve(rootPath, relativePath);
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -60,7 +67,61 @@ function setupBundleRoot(tempRoot: string) {
   return bundleRoot;
 }
 
+function updateManifest(bundleRoot: string, mutate: (manifest: DeployManifest) => void) {
+  const manifestPath = resolve(bundleRoot, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as DeployManifest;
+  mutate(manifest);
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
 describe("deploy-opencode-bundle", () => {
+  it.each([
+    ["skills source", (manifest: DeployManifest) => (manifest.skills.source = "../outside-skills")],
+    [
+      "skills destination",
+      (manifest: DeployManifest) => (manifest.skills.destination = "../outside-skills"),
+    ],
+    ["owned path", (manifest: DeployManifest) => (manifest.ownedPaths = ["../foreign"])],
+    [
+      "agent source",
+      (manifest: DeployManifest) =>
+        (manifest.agents = [{ source: "skills/agent.txt", destination: "prompts/agent.txt" }]),
+    ],
+    [
+      "agent destination",
+      (manifest: DeployManifest) =>
+        (manifest.agents = [{ source: "prompts/agent.txt", destination: "/tmp/agent.txt" }]),
+    ],
+    ["plugin source", (manifest: DeployManifest) => (manifest.plugin.source = "../arcs.js")],
+    [
+      "plugin destination",
+      (manifest: DeployManifest) => (manifest.plugin.destination = "prompts/arcs.js"),
+    ],
+  ])("rejects an escaping %s path before filesystem operations", (_name, mutate) => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "deploy-escape-"));
+    const configRoot = resolve(tempRoot, "config");
+    const foreignPath = resolve(tempRoot, "foreign", "keep.txt");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      writeFile(tempRoot, "foreign/keep.txt", "keep");
+      updateManifest(bundleRoot, mutate);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toMatch(/invalid declared runtime path/i);
+      expect(readFileSync(foreignPath, "utf-8")).toBe("keep");
+      expect(existsSync(configRoot)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("defaults to dry-run and reports files to add", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "deploy-dry-"));
     const configRoot = resolve(tempRoot, "config");
@@ -161,6 +222,33 @@ describe("deploy-opencode-bundle", () => {
       expect(proc.status).toBe(0);
       const result = JSON.parse(proc.stdout) as DeployResult;
       expect(result.filesRemoved).toContain("skills/arcs/obsolete/SKILL.md");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves removed agent destinations and foreign files outside owned paths", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "deploy-preserve-"));
+    const configRoot = resolve(tempRoot, "config");
+    const removedPrompt = resolve(configRoot, "prompts/removed-agent.txt");
+    const foreignFile = resolve(configRoot, "foreign/custom.txt");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      writeFile(configRoot, "prompts/removed-agent.txt", "user prompt");
+      writeFile(configRoot, "foreign/custom.txt", "foreign");
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(0);
+      const result = JSON.parse(proc.stdout) as DeployResult;
+      expect(result.filesRemoved).not.toContain("prompts/removed-agent.txt");
+      expect(readFileSync(removedPrompt, "utf-8")).toBe("user prompt");
+      expect(readFileSync(foreignFile, "utf-8")).toBe("foreign");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

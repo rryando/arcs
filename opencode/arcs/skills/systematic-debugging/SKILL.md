@@ -23,7 +23,7 @@ flowchart TD
     Found -->|Yes| Verify[Verify it applies]
     Found -->|No| Observe
 
-    Verify -->|Applies| Fix
+    Verify -->|Applies| Isolate
     Verify -->|Doesn't apply| Observe
 
     Observe[Phase 1: Observe] --> Repro{Reproducible?}
@@ -35,16 +35,15 @@ flowchart TD
     Compare --> Theory[Form single specific hypothesis]
 
     Theory --> Isolate[Phase 3: Isolate]
-    Isolate --> Test{Smallest change confirms?}
-    Test -->|Yes| Fix[Phase 4: Fix]
+    Isolate --> Test{Root cause isolated?}
+    Test -->|Yes| WriteFail[Write failing regression test]
     Test -->|No| FailCount{3+ failures?}
     FailCount -->|No| Theory
     FailCount -->|Yes| Arch[Question architecture]
 
-    Fix --> WriteFail[Write failing test]
     WriteFail --> Implement[Single targeted fix]
-    Implement --> Green{Scoped tests pass?}
-    Green -->|Yes| Capture[Capture as ARCS knowledge]
+    Implement --> Green{Scoped verification passes?}
+    Green -->|Yes| Capture[Capture resolution as ARCS knowledge]
     Green -->|No| FailCount
 
     class Found,Repro,Test,FailCount,Green decision
@@ -67,18 +66,20 @@ flowchart TD
 - Understand the dependency chain
 - Form ONE specific hypothesis (not multiple)
 
-## Phase 3: Isolate
+## Phase 3: Root Cause Isolation
 
-- Test with the smallest possible change
+- Test the hypothesis with the smallest possible diagnostic change
 - One variable at a time — never stack fixes
 - If hypothesis fails, form a new one from evidence
+- Do not proceed until the evidence isolates the root cause
 - **Escalation:** 3+ failed fixes → question the architecture, not the symptom
 
 ## Phase 4: Fix
 
-- Write a failing test FIRST (proves the bug exists)
+- Write a failing regression test FIRST (proves the bug exists and prevents a fix-before-test path)
 - Implement a single targeted fix
-- Verify the scoped tests for the files you changed pass (your dispatch VERIFY command — never the full suite; the devil-advocate completion gate owns that)
+- Run scoped verification for the files you changed (your dispatch VERIFY command — never the full suite; the devil-advocate completion gate owns that)
+- Capture the resolution as ARCS knowledge after verification passes
 - If your fix introduces new failures in YOUR scoped tests, revert and return to Phase 2. Failures in files outside your scope are report-only (BLOCKED_BY) — likely a sibling agent's in-flight work; never fix or revert it
 
 ## Log Triage Protocol

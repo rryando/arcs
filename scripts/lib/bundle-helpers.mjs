@@ -44,7 +44,7 @@ export function assertSafeOutputPath(candidatePath, reportedPath = candidatePath
 }
 
 export function assertPathWithinCategoryRoot(candidatePath, categoryRoot, reportedPath = candidatePath) {
-  const normalizedPath = assertSafeOutputPath(candidatePath, reportedPath);
+  const normalizedPath = assertNoReservedPathSegments(candidatePath, reportedPath);
   const normalizedCategoryRoot = assertNoReservedPathSegments(categoryRoot, reportedPath);
   const categoryRelativePath = normalizeRelativePath(
     relative(normalizedCategoryRoot, normalizedPath),
@@ -151,8 +151,8 @@ export function assertSourceParity(runtimeManifest, sourceRoot, arcsNativeSkillN
 }
 
 export function validateDeclaredPath(relativePath, outputRoot, validationRoot) {
-  const normalizedPath = assertSafeOutputPath(relativePath);
-  const normalizedValidationRoot = assertSafeOutputPath(validationRoot, relativePath);
+  const normalizedPath = assertNoReservedPathSegments(relativePath);
+  const normalizedValidationRoot = assertNoReservedPathSegments(validationRoot, relativePath);
 
   const outputPath = resolve(outputRoot, normalizedPath);
   const outputRelativePath = normalizeRelativePath(relative(outputRoot, outputPath));

@@ -138,6 +138,45 @@ const ownedManifest = {
 };
 
 describe("opencode ARCS bundle install detection", () => {
+  it.each([
+    [
+      "skills source",
+      (manifest: SourceArcsBundleManifest) => (manifest.skills.source = "../skills"),
+    ],
+    [
+      "skills destination",
+      (manifest: SourceArcsBundleManifest) => (manifest.skills.destination = "/tmp/arcs-skills"),
+    ],
+    ["owned path", (manifest: SourceArcsBundleManifest) => (manifest.ownedPaths = ["../owned"])],
+    [
+      "agent source",
+      (manifest: SourceArcsBundleManifest) => {
+        manifest.agents = [{ source: "skills/agent.txt", destination: "prompts/agent.txt" }];
+      },
+    ],
+    [
+      "agent destination",
+      (manifest: SourceArcsBundleManifest) => {
+        manifest.agents = [{ source: "prompts/agent.txt", destination: "../agent.txt" }];
+      },
+    ],
+    [
+      "plugin source",
+      (manifest: SourceArcsBundleManifest) => (manifest.plugin.source = "/tmp/arcs.js"),
+    ],
+    [
+      "plugin destination",
+      (manifest: SourceArcsBundleManifest) => (manifest.plugin.destination = "prompts/arcs.js"),
+    ],
+  ])("rejects an escaping %s manifest path before install detection", async (_name, mutate) => {
+    await withTempHomeDir(async () => {
+      const manifest = structuredClone(sourceManifestWithConfigOnly);
+      mutate(manifest);
+
+      expect(() => detectArcsBundleInstall(manifest)).toThrow(/invalid bundle manifest path/i);
+    });
+  });
+
   it("returns absent when nothing is installed", async () => {
     await withTempHomeDir(async () => {
       expect(detectArcsBundleInstall().state).toBe("absent");
@@ -234,6 +273,25 @@ describe("opencode ARCS bundle bundle identity", () => {
 });
 
 describe("opencode ARCS bundle installer", () => {
+  it("rejects an escaping installed owned path before delete, backup, or restore", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      const foreignPath = resolve(homeDir, "foreign.txt");
+      writeFileSync(foreignPath, "foreign", "utf-8");
+      const installedManifestPath = resolve(homeDir, ".config", "opencode", ".arcs-bundle.json");
+      mkdirSync(resolve(homeDir, ".config", "opencode"), { recursive: true });
+      writeFileSync(
+        installedManifestPath,
+        JSON.stringify({ ...ownedManifest, ownedPaths: ["../../../foreign.txt"] }),
+        "utf-8",
+      );
+
+      expect(() => installArcsBundle({ autoConfirmReplacement: true })).toThrow(
+        /invalid bundle manifest path/i,
+      );
+      expect(readFileSync(foreignPath, "utf-8")).toBe("foreign");
+    });
+  });
+
   it("refuses to replace a foreign install without auto-confirm", async () => {
     await withTempHomeDir(async (homeDir) => {
       mkdirSync(resolve(homeDir, ".config", "opencode", "plugins"), { recursive: true });

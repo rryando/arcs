@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { readJsonSafeSync, stripJsonComments, validateJson } from "../utils/json.js";
 import {
   opencodeInstalledManifestSchema,
@@ -174,12 +174,71 @@ function sourceBundleRootDir(): string {
   return resolve(PACKAGE_ROOT, "opencode", "arcs");
 }
 
+function assertManifestPath(relativePath: string, categoryRoot?: string): string {
+  const normalizedPath = relativePath.replace(/\\/g, "/");
+  if (
+    !normalizedPath ||
+    normalizedPath === "." ||
+    isAbsolute(normalizedPath) ||
+    /^[A-Za-z]:\//.test(normalizedPath) ||
+    normalizedPath.startsWith("//") ||
+    normalizedPath.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new Error(`Invalid bundle manifest path: ${relativePath}`);
+  }
+
+  if (categoryRoot) {
+    const categoryRelative = relative(categoryRoot, normalizedPath).replace(/\\/g, "/");
+    if (
+      normalizedPath !== categoryRoot &&
+      (categoryRelative === ".." || categoryRelative.startsWith("../"))
+    ) {
+      throw new Error(`Invalid bundle manifest path: ${relativePath}`);
+    }
+  }
+
+  return normalizedPath;
+}
+
+function validateSourceManifestPaths(manifest: SourceArcsBundleManifest): void {
+  assertManifestPath(manifest.skills.source, "skills");
+  assertManifestPath(manifest.skills.destination, "skills");
+
+  for (const ownedPath of manifest.ownedPaths) {
+    assertManifestPath(ownedPath);
+  }
+
+  assertManifestPath(manifest.plugin.source, ".opencode/plugins");
+  assertManifestPath(manifest.plugin.destination, "plugins");
+
+  for (const agent of manifest.agents) {
+    assertManifestPath(agent.source, "prompts");
+    assertManifestPath(agent.destination, "prompts");
+  }
+}
+
+function validateInstalledManifestPaths(manifest: InstalledArcsBundleManifest): void {
+  for (const ownedPath of manifest.ownedPaths) {
+    assertManifestPath(ownedPath);
+  }
+}
+
+function resolvePathWithin(root: string, relativePath: string): string {
+  const normalizedPath = assertManifestPath(relativePath);
+  const path = resolve(root, normalizedPath);
+  const pathRelative = relative(root, path).replace(/\\/g, "/");
+  if (pathRelative === ".." || pathRelative.startsWith("../") || isAbsolute(pathRelative)) {
+    throw new Error(`Invalid bundle manifest path: ${relativePath}`);
+  }
+  return path;
+}
+
 function sourceBundlePath(relativePath: string): string {
-  return resolve(sourceBundleRootDir(), relativePath);
+  return resolvePathWithin(sourceBundleRootDir(), relativePath);
 }
 
 function opencodePath(relativePath: string): string {
-  return resolve(opencodeRootDir(), relativePath);
+  return resolvePathWithin(opencodeRootDir(), relativePath);
 }
 
 export function arcsInstalledManifestPath(): string {
@@ -196,7 +255,13 @@ export function readSourceArcsBundleManifest(): SourceArcsBundleManifest {
   if (raw === undefined) {
     throw new Error(`Failed to read source manifest at ${manifestPath}`);
   }
-  return validateJson(raw, opencodeSourceManifestSchema, manifestPath) as SourceArcsBundleManifest;
+  const manifest = validateJson(
+    raw,
+    opencodeSourceManifestSchema,
+    manifestPath,
+  ) as SourceArcsBundleManifest;
+  validateSourceManifestPaths(manifest);
+  return manifest;
 }
 
 export function readInstalledArcsBundleManifest(): InstalledArcsBundleManifest | null {
@@ -207,10 +272,13 @@ export function readInstalledArcsBundleManifest(): InstalledArcsBundleManifest |
 
   const raw = readJsonSafeSync<unknown>(manifestPath);
   if (raw === undefined) return null;
-  return validateJson(raw, opencodeInstalledManifestSchema, manifestPath);
+  const manifest = validateJson(raw, opencodeInstalledManifestSchema, manifestPath);
+  validateInstalledManifestPaths(manifest);
+  return manifest;
 }
 
 export function writeInstalledArcsBundleManifest(manifest: InstalledArcsBundleManifest): void {
+  validateInstalledManifestPaths(manifest);
   writeJsonFile(arcsInstalledManifestPath(), manifest);
 }
 
@@ -267,6 +335,7 @@ function allOwnedPathsExist(manifest: InstalledArcsBundleManifest): boolean {
 export function detectArcsBundleInstall(
   sourceManifest: SourceArcsBundleManifest = readSourceArcsBundleManifest(),
 ): InstallDetectionResult {
+  validateSourceManifestPaths(sourceManifest);
   const installedManifest = readInstalledArcsBundleManifest();
 
   if (installedManifest) {
@@ -360,6 +429,10 @@ function ensureParent(path: string): void {
 }
 
 function removePathIfExists(path: string): void {
+  const rootRelative = relative(opencodeRootDir(), path).replace(/\\/g, "/");
+  if (rootRelative === ".." || rootRelative.startsWith("../") || isAbsolute(rootRelative)) {
+    throw new Error(`Refusing to remove path outside OpenCode root: ${path}`);
+  }
   if (existsSync(path)) {
     rmSync(path, { recursive: true, force: true });
   }
@@ -388,7 +461,7 @@ function createTempDir(prefix: string): string {
 
 function stageSourcePath(sourceRelative: string, stagingDir: string): string {
   const source = sourceBundlePath(sourceRelative);
-  const stagedPath = resolve(stagingDir, sourceRelative);
+  const stagedPath = resolvePathWithin(stagingDir, sourceRelative);
 
   ensureParent(stagedPath);
 
@@ -407,14 +480,18 @@ function backupExistingPath(pathRelative: string, backupDir: string): string | n
     return null;
   }
 
-  const backupPath = resolve(backupDir, pathRelative);
+  const backupPath = resolvePathWithin(backupDir, pathRelative);
   ensureParent(backupPath);
   cpSync(targetPath, backupPath, { recursive: true });
   removePathIfExists(targetPath);
   return backupPath;
 }
 
-function restoreBackup(backupPath: string, destinationRelative: string): void {
+function restoreBackup(backupPath: string, destinationRelative: string, backupDir: string): void {
+  const backupRelative = relative(backupDir, backupPath).replace(/\\/g, "/");
+  if (backupRelative === ".." || backupRelative.startsWith("../") || isAbsolute(backupRelative)) {
+    throw new Error(`Refusing to restore backup outside backup root: ${backupPath}`);
+  }
   const destination = opencodePath(destinationRelative);
   ensureParent(destination);
   cpSync(backupPath, destination, { recursive: true });
@@ -598,7 +675,7 @@ function installInternal(options: InstallOptions = {}, hooks: InstallHooks = {})
   } catch (error) {
     for (const [destinationRelative, backupPath] of backupMap.entries()) {
       removePathIfExists(opencodePath(destinationRelative));
-      restoreBackup(backupPath, destinationRelative);
+      restoreBackup(backupPath, destinationRelative, backupDir);
     }
 
     if (previousConfig === null) {

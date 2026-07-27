@@ -24,7 +24,12 @@ import {
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { wireCodegraphMcp, wireRtk } from "./lib/bundle-helpers.mjs";
+import {
+  assertNoReservedPathSegments,
+  assertPathWithinCategoryRoot,
+  wireCodegraphMcp,
+  wireRtk,
+} from "./lib/bundle-helpers.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -54,6 +59,25 @@ function ensureParentDir(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
 }
 
+function validateManifestPaths(manifest) {
+  assertPathWithinCategoryRoot(manifest.skills.source, "skills");
+  assertPathWithinCategoryRoot(manifest.skills.destination, "skills");
+
+  for (const ownedPath of manifest.ownedPaths ?? []) {
+    assertNoReservedPathSegments(ownedPath);
+  }
+
+  if (manifest.plugin?.source) {
+    assertPathWithinCategoryRoot(manifest.plugin.source, ".opencode/plugins");
+    assertPathWithinCategoryRoot(manifest.plugin.destination, "plugins");
+  }
+
+  for (const agent of manifest.agents ?? []) {
+    assertPathWithinCategoryRoot(agent.source, "prompts");
+    assertPathWithinCategoryRoot(agent.destination, "prompts");
+  }
+}
+
 async function main() {
   const manifestPath = resolve(bundleRoot, "manifest.json");
   if (!existsSync(manifestPath)) {
@@ -61,6 +85,7 @@ async function main() {
   }
 
   const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  validateManifestPaths(manifest);
 
   // Build mapping: config-relative path → bundle-absolute path
   const deployMap = new Map();

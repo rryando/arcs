@@ -2,7 +2,6 @@
   "skills": {
     "brainstorming": [
       "SKILL.md",
-      "spec-document-reviewer-prompt.md",
       "visual-companion.md",
       "scripts/frame-template.html",
       "scripts/helper.js",

@@ -140,11 +140,8 @@ async function main() {
   ]);
 
   mkdirSync(outputRoot, { recursive: true });
-  pruneUndeclaredFiles(outputRoot, allowedOutputFiles);
-
-  // Generate orchestrator prompt mirrors after prune so they always end up
-  // on disk fresh from the canonical TS sources.
   await generateOrchestratorPrompts(outputRoot);
+  pruneUndeclaredFiles(outputRoot, allowedOutputFiles);
 }
 
 try {

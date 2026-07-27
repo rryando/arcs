@@ -8,6 +8,7 @@ const scriptPath = resolve(
   import.meta.dirname,
   "../opencode/arcs/skills/to-diagram/scripts/manage-diagram.mjs",
 );
+const skillPath = resolve(import.meta.dirname, "../opencode/arcs/skills/to-diagram/SKILL.md");
 
 function run(command: string, filePath: string, ...args: string[]) {
   const result = spawnSync("node", [scriptPath, command, filePath, ...args], {
@@ -123,6 +124,13 @@ describe("manage-diagram.mjs", () => {
   });
 
   describe("validate", () => {
+    it("keeps helper-managed skill guidance on the supported flowchart dialect", () => {
+      const guidance = readFileSync(skillPath, "utf-8");
+
+      expect(guidance).toContain("flowchart TD");
+      expect(guidance).not.toContain("stateDiagram-v2");
+    });
+
     it("passes a valid diagram", () => {
       const result = run("validate", diagramPath);
       expect(result.status).toBe(0);

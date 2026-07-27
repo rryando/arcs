@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -9,7 +9,6 @@ function skill(path: string): string {
 }
 
 const untrustedArtifactPrompts = [
-  "opencode/arcs/skills/brainstorming/spec-document-reviewer-prompt.md",
   "opencode/arcs/skills/writing-plans/plan-document-reviewer-prompt.md",
   "opencode/arcs/skills/executing-plans/implementer-prompt.md",
   "opencode/arcs/skills/executing-plans/spec-reviewer-prompt.md",
@@ -59,5 +58,41 @@ describe("skill prompt contracts", () => {
     expect(enrichment).toMatch(/devil-advocate|evidence threshold/i);
     expect(debugging).toContain("arcs knowledge template");
     expect(debugging).not.toMatch(/--body="(?:Root cause|Attach listeners|Applies to)/);
+  });
+
+  it("requires root-cause isolation and a failing regression test before a targeted fix", () => {
+    const debugging = skill("opencode/arcs/skills/systematic-debugging/SKILL.md");
+
+    expect(debugging).toMatch(
+      /root cause isolat(?:e|ed|ion)[\s\S]*failing (?:regression )?test[\s\S]*targeted fix[\s\S]*scoped (?:tests|verification)[\s\S]*capture/i,
+    );
+    expect(debugging).not.toMatch(/Applies\|\s*Fix/);
+  });
+
+  it("advertises only helper-managed flowchart execution diagrams", () => {
+    const diagram = skill("opencode/arcs/skills/to-diagram/SKILL.md");
+    const brainstorming = skill("opencode/arcs/skills/brainstorming/SKILL.md");
+
+    expect(diagram).toMatch(/manage-diagram\.mjs[\s\S]*flowchart TD/i);
+    expect(diagram).not.toContain("stateDiagram-v2");
+    expect(brainstorming).not.toContain("stateDiagram-v2");
+  });
+
+  it("removes the uncalled brainstorming reviewer from disk and runtime inventory", () => {
+    const reviewer = resolve(
+      root,
+      "opencode/arcs/skills/brainstorming/spec-document-reviewer-prompt.md",
+    );
+    const runtime = JSON.parse(skill("opencode/arcs/bundle-runtime.json"));
+
+    expect(existsSync(reviewer)).toBe(false);
+    expect(runtime.skills.brainstorming).not.toContain("spec-document-reviewer-prompt.md");
+  });
+
+  it("documents a loopback-only visual companion without a remote binding recipe", () => {
+    const companion = skill("opencode/arcs/skills/brainstorming/visual-companion.md");
+
+    expect(companion).toMatch(/loopback-only/i);
+    expect(companion).not.toMatch(/--host\s+0\.0\.0\.0/);
   });
 });

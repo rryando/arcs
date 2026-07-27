@@ -2,6 +2,8 @@
 
 Browser-based visual brainstorming companion for showing mockups, diagrams, and options.
 
+The companion is loopback-only: it serves the local browser on the same machine and rejects non-loopback host configuration.
+
 ## When to Use
 
 Decide per-question, not per-session. The test: **would the user understand this better by seeing it than reading it?**
@@ -70,16 +72,7 @@ scripts/start-server.sh --project-dir /path/to/project --foreground
 
 **Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.
 
-If the URL is unreachable from your browser (common in remote/containerized setups), bind a non-loopback host:
-
-```bash
-scripts/start-server.sh \
-  --project-dir /path/to/project \
-  --host 0.0.0.0 \
-  --url-host localhost
-```
-
-Use `--url-host` to control what hostname is printed in the returned URL JSON.
+`--host` and `--url-host` accept loopback names and addresses only. Remote/container port exposure is intentionally unsupported.
 
 ## The Loop
 

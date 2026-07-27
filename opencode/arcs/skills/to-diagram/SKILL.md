@@ -34,22 +34,9 @@ flowchart TD
     class HasDiagram,DriftType decision
 ```
 
-## Dialect Selection
+## Supported Dialect
 
-```mermaid
-flowchart TD
-    classDef decision fill:#f59e0b,color:#fff
-
-    Q[What does the plan describe?] --> TaskDeps{Tasks + dependencies?}
-    TaskDeps -->|Yes| Flow[flowchart TD + classDef]
-    TaskDeps -->|No| States{States + transitions?}
-    States -->|Yes| State[stateDiagram-v2]
-    States -->|Both| Tiebreak{Implementation plan?}
-    Tiebreak -->|Yes| Flow
-    Tiebreak -->|No| State
-
-    class TaskDeps,States,Tiebreak decision
-```
+ARCS helper-managed execution diagrams use `flowchart TD` with `classDef` status styling. `manage-diagram.mjs` is the executable authority for this format; other Mermaid dialects are unmanaged and must not be passed to the helper.
 
 ## Status-Only Update
 
@@ -225,15 +212,4 @@ flowchart TD
     T002 --> T004[Build order UI]:::backlog
     T003 --> T005[Deploy to staging]:::blocked
     T004 --> T005
-```
-
-```
-%% plan: feature-lifecycle
-stateDiagram-v2
-    [*] --> Draft
-    Draft --> Spec
-    Spec --> Build
-    Build --> Review
-    Review --> Shipped
-    Review --> Build : revisions
 ```
