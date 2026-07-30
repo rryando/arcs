@@ -7,309 +7,189 @@ import {
   ORCHESTRATE_CAVEMAN_PROMPT_TEXT,
 } from "../src/cli/arcs-orchestrate-caveman.js";
 
-describe("orchestrate prompt policy — lifecycle commands", () => {
-  const LIFECYCLE_COMMANDS = [
-    "arcs validate",
-    "arcs task transition",
-    "arcs lint-bundle",
-    "arcs deploy-superpowers",
-  ];
+function section(start: string, end: string): string {
+  return ORCHESTRATE_PROMPT_TEXT.slice(
+    ORCHESTRATE_PROMPT_TEXT.indexOf(start),
+    ORCHESTRATE_PROMPT_TEXT.indexOf(end),
+  );
+}
 
-  for (const cmd of LIFECYCLE_COMMANDS) {
-    it(`references ${cmd}`, () => {
-      expect(ORCHESTRATE_PROMPT_TEXT).toContain(cmd);
-    });
-  }
-
-  it("SYNC workflow starts with arcs validate before explore sub-agent", () => {
-    const syncSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### SYNC Workflow"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### EXPLORE Workflow"),
-    );
-    // arcs validate must appear before the arcs-docs sub-agent delegation
-    const validateIdx = syncSection.indexOf("arcs validate");
-    const delegateIdx = syncSection.indexOf("Delegate to arcs-docs");
-    expect(validateIdx).toBeGreaterThan(-1);
-    expect(delegateIdx).toBeGreaterThan(-1);
-    expect(validateIdx).toBeLessThan(delegateIdx);
-  });
-
-  it("EXECUTE workflow uses arcs task transition for status changes", () => {
-    const executeSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### EXECUTE Workflow"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### SYNC Workflow"),
-    );
-    expect(executeSection).toContain("arcs task transition");
-    // Should mention atomic transition
-    expect(executeSection).toMatch(/atomically/i);
-  });
-
-  it("BRAINSTORM mentions to-diagram skill load", () => {
-    const start = ORCHESTRATE_PROMPT_TEXT.indexOf("### BRAINSTORM Workflow");
-    const end = ORCHESTRATE_PROMPT_TEXT.indexOf("### ", start + 1);
-    const section = ORCHESTRATE_PROMPT_TEXT.slice(start, end > start ? end : undefined);
-    const diagramIdx = section.indexOf("to-diagram");
-    expect(diagramIdx).toBeGreaterThan(-1);
-    // Should mention silent loading
-    expect(section).toMatch(/[Ss]ilently.*load.*to-diagram/);
-  });
-
-  it("EXECUTE arcs task transition coordinates diagram updates for plan-id/diagram-node-id", () => {
-    const start = ORCHESTRATE_PROMPT_TEXT.indexOf("### EXECUTE Workflow");
-    const end = ORCHESTRATE_PROMPT_TEXT.indexOf("### SYNC Workflow");
-    const section = ORCHESTRATE_PROMPT_TEXT.slice(start, end > start ? end : undefined);
-    expect(section).toContain("arcs task transition");
-    // Must clarify agents should not manually patch diagrams for status transitions
-    expect(section).toMatch(/must NOT manually patch.*diagram|agents must NOT.*patch.*\.mmd/i);
-  });
-
-  it("bundle release requires lint-bundle before deploy-superpowers", () => {
-    const bundleSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### Bundle and Release"),
-    );
-    const lintIdx = bundleSection.indexOf("arcs lint-bundle");
-    const deployIdx = bundleSection.indexOf("arcs deploy-superpowers");
-    expect(lintIdx).toBeGreaterThan(-1);
-    expect(deployIdx).toBeGreaterThan(-1);
-    expect(lintIdx).toBeLessThan(deployIdx);
-  });
-});
-
-describe("orchestrate prompt policy — caveman sub-agent propagation", () => {
-  it("caveman preamble contains Sub-Agent Propagation section", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("## Sub-Agent Propagation");
-  });
-
-  it("propagation block contains exact inheritance header for task tool prompts", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("# Caveman Mode (INHERITED from ARCS Caveman orchestrator)");
-  });
-
-  it("propagation section references the host task tool", () => {
-    expect(CAVEMAN_PREAMBLE).toMatch(/`task`\s*tool/);
-  });
-
-  it("caveman carve-outs preserve DAG content as full prose", () => {
-    expect(CAVEMAN_PREAMBLE).toMatch(/plans.*knowledge.*overviews.*tasks|ARCS DAG.*full prose/i);
-  });
-
-  it("caveman carve-outs preserve .mmd diagram files", () => {
-    expect(CAVEMAN_PREAMBLE).toContain(".mmd");
-  });
-
-  it("combined caveman prompt includes full orchestrate prompt after preamble", () => {
-    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toContain(ORCHESTRATE_PROMPT_TEXT);
-    // Preamble comes first
-    const preambleIdx = ORCHESTRATE_CAVEMAN_PROMPT_TEXT.indexOf("# Caveman Mode");
-    const orchestrateIdx = ORCHESTRATE_CAVEMAN_PROMPT_TEXT.indexOf(
-      "You are a delegation-first orchestrator",
-    );
-    expect(preambleIdx).toBeLessThan(orchestrateIdx);
-  });
-});
-
-describe("orchestrate prompt policy — diagram drift types enumeration", () => {
-  it("SYNC workflow lists diagram drift audit in surfaces", () => {
-    const syncStart = ORCHESTRATE_PROMPT_TEXT.indexOf("### SYNC Workflow");
-    const syncEnd = ORCHESTRATE_PROMPT_TEXT.indexOf("### ", syncStart + 1);
-    const syncSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      syncStart,
-      syncEnd > syncStart ? syncEnd : undefined,
-    );
-
-    // SYNC delegates to arcs-docs but still lists audit surfaces including diagrams
-    expect(syncSection.toLowerCase()).toContain("diagram");
-    expect(syncSection.toLowerCase()).toContain("drift");
-    expect(syncSection.toLowerCase()).toContain("arcs-docs");
-  });
-
-  it("EXECUTE diagram section references arcs diagram for regeneration", () => {
-    const execStart = ORCHESTRATE_PROMPT_TEXT.indexOf("### EXECUTE Workflow");
-    const execEnd = ORCHESTRATE_PROMPT_TEXT.indexOf("### SYNC Workflow");
-    const execSection = ORCHESTRATE_PROMPT_TEXT.slice(execStart, execEnd);
-    expect(execSection).toContain("arcs diagram");
-  });
-
-  it("EXECUTE references arcs diagram ready for task selection", () => {
-    const execStart = ORCHESTRATE_PROMPT_TEXT.indexOf("### EXECUTE Workflow");
-    const execEnd = ORCHESTRATE_PROMPT_TEXT.indexOf("### SYNC Workflow");
-    const execSection = ORCHESTRATE_PROMPT_TEXT.slice(execStart, execEnd);
-    expect(execSection).toContain("arcs diagram ready");
-  });
-});
-
-describe("orchestrate prompt policy — skill routing coverage", () => {
-  const root = resolve(import.meta.dirname, "..");
-  const skillsDir = resolve(root, "opencode/arcs/skills");
-  const allSkills = readdirSync(skillsDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name)
-    .sort();
-
-  // Skills that are work-mode or support skills routed in the orchestrator
-  const ROUTED_SKILLS = [
-    "quick-dev",
-    "code-agent",
-    "test-driven-development",
-    "brainstorming",
-    "systematic-debugging",
-    "requesting-code-review",
-    "writing-plans",
-    "writing-knowledge",
-    "to-diagram",
-    "init-project",
-    "enriching-codegraph-proposals",
-  ];
-
-  // Skills that are host-specific, formatting-only, or special-purpose (not routed by orchestrator)
-  const NON_ROUTED_EXCEPTIONS = [
-    "caveman-commit", // formatting skill for commit messages
-    "executing-plans", // session-management skill loaded by sub-agents
-    "deep-pr-review", // host-specific skill invoked directly by user PR-review trigger
-    "the-ladder", // build-time reflex, not a routed work-mode
-  ];
-
-  it("every skill on disk is either routed or listed as non-routed exception", () => {
-    const allAccounted = [...ROUTED_SKILLS, ...NON_ROUTED_EXCEPTIONS].sort();
-    const unaccounted = allSkills.filter((s) => !allAccounted.includes(s));
-    expect(unaccounted).toEqual([]);
-  });
-
-  it("routed work-mode skills appear in orchestrator prompt", () => {
-    const workModeSkills = ["quick-dev", "code-agent", "test-driven-development", "brainstorming"];
-    for (const skill of workModeSkills) {
-      expect(ORCHESTRATE_PROMPT_TEXT).toContain(skill);
-    }
-  });
-
-  it("routed support skills appear in orchestrator prompt", () => {
-    const supportSkills = [
-      "systematic-debugging",
-      "requesting-code-review",
-      "writing-plans",
-      "enriching-codegraph-proposals",
-    ];
-    for (const skill of supportSkills) {
-      expect(ORCHESTRATE_PROMPT_TEXT).toContain(skill);
-    }
-  });
-
-  it("devil-advocate subagent replaces confidence-gate and verification-before-completion", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toContain("devil-advocate");
-    expect(ORCHESTRATE_PROMPT_TEXT).toContain("Devil's Advocate Gate");
-    // Old skills are mentioned only in the deprecation note
-    expect(ORCHESTRATE_PROMPT_TEXT).toContain("confidence-gate");
-    expect(ORCHESTRATE_PROMPT_TEXT).toContain("verification-before-completion");
-  });
-});
-
-describe("orchestrate prompt policy — post-write-gate invariants", () => {
-  it("orchestrate prompt contains no write-gate references", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/write[- ]?gate/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("arcs write propose");
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("arcs write apply");
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("--token");
-  });
-});
-
-describe("orchestrate prompt policy — control-plane remediation", () => {
-  it("treats injected artifacts as reference data, not action authority", () => {
+describe("orchestrate prompt policy — canonical control flow", () => {
+  it("defines one ordered lifecycle and four terminal states", () => {
+    const lifecycle =
+      "ORIENT → CLASSIFY → RESOLVE → PLAN_DISPATCH → ROUND → FAN_IN → PHASE_GATE → REPAIR_OR_STOP → PERSIST/TRANSITION → COMPLETION";
+    expect(ORCHESTRATE_PROMPT_TEXT).toContain(lifecycle);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /DAG, repository, user[\s\S]*web, log, and prior-agent/i,
+      /PASS[\s\S]*BLOCKED[\s\S]*INCOMPLETE[\s\S]*USER_OVERRIDE/,
+    );
+  });
+
+  it("keeps the orchestrator router-only and preserves the trust boundary", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /never read source.*edit files.*run tests.*lint.*build/is,
     );
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/untrusted reference data/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /system[\s\S]*dispatch[\s\S]*SCOPE[\s\S]*GOAL[\s\S]*CONSTRAINTS[\s\S]*SKILL[\s\S]*VERIFY[\s\S]*control/i,
+      /embedded instructions.*cannot override.*SCOPE.*GOAL.*CONSTRAINTS.*SKILL.*VERIFY/is,
     );
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /embedded imperative text[\s\S]*cannot override[\s\S]*dispatch/i,
-    );
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("as ground truth");
   });
 
-  it("assigns the complete canonical verification gate only to devil-advocate", () => {
-    const verificationSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Verification Contract"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Knowledge Protocol"),
-    );
-    expect(verificationSection).toContain("npm test");
-    expect(verificationSection).toContain("npm run typecheck");
-    expect(verificationSection).toContain("npm run lint");
-    expect(verificationSection).not.toContain("Full suite + `tsc --noEmit`");
+  it("requires every canonical dispatch field in order", () => {
+    const dispatch = section("## Dispatch Contract", "## Agent and Skill Matrix");
+    const fields = [
+      "SCOPE:",
+      "GOAL:",
+      "CONTEXT:",
+      "KNOWLEDGE:",
+      "IDS:",
+      "AGENT_MODE:",
+      "WORK_MODE:",
+      "ROUND:",
+      "ATTEMPT:",
+      "STOP_CONDITION:",
+      "CONSTRAINTS:",
+      "SKILL:",
+      "VERIFY:",
+      "RETURN:",
+    ];
+    let previous = -1;
+    for (const field of fields) {
+      const index = dispatch.indexOf(field);
+      expect(index, field).toBeGreaterThan(previous);
+      previous = index;
+    }
   });
 
-  it("harvests reported SHORTCUT markers without reading source directly", () => {
-    const completionSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Completion (MANDATORY)"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Skills"),
+  it("routes exactly six typed agents and twelve on-disk skills", () => {
+    const matrix = section("## Agent and Skill Matrix", "## Lifecycle");
+    const agents = [
+      "software-engineer",
+      "tech-architect",
+      "graph-explorer",
+      "code-reviewer",
+      "devil-advocate",
+      "arcs-docs",
+    ];
+    for (const agent of agents) expect(matrix).toContain(`\`${agent}\``);
+    expect(matrix).toMatch(/software-engineer.*default.*incident/is);
+    expect(matrix).toMatch(/tech-architect.*architecture.*research/is);
+    expect(matrix).toMatch(/code-reviewer.*review.*audit/is);
+    expect(matrix).toMatch(/implementation.*bounded.*inspect/is);
+    expect(matrix).toMatch(/incident.*systematic-debugging/is);
+
+    const skillsDir = resolve(import.meta.dirname, "../opencode/arcs/skills");
+    const skills = readdirSync(skillsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    expect(skills).toHaveLength(12);
+    for (const skill of skills) expect(matrix, skill).toContain(`\`${skill}\``);
+    expect(matrix).not.toMatch(
+      /`(?:oncall-ops|docs-researcher|quick-dev|code-agent|requesting-code-review|the-ladder)`/,
     );
-    expect(ORCHESTRATE_PROMPT_TEXT).toContain("SHORTCUTS: <none | exact SHORTCUT markers>");
-    expect(completionSection).toMatch(/report.*SHORTCUT markers/i);
-    expect(completionSection).not.toMatch(/grep|touched files for deferral markers/i);
   });
 
-  it("propagates the active Caveman level instead of hardcoding full", () => {
-    const propagationSection = CAVEMAN_PREAMBLE.slice(
-      CAVEMAN_PREAMBLE.indexOf("## Sub-Agent Propagation"),
-      CAVEMAN_PREAMBLE.indexOf("## Skill References"),
-    );
-    expect(propagationSection).toMatch(/Level:.*active parent level/i);
-    expect(propagationSection).not.toContain("Level: full.");
+  it("keeps test-first and plan execution as distinct disciplines", () => {
+    const matrix = section("## Agent and Skill Matrix", "## Lifecycle");
+    expect(matrix).toMatch(/test-driven-development.*new behavior.*bug fix/is);
+    expect(matrix).toMatch(/executing-plans.*approved plan node/is);
   });
 });
 
-describe("orchestrate prompt policy — canonical lifecycle contracts", () => {
-  it("skips only the intent preamble for clear execution-style intents", () => {
-    const intentSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Intent Classification"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Verification Contract"),
+describe("orchestrate prompt policy — lifecycle invariants", () => {
+  it("uses a finite approval pipeline before exact artifact persistence", () => {
+    const lifecycle = section("## Lifecycle", "## Rounds, Fan-In, and Gates");
+    expect(lifecycle).toMatch(
+      /approv(?:es?|ed) (?:the )?design.*exact artifact.*devil-advocate.*PASS.*current-turn.*authorization.*persist/is,
     );
-    expect(intentSection).toMatch(
-      /clear EXECUTE\/EXPLORE\/SYNC[\s\S]*skip only[\s\S]*intent preamble/i,
-    );
-    expect(intentSection).toMatch(/major transitions[\s\S]*report/i);
+    expect(lifecycle).toMatch(/material change.*invalidates.*authorization/is);
+    expect(lifecycle).toMatch(/no durable write.*authorization.*gate/is);
   });
 
-  it("keeps basic INIT confirmed and idempotent, with decomposition using the brainstorm gate", () => {
-    const initSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### INIT Workflow"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### BRAINSTORM Workflow"),
+  it("caps every round including INIT at four disjoint agents", () => {
+    const rounds = section("## Rounds, Fan-In, and Gates", "## Retry Budget");
+    expect(rounds).toMatch(/maximum 4.*disjoint.*including INIT/is);
+    expect(rounds).toMatch(/overlap.*serialize/is);
+  });
+
+  it("persists worker knowledge only after the owning phase passes", () => {
+    const rounds = section("## Rounds, Fan-In, and Gates", "## Retry Budget");
+    expect(rounds).toMatch(/knowledge.*proposal.*owning phase.*PASS.*persist/is);
+    expect(rounds).not.toMatch(/fan-in[^.]*arcs knowledge upsert/i);
+  });
+
+  it("defines bounded changed-evidence, phase repair, and completion repair retries", () => {
+    const retries = section("## Retry Budget", "## Workflow Rules");
+    expect(retries).toMatch(/one retry.*changed evidence/is);
+    expect(retries).toMatch(/phase gate.*one.*repair.*rerun/is);
+    expect(retries).toMatch(/completion.*one.*repair/is);
+  });
+
+  it("runs SYNC audit, gate, apply, and validate in that order", () => {
+    const sync = section("### SYNC", "### MULTI").toLowerCase();
+    const terms = [
+      "agent_mode: audit",
+      "phase: sync",
+      "pass",
+      "agent_mode: apply",
+      "arcs validate",
+    ];
+    let previous = -1;
+    for (const term of terms) {
+      const index = sync.indexOf(term, previous + 1);
+      expect(index, term).toBeGreaterThan(previous);
+      previous = index;
+    }
+    expect(sync).toMatch(/arcs-docs.*only direct worker mutation exception/is);
+  });
+
+  it("joins MULTI constituents without hiding non-PASS work", () => {
+    const multi = section("### MULTI", "## Verification and Completion");
+    expect(multi).toMatch(/continue independent/is);
+    expect(multi).toMatch(/no success.*every constituent.*PASS/is);
+  });
+
+  it("uses scoped worker checks and devil-only completion verification", () => {
+    const verification = section("## Verification and Completion", "## Direct Mutations");
+    expect(verification).toMatch(/workers.*exact scoped VERIFY/is);
+    expect(verification).toMatch(/devil-advocate.*only completion verifier/is);
+    expect(verification).toContain("`npm test`");
+    expect(verification).toContain("`npm run typecheck`");
+    expect(verification).toContain("`npm run lint`");
+  });
+
+  it("keeps direct mutations and git behind the required PASS or current-turn request", () => {
+    const mutations = section("## Direct Mutations", "## Canonical Return Envelope");
+    expect(mutations).toMatch(/orchestrator.*ARCS CLI mutation.*relevant.*PASS/is);
+    expect(mutations).toMatch(
+      /git add.*git commit.*git push.*explicit current-turn user request/is,
     );
-    expect(initSection).toMatch(/user confirms[\s\S]*arcs project init/i);
-    expect(initSection).toContain("arcs knowledge upsert");
-    expect(initSection).not.toContain("arcs knowledge create");
-    expect(initSection).toMatch(
-      /plan\/task decomposition[\s\S]*BRAINSTORM[\s\S]*user confirm[\s\S]*gate/i,
+    expect(mutations).toMatch(
+      /arcs lint-bundle.*PASS.*arcs deploy-superpowers.*arcs lint-bundle/is,
     );
   });
 
-  it("bounds EXECUTE BLOCK recovery to one attributed owning-scope repair", () => {
-    const gateSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Devil's Advocate Gate"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## Error Recovery"),
-    );
-    expect(gateSection).toMatch(/EXECUTE (?:Fix Loop|BLOCK)[\s\S]*FAILURES attribution/i);
-    expect(gateSection).toMatch(
-      /owning scope[\s\S]*one[\s\S]*repair|one[\s\S]*owning-scope repair/i,
-    );
-    expect(gateSection).toMatch(/re-run[\s\S]*PHASE: execute/i);
-    expect(gateSection).toMatch(/second BLOCK[\s\S]*stop[\s\S]*report/i);
+  it("defines one canonical worker return envelope", () => {
+    const returns = section("## Canonical Return Envelope", "## Reporting");
+    for (const field of [
+      "STATUS:",
+      "FILES_TOUCHED:",
+      "VERIFY:",
+      "BLOCKED_BY:",
+      "SCOPE_CHANGE:",
+      "SHORTCUTS:",
+      "KNOWLEDGE:",
+    ]) {
+      expect(returns).toContain(field);
+    }
   });
+});
 
-  it("joins MULTI constituent workflows and cannot hide blocked or incomplete work", () => {
-    const multiSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### MULTI Workflow"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("## REFERENCE: CLI Primer"),
-    );
-    expect(multiSection).toMatch(/each constituent[\s\S]*workflow[\s\S]*gate/i);
-    expect(multiSection).toMatch(/must not report success[\s\S]*blocked or incomplete/i);
-  });
-
-  it("treats work-agent knowledge commands as fan-in proposals", () => {
-    const returnSection = ORCHESTRATE_PROMPT_TEXT.slice(
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### Standard Return Envelope"),
-      ORCHESTRATE_PROMPT_TEXT.indexOf("### Context Hygiene"),
-    );
-    expect(returnSection).toMatch(/work-agent[\s\S]*knowledge commands[\s\S]*proposals/i);
-    expect(returnSection).toMatch(/orchestrator[\s\S]*fan-in[\s\S]*persist/i);
+describe("orchestrate prompt policy — caveman parity", () => {
+  it("is a narration-only overlay with no independent authority", () => {
+    expect(CAVEMAN_PREAMBLE).toMatch(/narration-only/i);
+    expect(CAVEMAN_PREAMBLE).toMatch(/adds no.*authority/i);
+    expect(CAVEMAN_PREAMBLE).toMatch(/dispatch fields.*return envelope.*unchanged/is);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toBe(CAVEMAN_PREAMBLE + ORCHESTRATE_PROMPT_TEXT);
   });
 });

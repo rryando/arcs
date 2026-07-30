@@ -8,21 +8,180 @@
     "destination": "skills/arcs"
   },
   "agents": [
-    { "source": "prompts/software-engineer.txt", "destination": "prompts/software-engineer.txt" },
-    { "source": "prompts/tech-architect.txt", "destination": "prompts/tech-architect.txt" },
-    { "source": "prompts/oncall-ops.txt", "destination": "prompts/oncall-ops.txt" },
-    { "source": "prompts/arcs-docs.txt", "destination": "prompts/arcs-docs.txt" },
-    { "source": "prompts/code-reviewer.txt", "destination": "prompts/code-reviewer.txt" },
-    { "source": "prompts/docs-researcher.txt", "destination": "prompts/docs-researcher.txt" },
-    { "source": "prompts/devil-advocate.txt", "destination": "prompts/devil-advocate.txt" },
-    { "source": "prompts/graph-explorer.txt", "destination": "prompts/graph-explorer.txt" },
-    { "source": "prompts/arcs-orchestrate.txt", "destination": "prompts/arcs-orchestrate.txt" },
-    { "source": "prompts/arcs-orchestrate-caveman.txt", "destination": "prompts/arcs-orchestrate-caveman.txt" }
+    {
+      "id": "software-engineer",
+      "status": "active",
+      "kind": "subagent",
+      "tier": "heavy",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/software-engineer.txt",
+      "destination": "prompts/software-engineer.txt",
+      "description": "Implementation specialist. Writes code, runs tests, and ships verified work using orchestrator-selected implementation bounded or inspect mode.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "tech-architect",
+      "status": "active",
+      "kind": "subagent",
+      "tier": "standard",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/tech-architect.txt",
+      "destination": "prompts/tech-architect.txt",
+      "description": "Architecture, analysis, and cited research specialist. Produces read-only structural guidance, trade-off evaluation, and DAG-first research synthesis.",
+      "permissions": {
+        "edit": "deny",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "oncall-ops",
+      "status": "retired",
+      "replacementId": "software-engineer",
+      "kind": "subagent",
+      "tier": "heavy",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/oncall-ops.txt",
+      "destination": "prompts/oncall-ops.txt",
+      "description": "Debugging and diagnosis specialist. Finds root causes through systematic investigation, log triage, bisect, and performance profiling.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "arcs-docs",
+      "status": "active",
+      "kind": "subagent",
+      "tier": "heavy",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/arcs-docs.txt",
+      "destination": "prompts/arcs-docs.txt",
+      "description": "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "code-reviewer",
+      "status": "active",
+      "kind": "subagent",
+      "tier": "light",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/code-reviewer.txt",
+      "destination": "prompts/code-reviewer.txt",
+      "description": "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
+      "permissions": {
+        "edit": "deny",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "docs-researcher",
+      "status": "retired",
+      "replacementId": "tech-architect",
+      "kind": "subagent",
+      "tier": "heavy",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/docs-researcher.txt",
+      "destination": "prompts/docs-researcher.txt",
+      "description": "Handles documentation writing, research synthesis, OCR-adjacent extraction, and document-heavy analysis tasks.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "devil-advocate",
+      "status": "active",
+      "kind": "subagent",
+      "tier": "standard",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/devil-advocate.txt",
+      "destination": "prompts/devil-advocate.txt",
+      "description": "Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
+      "permissions": {
+        "edit": "deny",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "graph-explorer",
+      "status": "active",
+      "kind": "subagent",
+      "tier": "light",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/graph-explorer.txt",
+      "destination": "prompts/graph-explorer.txt",
+      "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
+      "permissions": {
+        "edit": "deny",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "deny"
+      }
+    },
+    {
+      "id": "arcs-orchestrate",
+      "status": "active",
+      "kind": "primary",
+      "tier": "standard",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/arcs-orchestrate.txt",
+      "destination": "prompts/arcs-orchestrate.txt",
+      "description": "The central coordinator for executing plans, managing agent dispatch, and handling DAG workflows.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "allow"
+      }
+    },
+    {
+      "id": "arcs-orchestrate-caveman",
+      "status": "active",
+      "kind": "primary",
+      "tier": "standard",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/arcs-orchestrate-caveman.txt",
+      "destination": "prompts/arcs-orchestrate-caveman.txt",
+      "description": "A terse, high-efficiency orchestrator that drives tasks without extra commentary.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "allow"
+      }
+    }
   ],
-  "ownedPaths": [
-    "skills/arcs",
-    "plugins/arcs.js"
-  ],
+  "ownedPaths": ["skills/arcs", "plugins/arcs.js"],
   "plugin": {
     "required": true,
     "source": ".opencode/plugins/arcs.js",
@@ -31,9 +190,7 @@
   "config": {
     "requiredMerges": [
       {
-        "path": [
-          "permission"
-        ],
+        "path": ["permission"],
         "value": {
           "external_directory": {
             "/tmp": "allow",
@@ -47,78 +204,47 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "lsp"
-        ],
+        "path": ["lsp"],
         "value": true,
         "mode": "if-absent"
       },
       {
-        "path": [
-          "model"
-        ],
+        "path": ["model"],
         "value": "github-copilot/claude-sonnet-4.6",
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "build",
-          "model"
-        ],
+        "path": ["agent", "build", "model"],
         "value": "github-copilot/claude-sonnet-4.6",
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "build",
-          "temperature"
-        ],
+        "path": ["agent", "build", "temperature"],
         "value": 0,
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "plan",
-          "model"
-        ],
+        "path": ["agent", "plan", "model"],
         "value": "github-copilot/claude-opus-4.6",
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "plan",
-          "temperature"
-        ],
+        "path": ["agent", "plan", "temperature"],
         "value": 0.5,
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "general",
-          "model"
-        ],
+        "path": ["agent", "general", "model"],
         "value": "github-copilot/claude-opus-4.6",
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "general",
-          "temperature"
-        ],
+        "path": ["agent", "general", "temperature"],
         "value": 0.3,
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "graph-explorer"
-        ],
+        "path": ["agent", "graph-explorer"],
         "value": {
           "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
           "mode": "subagent",
@@ -136,10 +262,7 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "agent",
-          "code-reviewer"
-        ],
+        "path": ["agent", "code-reviewer"],
         "value": {
           "description": "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
           "mode": "subagent",
@@ -157,35 +280,11 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "agent",
-          "docs-researcher"
-        ],
+        "path": ["agent", "tech-architect"],
         "value": {
-          "description": "Handles documentation writing, research synthesis, OCR-adjacent extraction, and document-heavy analysis tasks.",
+          "description": "Architecture, analysis, and cited research specialist. Produces read-only structural guidance, trade-off evaluation, and DAG-first research synthesis.",
           "mode": "subagent",
-          "model": "github-copilot/claude-opus-4.6",
-          "temperature": 0.4,
-          "permission": {
-            "edit": "allow",
-            "bash": "allow",
-            "webfetch": "allow",
-            "mcp": "allow",
-            "external_directory": { "*": "allow" }
-          },
-          "prompt": "{file:./prompts/docs-researcher.txt}"
-        },
-        "mode": "merge"
-      },
-      {
-        "path": [
-          "agent",
-          "tech-architect"
-        ],
-        "value": {
-          "description": "Architecture and analysis specialist. Deep structural reasoning, refactor guidance, trade-off evaluation, and root cause analysis without making hasty edits.",
-          "mode": "subagent",
-          "model": "github-copilot/claude-haiku-4.5",
+          "model": "github-copilot/claude-sonnet-4.6",
           "temperature": 0.4,
           "permission": {
             "edit": "deny",
@@ -199,12 +298,9 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "agent",
-          "software-engineer"
-        ],
+        "path": ["agent", "software-engineer"],
         "value": {
-          "description": "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
+          "description": "Implementation specialist. Writes code, runs tests, and ships verified work using orchestrator-selected implementation bounded or inspect mode.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "temperature": 0,
@@ -220,10 +316,7 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "agent",
-          "arcs-docs"
-        ],
+        "path": ["agent", "arcs-docs"],
         "value": {
           "description": "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
           "mode": "subagent",
@@ -241,10 +334,7 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "agent",
-          "devil-advocate"
-        ],
+        "path": ["agent", "devil-advocate"],
         "value": {
           "description": "Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
           "mode": "subagent",
@@ -262,70 +352,27 @@
         "mode": "merge"
       },
       {
-        "path": [
-          "agent",
-          "devil-advocate",
-          "permission",
-          "edit"
-        ],
+        "path": ["agent", "devil-advocate", "permission", "edit"],
         "value": "deny",
         "mode": "overwrite"
       },
       {
-        "path": [
-          "agent",
-          "oncall-ops"
-        ],
-        "value": {
-          "description": "Debugging and diagnosis specialist. Finds root causes through systematic investigation, log triage, bisect, and performance profiling.",
-          "mode": "subagent",
-          "model": "github-copilot/claude-opus-4.6",
-          "temperature": 0.1,
-          "permission": {
-            "edit": "allow",
-            "bash": "allow",
-            "webfetch": "allow",
-            "mcp": "allow",
-            "external_directory": { "*": "allow" }
-          },
-          "prompt": "{file:./prompts/oncall-ops.txt}"
-        },
-        "mode": "merge"
-      },
-      {
-        "path": [
-          "small_model"
-        ],
+        "path": ["small_model"],
         "value": "github-copilot/claude-haiku-4.5",
         "mode": "if-absent"
       },
       {
-        "path": [
-          "agent",
-          "graph-explorer",
-          "permission",
-          "edit"
-        ],
+        "path": ["agent", "graph-explorer", "permission", "edit"],
         "value": "deny",
         "mode": "overwrite"
       },
       {
-        "path": [
-          "agent",
-          "code-reviewer",
-          "permission",
-          "edit"
-        ],
+        "path": ["agent", "code-reviewer", "permission", "edit"],
         "value": "deny",
         "mode": "overwrite"
       },
       {
-        "path": [
-          "agent",
-          "tech-architect",
-          "permission",
-          "edit"
-        ],
+        "path": ["agent", "tech-architect", "permission", "edit"],
         "value": "deny",
         "mode": "overwrite"
       }

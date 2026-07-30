@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Deploy claudecode ARCS bundle from repo to Claude Code config.
 //
 // Direction: repo → config ONLY. Never writes config → repo.
@@ -20,6 +21,7 @@
 // Outputs JSON to stdout: DeployResult
 // Exit code: 0 on success, 1 on error.
 
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -32,7 +34,13 @@ import {
 import { homedir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { wireCodegraphMcp, wireRtk } from "./lib/bundle-helpers.mjs";
+import {
+  isActiveAgentForMode,
+  isRetiredAgentForMode,
+  validateRetirementReplacements,
+  wireCodegraphMcp,
+  wireRtk,
+} from "./lib/bundle-helpers.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -67,8 +75,29 @@ const dryRun = process.env.DEPLOY_DRY_RUN !== "false";
 
 const destination = scope === "project" ? projectRoot : configRoot;
 
-const DEFAULT_AGENT = "arcs-orchestrate";
 const SKILL_PREFIX = "arcs-";
+
+function isPromptPath(value) {
+  if (typeof value !== "string" || value.includes("\\")) return false;
+  const segments = value.split("/");
+  return (
+    segments.length >= 2 &&
+    segments[0] === "prompts" &&
+    segments.slice(1).every((segment) => segment !== "" && segment !== "." && segment !== "..") &&
+    segments.at(-1).endsWith(".txt")
+  );
+}
+
+function resolveBundlePromptPath(value) {
+  if (!isPromptPath(value)) throw new Error(`Invalid bundle prompt path: ${value}`);
+  const promptsRoot = resolve(bundleRoot, "prompts");
+  const resolvedPath = resolve(promptsRoot, ...value.split("/").slice(1));
+  const relativePath = relative(promptsRoot, resolvedPath);
+  if (relativePath.split(/[\\/]/).includes("..")) {
+    throw new Error(`Bundle prompt path escapes prompts/: ${value}`);
+  }
+  return resolvedPath;
+}
 
 // ---------------------------------------------------------------------------
 // Model tier configuration
@@ -81,100 +110,78 @@ const tierModels = {
   light: process.env.DEPLOY_MODEL_LIGHT || "inherit",
 };
 
-/** Maps each agent stem to a tier. Falls back to "standard". */
-const agentTierMap = {
-  "software-engineer": "heavy",
-  "docs-researcher": "heavy",
-  "arcs-docs": "heavy",
-  "oncall-ops": "heavy",
-  "arcs-orchestrate": "standard",
-  "arcs-orchestrate-caveman": "standard",
-  "devil-advocate": "standard",
-  "graph-explorer": "light",
-  "code-reviewer": "light",
-  "tech-architect": "light",
-};
+function readAgentRegistry() {
+  const manifestPath = resolve(bundleRoot, "manifest.json");
+  if (!existsSync(manifestPath)) throw new Error(`Agent registry not found at ${manifestPath}`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  if (!Array.isArray(manifest.agents))
+    throw new Error("Invalid agent registry: agents must be an array");
 
-// Agent descriptions mirror opencode/arcs/manifest.json (canonical) — keep in sync.
-const agentMetadata = {
-  "software-engineer": {
-    name: "Software Engineer",
-    description:
-      "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
-    tools: "Read, Write, Edit, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "devil-advocate": {
-    name: "Devil's Advocate",
-    description:
-      "Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
-    tools: "Read, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "graph-explorer": {
-    name: "Graph Explorer",
-    description:
-      "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
-    tools: "Read, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "tech-architect": {
-    name: "Technical Architect",
-    description:
-      "Architecture and analysis specialist. Deep structural reasoning, refactor guidance, trade-off evaluation, and root cause analysis without making hasty edits.",
-    tools: "Read, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "code-reviewer": {
-    name: "Code Reviewer",
-    description:
-      "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
-    tools: "Read, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "arcs-docs": {
-    name: "ARCS Docs Specialist",
-    description:
-      "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
-    tools: "Read, Write, Edit, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "docs-researcher": {
-    name: "Docs Researcher",
-    description:
-      "Handles documentation writing, research synthesis, OCR-adjacent extraction, and document-heavy analysis tasks.",
-    tools: "Read, Write, Edit, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "oncall-ops": {
-    name: "On-Call Ops",
-    description:
-      "Debugging and diagnosis specialist. Finds root causes through systematic investigation, log triage, bisect, and performance profiling.",
-    tools: "Read, Write, Edit, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "arcs-orchestrate": {
-    name: "ARCS Orchestrator",
-    description:
-      "The central coordinator for executing plans, managing agent dispatch, and handling DAG workflows.",
-    // Task is required: orchestrators dispatch sub-agents. Omitting it leaves
-    // the delegator with no way to delegate.
-    tools: "Task, Read, Write, Edit, Glob, Grep, Bash",
-    model: "inherit",
-  },
-  "arcs-orchestrate-caveman": {
-    name: "ARCS Orchestrator (Caveman)",
-    description:
-      "A terse, high-efficiency orchestrator that drives tasks without extra commentary.",
-    // Task is required: orchestrators dispatch sub-agents. Omitting it leaves
-    // the delegator with no way to delegate.
-    tools: "Task, Read, Write, Edit, Glob, Grep, Bash",
-    model: "inherit",
-  },
-};
+  const ids = new Set();
+  const sources = new Set();
+  const destinations = new Set();
+  for (const agent of manifest.agents) {
+    const valid =
+      agent &&
+      typeof agent.id === "string" &&
+      /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent.id) &&
+      ["active", "retired"].includes(agent.status) &&
+      ["primary", "subagent"].includes(agent.kind) &&
+      ["heavy", "standard", "light"].includes(agent.tier) &&
+      Array.isArray(agent.modes) &&
+      agent.modes.length > 0 &&
+      agent.modes.every((mode) => ["opencode", "claudecode"].includes(mode)) &&
+      isPromptPath(agent.source) &&
+      isPromptPath(agent.destination) &&
+      typeof agent.description === "string" &&
+      agent.description.length > 0 &&
+      agent.permissions &&
+      ["allow", "deny"].includes(agent.permissions.edit) &&
+      ["allow", "deny"].includes(agent.permissions.bash) &&
+      ["allow", "deny"].includes(agent.permissions.webfetch) &&
+      ["allow", "deny"].includes(agent.permissions.mcp) &&
+      ["allow", "deny"].includes(agent.permissions.task);
+    if (!valid) throw new Error(`Invalid agent registry record: ${JSON.stringify(agent)}`);
+    if (ids.has(agent.id)) throw new Error(`Duplicate agent registry id: ${agent.id}`);
+    if (sources.has(agent.source))
+      throw new Error(`Duplicate agent registry source: ${agent.source}`);
+    if (destinations.has(agent.destination))
+      throw new Error(`Duplicate agent registry destination: ${agent.destination}`);
+    ids.add(agent.id);
+    sources.add(agent.source);
+    destinations.add(agent.destination);
+  }
+  validateRetirementReplacements(manifest.agents);
+  return manifest.agents;
+}
+
+function claudeTools(agent) {
+  const tools = [];
+  if (agent.permissions.task === "allow") tools.push("Task");
+  tools.push("Read");
+  if (agent.permissions.edit === "allow") tools.push("Write", "Edit");
+  tools.push("Glob", "Grep");
+  if (agent.permissions.bash === "allow") tools.push("Bash");
+  return tools.join(", ");
+}
 
 function ensureParentDir(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
+}
+
+function sha256(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function readInstalledManifest() {
+  const manifestPath = resolve(destination, configRelativePath(".arcs-bundle.json"));
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const value = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    return value?.bundleId === "arcs-claudecode-bundle" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function configRelativePath(suffix) {
@@ -204,26 +211,23 @@ function buildAgentSources() {
     throw new Error(`Prompts directory not found at ${promptsDir}`);
   }
 
-  const promptFiles = readdirSync(promptsDir).filter((f) => f.endsWith(".txt"));
+  const registry = readAgentRegistry();
+  const registeredSources = new Set(registry.map((agent) => agent.source));
+  const promptFiles = readdirSync(promptsDir).filter((file) => file.endsWith(".txt"));
+  for (const file of promptFiles) {
+    const source = `prompts/${file}`;
+    if (!registeredSources.has(source)) throw new Error(`Unregistered prompt file: ${source}`);
+  }
+
   const sources = [];
 
-  for (const file of promptFiles) {
-    const stem = file.slice(0, -4);
-    const sourcePath = resolve(promptsDir, file);
+  for (const agent of registry.filter((record) => isActiveAgentForMode(record, "claudecode"))) {
+    const stem = agent.id;
+    const sourcePath = resolveBundlePromptPath(agent.source);
+    if (!existsSync(sourcePath))
+      throw new Error(`Registered agent prompt not found: ${agent.source}`);
     const promptContent = readFileSync(sourcePath, "utf-8");
-
-    const meta = agentMetadata[stem] || {
-      name: stem
-        .split("-")
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" "),
-      description: `ARCS ${stem} agent.`,
-      tools: "Read, Write, Edit, Glob, Grep, Bash",
-      model: "inherit",
-    };
-
-    const tier = agentTierMap[stem] || "standard";
-    const model = tierModels[tier];
+    const model = tierModels[agent.tier];
 
     // Claude Code requires `name` to be a kebab-case identifier (lowercase
     // letters + hyphens). The filename stem already satisfies this and is
@@ -231,17 +235,12 @@ function buildAgentSources() {
     // `description`. The default-agent setting (DEFAULT_AGENT) references this
     // same stem, so it resolves. Display names with spaces/parens/apostrophes
     // (meta.name) are invalid here and caused intermittent init failures.
-    const toolsCsv = meta.tools
-      .split(",")
-      .map((t) => t.trim())
-      .join(", ");
-
     const compiledContent = [
       "---",
       `name: ${stem}`,
-      `description: ${meta.description}`,
+      `description: ${agent.description}`,
       `model: ${model}`,
-      `tools: ${toolsCsv}`,
+      `tools: ${claudeTools(agent)}`,
       "---",
       "",
       promptContent,
@@ -290,6 +289,19 @@ function buildSkillSources() {
 // ---------------------------------------------------------------------------
 
 function planSettingsUpdate() {
+  const registry = readAgentRegistry();
+  const defaultAgent =
+    registry.find(
+      (agent) =>
+        agent.id === "arcs-orchestrate" &&
+        isActiveAgentForMode(agent, "claudecode"),
+    ) ??
+    registry.find(
+      (agent) =>
+        agent.kind === "primary" && isActiveAgentForMode(agent, "claudecode"),
+    );
+  if (!defaultAgent) throw new Error("No active Claude Code primary agent is registered");
+
   const settingsConfigRelative = configRelativePath("settings.json");
   const settingsAbsolute = resolve(destination, settingsConfigRelative);
 
@@ -308,7 +320,7 @@ function planSettingsUpdate() {
     }
   }
 
-  const merged = { ...parsed, agent: DEFAULT_AGENT };
+  const merged = { ...parsed, agent: defaultAgent.id };
   const serialized = `${JSON.stringify(merged, null, 2)}\n`;
 
   let status;
@@ -328,6 +340,8 @@ function planSettingsUpdate() {
 // ---------------------------------------------------------------------------
 
 function main() {
+  const registry = readAgentRegistry();
+  const previousManifest = readInstalledManifest();
   const agentSources = buildAgentSources();
   const skillSources = buildSkillSources();
   const settingsPlan = planSettingsUpdate();
@@ -375,20 +389,6 @@ function main() {
   // Orphans
   const filesRemoved = [];
 
-  // Agent orphans — only `.md` files whose stem we recognize from agentMetadata
-  const agentsTargetDir = resolve(destination, configRelativePath("agents"));
-  const activeAgentStems = new Set(agentSources.map((f) => f.stem));
-  if (existsSync(agentsTargetDir)) {
-    for (const entry of readdirSync(agentsTargetDir, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith(".md")) {
-        const stem = entry.name.slice(0, -3);
-        if (agentMetadata[stem] && !activeAgentStems.has(stem)) {
-          filesRemoved.push(configRelativePath(`agents/${entry.name}`));
-        }
-      }
-    }
-  }
-
   // Skill orphans — only `arcs-*/` directories that aren't in current source.
   // The prefix gives us a safe namespace; foreign user skills are never touched.
   const skillsTargetDir = resolve(destination, configRelativePath("skills"));
@@ -402,6 +402,22 @@ function main() {
           filesRemoved.push(configRelativePath(`skills/${entry.name}`));
         }
       }
+    }
+  }
+
+  const retiredById = new Map(
+    registry
+      .filter((agent) => isRetiredAgentForMode(agent, "claudecode"))
+      .map((agent) => [agent.id, agent]),
+  );
+  for (const ownership of previousManifest?.agents ?? []) {
+    const retired = retiredById.get(ownership.id);
+    if (!retired) continue;
+    const expectedDestination = configRelativePath(`agents/${retired.id}.md`);
+    if (ownership.promptDestination !== expectedDestination) continue;
+    const installedPath = resolve(destination, ownership.promptDestination);
+    if (existsSync(installedPath) && sha256(readFileSync(installedPath)) === ownership.sourceHash) {
+      filesRemoved.push(ownership.promptDestination);
     }
   }
 
@@ -432,6 +448,30 @@ function main() {
         rmSync(abs, { recursive: isDir, force: true });
       }
     }
+
+    const installedManifestPath = resolve(destination, configRelativePath(".arcs-bundle.json"));
+    ensureParentDir(installedManifestPath);
+    writeFileSync(
+      installedManifestPath,
+      `${JSON.stringify(
+        {
+          bundleId: "arcs-claudecode-bundle",
+          installMode: `claudecode-${scope}`,
+          sourceBundleVersion: "deploy-script",
+          sourceBundleHash: sha256(readFileSync(resolve(bundleRoot, "manifest.json"))),
+          installedAt: new Date().toISOString(),
+          ownedPaths: [],
+          agents: agentSources.map((agent) => ({
+            id: agent.stem,
+            promptDestination: agent.configRelative,
+            sourceHash: sha256(agent.compiledContent),
+          })),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
   }
 
   // Best-effort: wire the codegraph MCP server. Skipped on dry-run; never fatal.

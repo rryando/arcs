@@ -13,7 +13,7 @@ The CLI surfaced raw codegraph proposals and is waiting for an agent to turn the
 - `arcs codegraph-sync` returned `pending_enrichment: true`.
 - User said "enrich the proposals", "process the codegraph queue", "promote the pending proposals", or similar.
 
-> **Read-write skill.** This skill mutates the DAG via `arcs proposal promote/drop`. Before each promote, meet an evidence threshold: verify the proposal's structural facts, dedup candidates, natural kind, and source files support the authored entry. If that evidence is incomplete, drop or defer it; the orchestrator/devil-advocate gate independently checks the resulting workflow.
+> **Read-only proposal skill.** This skill reads the queue, reaches verdicts only after the evidence threshold below is met, and returns exact commands under `PROPOSED_MUTATIONS:`. It does not execute `arcs proposal promote/drop` or `arcs knowledge upsert`; the orchestrator applies approved mutations.
 
 ## Flow
 
@@ -27,12 +27,12 @@ flowchart TD
     B -->|No| C[Pick highest-degree proposal]
     C --> D[Read structuralFacts + suggestedDedupCandidates]
     D --> E{Verdict}:::decision
-    E -->|drop| F[arcs proposal drop slug id --reason='...']
+    E -->|drop| F[Propose drop command + reason]
     E -->|keep| G[Author title + summary + body]
     E -->|merge| H[Identify dedup target id]
     H --> I[Author append-style body]
-    I --> J[arcs proposal promote slug id --merge-with=target ...]
-    G --> K[arcs proposal promote slug id ...]
+    I --> J[Propose merge command]
+    G --> K[Propose promote command]
     F --> L{Budget left?}
     J --> L
     K --> L
@@ -57,7 +57,7 @@ Promote as a fresh knowledge entry when ALL of:
 
 ### Drop
 
-Reject the proposal (use `arcs proposal drop`) when ANY of:
+Propose `arcs proposal drop` when ANY of:
 
 - `structuralFacts.fileTypeBreakdown` has zero code (all `.md`, `.mdx`, `.txt`, `.html` templates, skill files). T007 should already filter these — drop is defense-in-depth.
 - Cluster covers test directories only (`test/`, `__tests__/`, `*.test.ts`, `*.spec.ts`, `tests/`).
@@ -70,7 +70,7 @@ Always pass a `--reason` string. The reason is durable on the proposal-store led
 
 ### Merge
 
-Use `arcs proposal promote --merge-with=<existing-id>` when:
+Propose `arcs proposal promote --merge-with=<existing-id>` when:
 
 - `suggestedDedupCandidates` lists an existing knowledge entry whose `kind` matches the proposal's natural kind, AND
 - The proposal adds genuinely new structural facts the existing entry does not already document (e.g. precise degree numbers, additional top hubs, cross-module edges, fileCount).
@@ -113,17 +113,17 @@ Always pass `--source-files` listing the files in `structuralFacts.fileList` (or
 
 - **Cap at 12 enrichments per session.** If proposals list exceeds 12, drop low-signal entries en masse before enriching the keep set.
 - **Process highest-degree clusters first.** Sort proposals by `structuralFacts.degree` descending; the top 3–5 carry most of the value.
-- **Bulk drop early.** A single triage pass over all proposals — calling `arcs proposal drop` on obvious noise — is cheaper than enriching one and discovering the next is also noise.
+- **Bulk-triage early.** Proposing drops for obvious noise in one pass is cheaper than enriching one and discovering the next is also noise.
 - **Stop early on budget.** If the agent has spent ~12 enrichments, drop the remainder with reason `"session budget exhausted; reconsider next sync"` rather than producing rushed entries.
 
 ## Failure Modes
 
 | Symptom                                                   | Recovery                                                                                       |
 |-----------------------------------------------------------|------------------------------------------------------------------------------------------------|
-| `promote --merge-with=<id>` fails: target doesn't exist   | Drop the merge plan; re-run as a fresh `promote` (no `--merge-with`).                          |
+| Proposed merge target no longer exists at apply time     | Orchestrator rejects it; return for re-audit rather than changing the command during apply.    |
 | Body too long for shell argv (errno E2BIG / argv overflow)| Switch to `--body-file=path/to/body.md` or pipe via `--body-stdin`.                            |
-| `proposal_not_found` on promote/drop                      | Another agent already handled it. Skip and continue — proposal-store lock is first-come-first-serve. |
-| Promote succeeds but knowledge graph misses the edge      | Verify `--source-files` was passed and points at real paths under the project root.            |
+| Proposal disappears before return                         | Re-list read-only, omit it, and report the race.                                                |
+| Proposed entry would miss graph edges                     | Verify `--source-files` is present and points at real paths under the project root.             |
 | `structuralFacts` field absent                            | Treat as drop candidate — proposal has no evidence to enrich from.                             |
 | Verdict drift: same proposal triaged twice in one session | Re-list with `arcs proposal list --json` — the store is the single source of truth.            |
 
@@ -132,8 +132,8 @@ Always pass `--source-files` listing the files in `structuralFacts.fileList` (or
 - **Do not invent structural facts** not present in `structuralFacts`. If real-code grounding is needed, defer to `arcs context <slug> --audience=<role>` or `arcs related <slug> <id>` and read source. Hallucinated graph facts poison every downstream retrieval.
 - **Always specify `--source-files`** on promote — graph-retrieval depends on it (per AGENTS.md "Knowledge gravity"). An entry without source files is a leaf with no inbound edges.
 - **Never edit `.mmd` files** directly — diagram ownership rules in AGENTS.md still apply during enrichment.
-- **No batch promote.** Each promote is one decision, one `arcs proposal promote` call. Bulk-promoting via `arcs batch` bypasses dedup checks and per-proposal review.
-- **Preserve proposal IDs in commit messages / summaries** when reporting back so the human can audit the verdict ledger.
+- **No batch promote.** Each proposed promote is one decision and one command. Bulk promotion bypasses dedup checks and per-proposal review.
+- **Preserve proposal IDs in summaries** when reporting back so the human can audit the verdict ledger.
 
 ## Worked Example
 
@@ -141,11 +141,11 @@ Always pass `--source-files` listing the files in `structuralFacts.fileList` (or
 # 1. List pending proposals (highest-degree first by default)
 arcs proposal list arcs --json
 
-# 2. Drop obvious noise in bulk
+# 2. PROPOSED_MUTATIONS: drop obvious noise
 arcs proposal drop arcs prop_test_dirs_only \
   --reason="cluster covers test/ only — defense in depth past T007 filter" --json
 
-# 3. Promote a keep verdict with full enrichment
+# 3. PROPOSED_MUTATIONS: promote a keep verdict with full enrichment
 arcs proposal promote arcs prop_storage_hub \
   --title="Storage hub re-exporting helpers to all persistent stores" \
   --summary="Central re-export point for nowISO and sanitizeFileRefs used by task/plan/knowledge stores; edits ripple through every persistent surface." \
@@ -154,17 +154,16 @@ arcs proposal promote arcs prop_storage_hub \
   --source-files=src/utils/storage-utils.ts,src/utils/task-store.ts,src/utils/plan-store.ts,src/utils/knowledge-store.ts \
   --json
 
-# 4. Merge into an existing entry
+# 4. PROPOSED_MUTATIONS: merge into an existing entry
 arcs proposal promote arcs prop_cli_registry \
   --merge-with=cli-registry-pattern-handlers-typed-via-parsedparams \
   --body-file=/tmp/cli-registry-graph-evidence.md \
   --source-files=src/cli/command-registry.ts,src/cli/index.ts \
   --json
 
-# 5. Confirm queue drained
-arcs proposal list arcs --json   # expect data.proposals == []
+# Return these commands without executing them; the orchestrator applies approved mutations.
 ```
 
 ## Exit
 
-When `arcs proposal list <slug> --json` returns an empty `proposals` array, the enrichment pass is done. Surface a one-line summary to the orchestrator: kept N, merged M, dropped K, deferred D.
+Return `PROPOSED_MUTATIONS:` with one stable proposal ID, verdict, rationale, and exact command per item. Do not execute `arcs knowledge upsert` or proposal mutations. Surface a one-line summary to the orchestrator: proposed keeps N, merges M, drops K, deferred D.

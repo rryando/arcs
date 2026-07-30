@@ -21,6 +21,7 @@ import {
   type PlanStatus,
   type TaskPriority,
   type TaskStatus,
+  type TaskWorkMode,
   updateKnowledgeEntry,
   updatePlan,
   updateTask,
@@ -209,6 +210,8 @@ async function handleBatch(
             priority: op.priority as TaskPriority | undefined,
             planId: op.planId as string | undefined,
             sourceFiles: op.sourceFiles as FileRef[] | undefined,
+            skill: op.skill as string | undefined,
+            workMode: op.workMode as TaskWorkMode | undefined,
           });
           results.push({ index: i, op: op.op, success: true, result: { taskId: task.id } });
           break;
@@ -224,6 +227,8 @@ async function handleBatch(
             priority: op.priority as TaskPriority | undefined,
             planId: op.planId as string | null | undefined,
             sourceFiles: op.sourceFiles as FileRef[] | undefined,
+            skill: op.skill as string | null | undefined,
+            workMode: op.workMode as TaskWorkMode | null | undefined,
           });
           results.push({
             index: i,

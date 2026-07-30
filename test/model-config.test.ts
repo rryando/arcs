@@ -4,11 +4,137 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getActiveAgents,
+  getAgentTierMap,
+  readAgentRegistry,
+  validateAgentRegistry,
+} from "../src/cli/agent-registry.js";
+import {
   diagnoseOpenCodeConfig,
   extractModelPreFills,
   readOpenCodeConfig,
 } from "../src/cli/config.js";
 import { applyAgentModelConfig, writeOpencodeAgent } from "../src/cli/instructions.js";
+import { agentRegistryRecordSchema } from "../src/utils/json-schemas.js";
+
+describe("agent registry", () => {
+  it("reads the package manifest as the canonical typed registry", () => {
+    const registry = readAgentRegistry();
+    const activeAgents = getActiveAgents(registry);
+
+    expect(activeAgents).toHaveLength(8);
+    expect(activeAgents.every((agent) => agent.status === "active")).toBe(true);
+    expect(
+      activeAgents.filter((agent) => agent.kind === "subagent").map((agent) => agent.id),
+    ).toEqual([
+      "software-engineer",
+      "tech-architect",
+      "arcs-docs",
+      "code-reviewer",
+      "devil-advocate",
+      "graph-explorer",
+    ]);
+    expect(registry.agents.find((agent) => agent.id === "oncall-ops")).toMatchObject({
+      status: "retired",
+      replacementId: "software-engineer",
+    });
+    expect(registry.agents.find((agent) => agent.id === "docs-researcher")).toMatchObject({
+      status: "retired",
+      replacementId: "tech-architect",
+    });
+    expect(activeAgents.find((agent) => agent.id === "software-engineer")).toMatchObject({
+      kind: "subagent",
+      tier: "heavy",
+      source: "prompts/software-engineer.txt",
+      destination: "prompts/software-engineer.txt",
+      permissions: { edit: "allow" },
+    });
+  });
+
+  it("derives ARCS tier assignments from manifest records", () => {
+    expect(getAgentTierMap()).toMatchObject({
+      "software-engineer": "heavy",
+      "tech-architect": "standard",
+      "devil-advocate": "standard",
+      "graph-explorer": "light",
+      "arcs-orchestrate": "standard",
+    });
+  });
+
+  it.each([
+    ["traversal source", { source: "prompts/../outside.txt" }],
+    ["absolute source", { source: "/tmp/outside.txt" }],
+    ["empty destination segment", { destination: "prompts//software-engineer.txt" }],
+    ["dot destination segment", { destination: "prompts/./software-engineer.txt" }],
+    ["non-txt destination", { destination: "prompts/software-engineer.md" }],
+    ["malformed id", { id: "../software-engineer" }],
+  ])("rejects %s in typed registry records", (_label, overrides) => {
+    const record = {
+      id: "software-engineer",
+      status: "active",
+      kind: "subagent",
+      tier: "heavy",
+      modes: ["opencode", "claudecode"],
+      source: "prompts/software-engineer.txt",
+      destination: "prompts/software-engineer.txt",
+      description: "Implementation specialist",
+      permissions: {
+        edit: "allow",
+        bash: "allow",
+        webfetch: "allow",
+        mcp: "allow",
+        task: "deny",
+      },
+      ...overrides,
+    };
+
+    expect(agentRegistryRecordSchema.safeParse(record).success).toBe(false);
+  });
+
+  it.each([
+    ["has no replacement", undefined, "active", "subagent", ["opencode", "claudecode"]],
+    [
+      "names a missing replacement",
+      "missing-agent",
+      "active",
+      "subagent",
+      ["opencode", "claudecode"],
+    ],
+    [
+      "names a retired replacement",
+      "replacement",
+      "retired",
+      "subagent",
+      ["opencode", "claudecode"],
+    ],
+    ["changes agent kind", "replacement", "active", "primary", ["opencode", "claudecode"]],
+    ["drops a supported mode", "replacement", "active", "subagent", ["opencode"]],
+  ] as const)("rejects a retired agent that %s", (_label, replacementId, status, kind, modes) => {
+    const base = readAgentRegistry().agents.find((agent) => agent.id === "software-engineer");
+    if (!base) throw new Error("missing fixture agent");
+    const retired = {
+      ...base,
+      id: "retired-agent",
+      status: "retired" as const,
+      replacementId,
+      source: "prompts/retired-agent.txt",
+      destination: "prompts/retired-agent.txt",
+    };
+    const replacement = {
+      ...base,
+      id: "replacement",
+      status,
+      kind,
+      modes: [...modes],
+      source: "prompts/replacement.txt",
+      destination: "prompts/replacement.txt",
+    };
+
+    expect(() => validateAgentRegistry({ agents: [retired, replacement] })).toThrow(
+      /retired agent.*replacement/i,
+    );
+  });
+});
 
 // ---------------------------------------------------------------------------
 // A. extractModelPreFills (pure function)

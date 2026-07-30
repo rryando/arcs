@@ -12,6 +12,13 @@ const updateDocsSkill = readFileSync(resolve(root, "skills/update-docs.md"), "ut
 const initSkill = readFileSync(resolve(root, "skills/init-project.md"), "utf-8");
 const exploreDagSkill = readFileSync(resolve(root, "skills/explore-dag.md"), "utf-8");
 const orchestratePrompt = ORCHESTRATE_PROMPT_TEXT;
+const rootCompatibilityDocs = [
+  readme,
+  orchestrateSkill,
+  initSkill,
+  exploreDagSkill,
+  updateDocsSkill,
+].join("\n");
 
 describe("docs and skills smoke tests", () => {
   it("README mentions plan create command", () => {
@@ -88,5 +95,57 @@ describe("docs and skills smoke tests", () => {
   it("README explains the curated OpenCode runtime bundle", () => {
     expect(readme).toContain("build:opencode-bundle");
     expect(readme).toContain("lint-bundle");
+  });
+
+  it("documents the canonical six-agent and twelve-skill topology", () => {
+    expect(readme).toMatch(/six typed sub-agents/i);
+    for (const agent of [
+      "software-engineer",
+      "tech-architect",
+      "graph-explorer",
+      "code-reviewer",
+      "devil-advocate",
+      "arcs-docs",
+    ]) {
+      expect(readme).toContain(agent);
+    }
+
+    expect(readme).toMatch(/twelve skills/i);
+    for (const skillName of [
+      "implementation",
+      "test-driven-development",
+      "executing-plans",
+      "systematic-debugging",
+      "brainstorming",
+      "writing-plans",
+      "to-diagram",
+      "writing-knowledge",
+      "init-project",
+      "enriching-codegraph-proposals",
+      "deep-pr-review",
+      "caveman-commit",
+    ]) {
+      expect(readme).toContain(skillName);
+    }
+  });
+
+  it("keeps root compatibility docs on current agent modes and workflow", () => {
+    expect(rootCompatibilityDocs).toMatch(/software-engineer[\s\S]*default[\s\S]*incident/i);
+    expect(rootCompatibilityDocs).toMatch(/tech-architect[\s\S]*architecture[\s\S]*research/i);
+    expect(rootCompatibilityDocs).toMatch(/code-reviewer[\s\S]*review[\s\S]*audit/i);
+    expect(rootCompatibilityDocs).toMatch(/WORK_MODE[\s\S]*bounded[\s\S]*inspect/i);
+    expect(rootCompatibilityDocs).toMatch(/brainstorming[\s\S]*user approv[\s\S]*writing-plans/i);
+    expect(rootCompatibilityDocs).toMatch(/writing-plans[\s\S]*sole author/i);
+    expect(rootCompatibilityDocs).toMatch(/SYNC[\s\S]*two-pass[\s\S]*audit[\s\S]*apply/i);
+    expect(rootCompatibilityDocs).toMatch(
+      /DAG-first[\s\S]*(?:codegraph|source|repository).*fallback/i,
+    );
+    expect(rootCompatibilityDocs).toMatch(/no automatic git actions/i);
+  });
+
+  it("removes superseded active agent and skill names from root compatibility docs", () => {
+    expect(rootCompatibilityDocs).not.toMatch(
+      /\b(?:oncall-ops|docs-researcher|quick-dev|code-agent|requesting-code-review|the-ladder)\b/,
+    );
   });
 });

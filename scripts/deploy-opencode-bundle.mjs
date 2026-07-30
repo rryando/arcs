@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Deploy opencode ARCS bundle bundle from repo to user config.
 //
 // Direction: repo → config ONLY. Never writes config → repo.
@@ -11,6 +12,7 @@
 // Outputs JSON to stdout: DeployResult
 // Exit code: 0 on success, 1 on error.
 
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -27,6 +29,9 @@ import { fileURLToPath } from "node:url";
 import {
   assertNoReservedPathSegments,
   assertPathWithinCategoryRoot,
+  isActiveAgentForMode,
+  isRetiredAgentForMode,
+  validateRetirementReplacements,
   wireCodegraphMcp,
   wireRtk,
 } from "./lib/bundle-helpers.mjs";
@@ -59,6 +64,42 @@ function ensureParentDir(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
 }
 
+function sha256(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function readInstalledManifest() {
+  const path = resolve(configRoot, ".arcs-bundle.json");
+  if (!existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, "utf-8"));
+    return value?.bundleId === "arcs-opencode-bundle" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function configOwnershipHash(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return sha256(JSON.stringify(value));
+  }
+  const withoutModel = { ...value };
+  delete withoutModel.model;
+  return sha256(JSON.stringify(withoutModel));
+}
+
+function agentDefaultModel(manifest, id) {
+  const merge = (manifest.config?.requiredMerges ?? []).find(
+    (candidate) =>
+      candidate.path?.length === 2 &&
+      candidate.path[0] === "agent" &&
+      candidate.path[1] === id &&
+      candidate.value &&
+      typeof candidate.value === "object",
+  );
+  return merge?.value?.model;
+}
+
 function validateManifestPaths(manifest) {
   assertPathWithinCategoryRoot(manifest.skills.source, "skills");
   assertPathWithinCategoryRoot(manifest.skills.destination, "skills");
@@ -78,6 +119,43 @@ function validateManifestPaths(manifest) {
   }
 }
 
+function validateAgentRegistry(agents) {
+  if (!Array.isArray(agents)) throw new Error("Invalid agent registry: agents must be an array");
+  const byId = new Map();
+  const sources = new Set();
+  const destinations = new Set();
+  for (const agent of agents ?? []) {
+    if (!agent || typeof agent.id !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent.id)) {
+      throw new Error("Invalid agent registry: every agent requires a valid id");
+    }
+    if (agent.status !== "active" && agent.status !== "retired") {
+      throw new Error(`Invalid agent registry status for ${agent.id}`);
+    }
+    if (agent.kind !== "primary" && agent.kind !== "subagent") {
+      throw new Error(`Invalid agent registry kind for ${agent.id}`);
+    }
+    if (
+      !Array.isArray(agent.modes) ||
+      agent.modes.length === 0 ||
+      agent.modes.some((mode) => mode !== "opencode" && mode !== "claudecode")
+    ) {
+      throw new Error(`Invalid agent registry modes for ${agent.id}`);
+    }
+    if (byId.has(agent.id)) throw new Error(`Invalid agent registry: duplicate id ${agent.id}`);
+    if (sources.has(agent.source)) {
+      throw new Error(`Invalid agent registry: duplicate source ${agent.source}`);
+    }
+    if (destinations.has(agent.destination)) {
+      throw new Error(`Invalid agent registry: duplicate destination ${agent.destination}`);
+    }
+    byId.set(agent.id, agent);
+    sources.add(agent.source);
+    destinations.add(agent.destination);
+  }
+
+  validateRetirementReplacements(agents);
+}
+
 async function main() {
   const manifestPath = resolve(bundleRoot, "manifest.json");
   if (!existsSync(manifestPath)) {
@@ -86,6 +164,8 @@ async function main() {
 
   const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
   validateManifestPaths(manifest);
+  validateAgentRegistry(manifest.agents);
+  const previousManifest = readInstalledManifest();
 
   // Build mapping: config-relative path → bundle-absolute path
   const deployMap = new Map();
@@ -102,7 +182,7 @@ async function main() {
   }
 
   // Plugin
-  if (manifest.plugin && manifest.plugin.source) {
+  if (manifest.plugin?.source) {
     const pluginSource = resolve(bundleRoot, manifest.plugin.source);
     if (existsSync(pluginSource)) {
       deployMap.set(manifest.plugin.destination, pluginSource);
@@ -110,7 +190,9 @@ async function main() {
   }
 
   // Agents (sub-agent prompts) — bundle prompts/<file> → config prompts/<file>
-  for (const agent of manifest.agents ?? []) {
+  for (const agent of (manifest.agents ?? []).filter((record) =>
+    isActiveAgentForMode(record, "opencode"),
+  )) {
     const agentSource = resolve(bundleRoot, agent.source);
     if (existsSync(agentSource)) {
       deployMap.set(agent.destination, agentSource);
@@ -128,8 +210,7 @@ async function main() {
     const sourceContent = readFileSync(bundleAbsolute, "utf-8");
 
     const isNew = !existsSync(configAbsolute);
-    const isChanged =
-      !isNew && readFileSync(configAbsolute, "utf-8") !== sourceContent;
+    const isChanged = !isNew && readFileSync(configAbsolute, "utf-8") !== sourceContent;
 
     if (isNew) {
       filesAdded.push(configRelative);
@@ -168,6 +249,54 @@ async function main() {
     }
   }
 
+  const retiredById = new Map(
+    (manifest.agents ?? [])
+      .filter((agent) => isRetiredAgentForMode(agent, "opencode"))
+      .map((agent) => [agent.id, agent]),
+  );
+  let config = null;
+  let configChanged = false;
+  const configPath = resolve(configRoot, "opencode.json");
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, "utf-8"));
+    } catch {
+      config = null;
+    }
+  }
+  const configAgents =
+    config?.agent && typeof config.agent === "object" && !Array.isArray(config.agent)
+      ? config.agent
+      : null;
+
+  for (const ownership of previousManifest?.agents ?? []) {
+    const retired = retiredById.get(ownership.id);
+    if (!retired || retired.destination !== ownership.promptDestination) continue;
+    const promptPath = resolve(configRoot, ownership.promptDestination);
+    if (existsSync(promptPath) && sha256(readFileSync(promptPath)) === ownership.sourceHash) {
+      filesRemoved.push(ownership.promptDestination);
+    }
+
+    if (!configAgents || !ownership.configKey || !ownership.configHash) continue;
+    const current = configAgents[ownership.configKey];
+    if (current === undefined || configOwnershipHash(current) !== ownership.configHash) continue;
+    const replacement = retired.replacementId ? configAgents[retired.replacementId] : null;
+    const retiredDefault = agentDefaultModel(manifest, ownership.id);
+    if (
+      replacement &&
+      typeof replacement === "object" &&
+      current?.model !== undefined &&
+      current.model !== retiredDefault
+    ) {
+      const replacementDefault = agentDefaultModel(manifest, retired.replacementId);
+      if (replacement.model === undefined || replacement.model === replacementDefault) {
+        replacement.model = current.model;
+      }
+    }
+    delete configAgents[ownership.configKey];
+    configChanged = true;
+  }
+
   // Pass 2: Apply writes (only when not dry-run)
   if (!dryRun) {
     // Clean-delete the skills directory before copying to guarantee a fresh install.
@@ -189,6 +318,53 @@ async function main() {
     for (const fileToRemove of filesRemoved) {
       rmSync(resolve(configRoot, fileToRemove), { force: true });
     }
+
+    if (configChanged) {
+      writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+    }
+
+    const activeAgents = (manifest.agents ?? []).filter((agent) =>
+      isActiveAgentForMode(agent, "opencode"),
+    );
+    const previousAgents = new Map(
+      (previousManifest?.agents ?? []).map((ownership) => [ownership.id, ownership]),
+    );
+    const installedAgents = activeAgents
+      .filter((agent) => deployMap.has(agent.destination))
+      .map((agent) => {
+        const previous = previousAgents.get(agent.id);
+        const currentConfig = configAgents?.[agent.id];
+        const configStillOwned =
+          previous?.configKey &&
+          previous?.configHash &&
+          currentConfig !== undefined &&
+          configOwnershipHash(currentConfig) === previous.configHash;
+        return {
+          id: agent.id,
+          promptDestination: agent.destination,
+          sourceHash: sha256(readFileSync(resolve(configRoot, agent.destination))),
+          ...(configStillOwned
+            ? { configKey: previous.configKey, configHash: previous.configHash }
+            : {}),
+        };
+      });
+    writeFileSync(
+      resolve(configRoot, ".arcs-bundle.json"),
+      `${JSON.stringify(
+        {
+          bundleId: manifest.bundleId,
+          installMode: manifest.installMode,
+          sourceBundleVersion: "deploy-script",
+          sourceBundleHash: sha256(readFileSync(manifestPath)),
+          installedAt: new Date().toISOString(),
+          ownedPaths: manifest.ownedPaths ?? [],
+          agents: installedAgents,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
   }
 
   // After successful deploy, ensure arcs CLI is globally registered
@@ -227,7 +403,7 @@ async function main() {
     }),
   };
 
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
 try {

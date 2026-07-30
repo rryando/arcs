@@ -365,17 +365,10 @@ describe("opencode bundle runtime manifest", () => {
           "scripts/start-server.sh",
           "scripts/stop-server.sh",
         ],
-        "code-agent": ["SKILL.md"],
         "deep-pr-review": ["SKILL.md", "review-template.md", "codegraph-diff.md"],
         "enriching-codegraph-proposals": ["SKILL.md"],
-        "executing-plans": [
-          "SKILL.md",
-          "code-quality-reviewer-prompt.md",
-          "implementer-prompt.md",
-          "spec-reviewer-prompt.md",
-        ],
-        "quick-dev": ["SKILL.md"],
-        "requesting-code-review": ["SKILL.md", "code-reviewer.md"],
+        "executing-plans": ["SKILL.md"],
+        implementation: ["SKILL.md"],
         "systematic-debugging": [
           "SKILL.md",
           "condition-based-waiting.md",
@@ -402,7 +395,6 @@ describe("opencode bundle runtime manifest", () => {
         ".opencode/plugins/arcs.js",
         "skills/caveman-commit/SKILL.md",
         "skills/init-project/SKILL.md",
-        "skills/the-ladder/SKILL.md",
       ],
       excludePatterns: [
         "**/references/**",

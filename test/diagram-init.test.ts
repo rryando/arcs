@@ -175,7 +175,7 @@ describe("diagram init", () => {
     });
   });
 
-  it("populates per-node metadata blocks from task fields (--scope, --acceptance, --verify, --skill, --source-files)", async () => {
+  it("populates per-node metadata blocks from task fields (--scope, --acceptance, --verify, --skill, --workMode, --source-files)", async () => {
     await withTempDataDir(async () => {
       await runCommand("project init", ["testproj", "--description=Test project"]);
       const planResult = await runCommand("plan create", [
@@ -193,7 +193,8 @@ describe("diagram init", () => {
         "--scope=src/foo.ts",
         "--acceptance=passes test X",
         "--verify=vitest run foo.test.ts",
-        "--skill=quick-dev",
+        "--skill=implementation",
+        "--workMode=inspect",
         "--source-files=src/foo.ts:line-42",
       ]);
       expect(created.ok).toBe(true);
@@ -203,7 +204,8 @@ describe("diagram init", () => {
 
       const mmd = await readFile((result.data as { path: string }).path, "utf-8");
 
-      expect(mmd).toContain("%% skill: quick-dev");
+      expect(mmd).toContain("%% skill: implementation");
+      expect(mmd).toContain("%% work-mode: inspect");
       expect(mmd).toContain("%% scope: src/foo.ts");
       expect(mmd).toContain("%% files: src/foo.ts:line-42");
       expect(mmd).toContain("%% acceptance: passes test X");
@@ -231,7 +233,8 @@ describe("diagram init", () => {
       const result = await runCommand("diagram init", ["testproj", planId]);
       const mmd = await readFile((result.data as { path: string }).path, "utf-8");
 
-      expect(mmd).toContain("%% skill: quick-dev");
+      expect(mmd).toContain("%% skill: implementation");
+      expect(mmd).toContain("%% work-mode: bounded");
       expect(mmd).toContain("%% scope: (TBD)");
       expect(mmd).toContain("%% acceptance: (TBD)");
       expect(mmd).toContain("%% verify: npm test");

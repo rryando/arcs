@@ -9,7 +9,7 @@ description: Use when the user provides a GitHub PR link with a "deep review" tr
 
 User gives a GitHub PR URL plus a "deep review" trigger inside the locally cloned repo of that PR. Reviewer-side workflow: read-only by default, posts to GitHub only after explicit user gate.
 
-> CLI: `arcs --commands --json` for discovery. Posting is user-gated. ARCS writes (optional knowledge harvest) run directly via the CLI.
+> CLI: `arcs --commands --json` for discovery. Posting is user-gated. Knowledge is proposal-only unless the user separately and explicitly authorizes that exact ARCS write.
 
 ## Flow
 
@@ -84,7 +84,7 @@ Agent picks dimensions from diff context. **Correctness is always evaluated.** O
 | **SOLID** | Module gains responsibilities, dependency direction shifts, large classes touched |
 | **Convention fit** | AGENTS.md or DAG `pattern`/`architecture` knowledge applies to changed files |
 | **Architectural risk** → handoff to the tech-architect agent (structural audit) | Diff crosses module boundaries, touches god nodes, changes public API |
-| **Performance risk** → handoff to the oncall-ops agent (performance investigation) | Hot paths, loops over external IO, new queries, allocations in render |
+| **Performance/incident risk** → handoff to the software-engineer agent in incident mode with systematic-debugging | Hot paths, loops over external IO, new queries, allocations in render |
 
 Skipped dimensions are reported as `cleared (not applicable: <reason>)`. Never silently dropped.
 
@@ -106,7 +106,7 @@ Format: `L<line>: <tag> <what>. <replacement>.` — use `<file>:L<line>: ...` fo
 
 End with the only metric that matters: `net: -<N> lines, -<M> deps possible.` Nothing to cut → `Lean already. Ship.`
 
-Boundary: never flag the single ONE-runnable-check that `the-ladder` requires for non-trivial logic as bloat.
+Boundary: never flag the single runnable check that implementation minimalism requires for non-trivial logic as bloat.
 
 ## Severity Prefixes
 
@@ -184,7 +184,7 @@ gh api POST /repos/{owner}/{repo}/pulls/{number}/reviews \
 
 ## Knowledge Proposals (standard report output)
 
-A recurring finding — the same class of bug, the same convention violation, a trap seen more than once across the diff — is durable knowledge, not just a one-off comment. Make proposing it a standard part of the report, not an afterthought: for each recurring finding, include a proposed `arcs knowledge upsert <slug> "<title>" --kind=<pattern|gotcha> --summary="<the recurring issue and the fix convention>" --keywords="<k1,k2>" --source-files="<path,...>" --json` in the report. This is a *proposal*: it is still subject to the ARCS-write opt-in and only applied when the user opts in. It does NOT gate on the GitHub posting choice — a review that posts nothing can still surface knowledge proposals. Upsert is idempotent by title.
+A recurring finding — the same class of bug, the same convention violation, a trap seen more than once across the diff — is durable knowledge, not just a one-off comment. Make proposing it a standard part of the report, not an afterthought. First use `arcs knowledge template --kind=<kind> --json`; then include a proposed `arcs knowledge upsert <slug> "<title>" --kind=<pattern|gotcha> --summary="<the recurring issue and the fix convention>" --body="<substantive filled template>" --keywords="<k1,k2>" --source-files="<path,...>" --json` in the report. Do not execute `arcs knowledge upsert` without explicit user authorization for that exact command. This opt-in is separate from the GitHub posting choice: a review that posts nothing can still surface knowledge proposals. Upsert is idempotent by title.
 
 ## Report Structure
 
@@ -210,7 +210,7 @@ A recurring finding — the same class of bug, the same convention violation, a 
 - Cite every finding — no uncited claims
 - ` ```suggestion ` blocks only for small line-replacement fixes
 - Defer to the tech-architect agent (structural audit) for full structural drift; surface as handoff flag, do not run inline
-- Defer to the oncall-ops agent (performance investigation) for perf work; surface as risk flag
+- Defer performance or incident investigation to the software-engineer agent with `AGENT_MODE: incident` and mandatory systematic-debugging; surface as a risk flag
 - Review dimensions are defined in this skill (Adaptive Rubric); inline findings use the one-line format `<file>:L<line>: problem. fix.` — do not duplicate
 - Re-review detection: if AI has reviewed before, scope to diff since last review's commit_id
 - Tag each posted suggestion with `<!-- arcs:deep-review:<finding-id> -->` for re-review tracking

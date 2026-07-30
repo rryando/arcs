@@ -270,20 +270,13 @@ describe("OpenCode setup flow", () => {
     const prompts = await import("@clack/prompts");
 
     vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(true); // customizeAgents
-    vi.mocked((prompts as any).__text)
-      .mockResolvedValueOnce("heavy-model")
-      .mockResolvedValueOnce("standard-model")
-      .mockResolvedValueOnce("light-model")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("graph-explorer-model")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("");
+    vi.mocked((prompts as any).__text).mockImplementation(({ message }: { message: string }) => {
+      if (message === "Heavy model (reasoning, synthesis)") return "heavy-model";
+      if (message === "Standard model (general purpose)") return "standard-model";
+      if (message === "Light/fast model (read-only, exploration)") return "light-model";
+      if (message.includes("graph-explorer [light:")) return "graph-explorer-model";
+      return "";
+    });
 
     await withTempHomeDir(async (homeDir) => {
       const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");

@@ -7,9 +7,9 @@ description: Use when capturing a knowledge entry, before writing its body — t
 
 ## When
 
-You are about to persist a durable insight to the DAG (`arcs knowledge upsert` / `create`) and need the entry to be *actionable*, not a stub.
+You are about to author a durable insight proposal for the DAG and need the entry to be *actionable*, not a stub.
 
-> CLI Primer: `arcs --commands --json` for discovery. Mutating commands run directly — no token.
+> CLI Primer: `arcs --commands --json` for discovery. This skill authors proposal text; it does not execute `arcs knowledge upsert`.
 
 ## The Floor: Every Entry Needs a Body
 
@@ -45,7 +45,7 @@ This emits one `## <heading>` per section with a deletable hint comment. **Fill 
 
 Pick the kind by what the insight *is*: a bug you hit → `gotcha`; a wrong belief corrected → `lesson`; a reusable shape → `pattern`; a structural why → `architecture`; a single settled call → `decision`; an area of the codebase → `module`/`feature`; a pointer to a canonical source → `reference`.
 
-## Write
+## Author the Proposal
 
 ```bash
 arcs knowledge upsert <slug> "<title>" \
@@ -57,13 +57,13 @@ arcs knowledge upsert <slug> "<title>" \
   --json
 ```
 
-`upsert` is idempotent by title — create-or-update, no dedup search dance. `--summary` AND `--body` AND `--source-files` together are the floor for a file-specific entry. Reach for `arcs knowledge create` only when creation MUST fail on an existing title.
+Return the command without executing it. The orchestrator applies approved proposals at fan-in. `upsert` is idempotent by title — create-or-update, no dedup search dance. `--summary` AND `--body` AND `--source-files` together are the floor for a file-specific entry.
 
-## Self-Check Before You Commit
+## Self-Check Before You Return the Proposal
 
 > **"Could someone act on this in six months without re-deriving it?"**
 
-If the insight cost you reasoning, a debug session, or a dead end, capture *that* — not just its one-line conclusion. Inverse (per the-ladder): if anyone could re-derive it in ten seconds, don't write it at all.
+If the insight cost you reasoning, a debug session, or a dead end, capture *that* — not just its one-line conclusion. Inverse (per implementation minimalism): if anyone could re-derive it in ten seconds, don't write it at all.
 
 ## Constraints
 
@@ -72,3 +72,4 @@ If the insight cost you reasoning, a debug session, or a dead end, capture *that
 - `--summary` is the headline, `--body` is the value — never ship summary-only.
 - Match kind to the nature of the insight; don't force everything into `gotcha`.
 - Skip capture entirely for purely mechanical work (renames, config nudges, diagram regens).
+- Proposal-only: do not execute `arcs knowledge upsert` or any other DAG mutation from this skill.

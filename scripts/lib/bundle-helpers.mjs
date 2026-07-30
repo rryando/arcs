@@ -1,6 +1,32 @@
 import { spawnSync } from "node:child_process";
 import { isAbsolute, relative, resolve } from "node:path";
 
+export function isActiveAgentForMode(agent, mode) {
+  return agent.status === "active" && agent.modes.includes(mode);
+}
+
+export function isRetiredAgentForMode(agent, mode) {
+  return agent.status === "retired" && agent.modes.includes(mode);
+}
+
+export function validateRetirementReplacements(agents) {
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  for (const agent of agents) {
+    if (agent.status !== "retired") continue;
+    const replacement = agent.replacementId ? byId.get(agent.replacementId) : undefined;
+    if (
+      !replacement ||
+      replacement.status !== "active" ||
+      replacement.kind !== agent.kind ||
+      agent.modes.some((mode) => !replacement.modes.includes(mode))
+    ) {
+      throw new Error(
+        `Retired agent ${agent.id} must name an active compatible replacement covering kind and modes`,
+      );
+    }
+  }
+}
+
 export function normalizeRelativePath(filePath) {
   return filePath.replace(/\\/g, "/");
 }

@@ -143,9 +143,15 @@ defineCommand({
     acceptance: { type: "string", description: "Per-node %% acceptance: metadata for diagrams" },
     verify: { type: "string", description: "Per-node %% verify: command for diagrams" },
     skill: { type: "string", description: "Per-node %% skill: name for diagrams" },
+    workMode: {
+      type: "string",
+      description: "Per-node %% work-mode: execution mode for diagrams",
+      enum: ["bounded", "inspect"],
+    },
   },
   handler: async (params, flags) => {
-    const { slug, title, planId, priority, status, scope, acceptance, verify, skill } = params;
+    const { slug, title, planId, priority, status, scope, acceptance, verify, skill, workMode } =
+      params;
     const dependsOnRaw = params.dependsOn;
     const dependsOn = dependsOnRaw
       ? dependsOnRaw
@@ -183,6 +189,7 @@ defineCommand({
           ...(acceptance && { acceptance }),
           ...(verify && { verify }),
           ...(skill && { skill }),
+          ...(workMode && { workMode }),
         },
       });
     }
@@ -199,6 +206,7 @@ defineCommand({
         ...(acceptance && { acceptance }),
         ...(verify && { verify }),
         ...(skill && { skill }),
+        ...(workMode && { workMode }),
       });
       return success(task);
     } catch (err) {
@@ -305,6 +313,11 @@ defineCommand({
       description: "Per-node %% verify: command (empty string clears)",
     },
     skill: { type: "string", description: "Per-node %% skill: name (empty string clears)" },
+    workMode: {
+      type: "string",
+      description: "Per-node %% work-mode: execution mode",
+      enum: ["bounded", "inspect"],
+    },
   },
   handler: async (params, flags) => {
     const { slug, taskId, title, priority, planId } = params;
@@ -342,6 +355,7 @@ defineCommand({
       params.verify !== undefined ? (params.verify === "" ? null : params.verify) : undefined;
     const skillUpdate =
       params.skill !== undefined ? (params.skill === "" ? null : params.skill) : undefined;
+    const workModeUpdate = params.workMode;
 
     const projectDir = getProjectDir(slug);
     if (!existsSync(projectDir)) {
@@ -365,6 +379,7 @@ defineCommand({
           ...(acceptanceUpdate !== undefined && { acceptance: acceptanceUpdate }),
           ...(verifyUpdate !== undefined && { verify: verifyUpdate }),
           ...(skillUpdate !== undefined && { skill: skillUpdate }),
+          ...(workModeUpdate !== undefined && { workMode: workModeUpdate }),
         },
       });
     }
@@ -381,6 +396,7 @@ defineCommand({
         ...(acceptanceUpdate !== undefined && { acceptance: acceptanceUpdate }),
         ...(verifyUpdate !== undefined && { verify: verifyUpdate }),
         ...(skillUpdate !== undefined && { skill: skillUpdate }),
+        ...(workModeUpdate !== undefined && { workMode: workModeUpdate }),
       });
       return success(task);
     } catch (err) {

@@ -9,9 +9,6 @@
       "scripts/start-server.sh",
       "scripts/stop-server.sh"
     ],
-    "code-agent": [
-      "SKILL.md"
-    ],
     "deep-pr-review": [
       "SKILL.md",
       "review-template.md",
@@ -21,17 +18,10 @@
       "SKILL.md"
     ],
     "executing-plans": [
-      "SKILL.md",
-      "code-quality-reviewer-prompt.md",
-      "implementer-prompt.md",
-      "spec-reviewer-prompt.md"
-    ],
-    "quick-dev": [
       "SKILL.md"
     ],
-    "requesting-code-review": [
-      "SKILL.md",
-      "code-reviewer.md"
+    "implementation": [
+      "SKILL.md"
     ],
     "systematic-debugging": [
       "SKILL.md",
@@ -66,8 +56,7 @@
     "bundle-runtime.json",
     ".opencode/plugins/arcs.js",
     "skills/caveman-commit/SKILL.md",
-    "skills/init-project/SKILL.md",
-    "skills/the-ladder/SKILL.md"
+    "skills/init-project/SKILL.md"
   ],
   "excludePatterns": [
     "**/references/**",

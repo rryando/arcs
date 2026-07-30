@@ -24,6 +24,9 @@ type InstallerManifest = {
     source: string;
   };
   agents: Array<{
+    id: string;
+    status: "active" | "retired";
+    replacementId?: string;
     source: string;
     destination: string;
   }>;
@@ -88,7 +91,30 @@ describe("opencode ARCS bundle bundle", () => {
     expect(manifest.plugin.required).toBe(true);
     expect(manifest.plugin.source).toBe(".opencode/plugins/arcs.js");
     expect(manifest.agents.length).toBeGreaterThan(0);
-    for (const agent of manifest.agents) {
+    const activeAgents = manifest.agents.filter((agent) => agent.status === "active");
+    expect(
+      activeAgents
+        .filter(
+          (agent) => agent.id !== "arcs-orchestrate" && agent.id !== "arcs-orchestrate-caveman",
+        )
+        .map((agent) => agent.id),
+    ).toEqual([
+      "software-engineer",
+      "tech-architect",
+      "arcs-docs",
+      "code-reviewer",
+      "devil-advocate",
+      "graph-explorer",
+    ]);
+    expect(manifest.agents.find((agent) => agent.id === "oncall-ops")).toMatchObject({
+      status: "retired",
+      replacementId: "software-engineer",
+    });
+    expect(manifest.agents.find((agent) => agent.id === "docs-researcher")).toMatchObject({
+      status: "retired",
+      replacementId: "tech-architect",
+    });
+    for (const agent of activeAgents) {
       expect(agent.source).toMatch(/^prompts\/[^/]+\.txt$/);
       expect(agent.destination).toBe(agent.source);
       expect(existsSync(resolve(bundleRoot, agent.source))).toBe(true);
@@ -132,21 +158,19 @@ describe("opencode ARCS bundle bundle", () => {
           mode: "merge",
         },
         {
-          path: ["agent", "docs-researcher"],
-          value: expect.objectContaining({
-            mode: "subagent",
-            model: "github-copilot/claude-opus-4.6",
-          }),
-          mode: "merge",
-        },
-        {
           path: ["agent", "tech-architect"],
           value: expect.objectContaining({
             mode: "subagent",
-            model: "github-copilot/claude-haiku-4.5",
+            model: "github-copilot/claude-sonnet-4.6",
           }),
           mode: "merge",
         },
+      ]),
+    );
+    expect(manifest.config.requiredMerges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: ["agent", "oncall-ops"] }),
+        expect.objectContaining({ path: ["agent", "docs-researcher"] }),
       ]),
     );
   });

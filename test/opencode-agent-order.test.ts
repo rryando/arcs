@@ -1,7 +1,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CAVEMAN_PREAMBLE } from "../src/cli/arcs-orchestrate-caveman.js";
+import { ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
+import {
+  CAVEMAN_PREAMBLE,
+  ORCHESTRATE_CAVEMAN_PROMPT_TEXT,
+} from "../src/cli/arcs-orchestrate-caveman.js";
 import { writeOpencodeAgent } from "../src/cli/instructions.js";
 import { withTempHomeDir } from "./helpers/temp-home-dir.js";
 
@@ -122,37 +126,47 @@ describe("writeOpencodeAgent — agent key order", () => {
       const orchestratorContent = readFileSync(orchestratorPrompt, "utf-8");
       const cavemanContent = readFileSync(cavemanPrompt, "utf-8");
 
-      expect(orchestratorContent).toContain("orchestrator for ARCS, a CLI-first");
-      expect(cavemanContent).toContain("Caveman Mode");
-      // Caveman wraps the full orchestrator prompt
-      expect(cavemanContent).toContain("orchestrator for ARCS, a CLI-first");
-      // Caveman must include the sub-agent propagation rule so caveman mode
-      // cascades into dispatched sub-agents
-      expect(cavemanContent).toContain("Sub-Agent Propagation");
-      expect(cavemanContent).toContain("INHERITED from ARCS Caveman orchestrator");
-      // Caveman must reference the bundled commit skill and the inline review format
-      expect(cavemanContent).toContain("caveman-commit");
-      expect(cavemanContent).toContain("one-line findings");
+      expect(orchestratorContent).toBe(`${ORCHESTRATE_PROMPT_TEXT}\n`);
+      expect(cavemanContent).toBe(`${ORCHESTRATE_CAVEMAN_PROMPT_TEXT}\n`);
     });
   });
 });
 
-describe("Caveman preamble content regression", () => {
-  it("contains all three intensity levels", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("| **lite** |");
-    expect(CAVEMAN_PREAMBLE).toContain("| **full** |");
-    expect(CAVEMAN_PREAMBLE).toContain("| **ultra** |");
+describe("Caveman narration overlay behavior", () => {
+  it("limits Caveman behavior to chat-facing narration", () => {
+    expect(CAVEMAN_PREAMBLE).toContain("narration-only overlay");
+    expect(CAVEMAN_PREAMBLE).toContain("For chat-facing progress and summaries");
+    expect(CAVEMAN_PREAMBLE).toContain("canonical orchestrator below is the sole authority");
   });
 
-  it("contains required section headings", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("Auto-Clarity");
-    expect(CAVEMAN_PREAMBLE).toContain("Sub-Agent Propagation");
-    expect(CAVEMAN_PREAMBLE).toContain("Carve-outs — Structured-Terse");
+  it("composes the canonical control flow without replacing or rewriting it", () => {
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toBe(CAVEMAN_PREAMBLE + ORCHESTRATE_PROMPT_TEXT);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.endsWith(ORCHESTRATE_PROMPT_TEXT)).toBe(true);
   });
 
-  it("contains sub-agent inheritance block", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("# Caveman Mode (INHERITED from ARCS Caveman orchestrator)");
-    expect(CAVEMAN_PREAMBLE).toContain("Respond terse like caveman");
+  it("preserves safety, authorization, and canonical return requirements exactly", () => {
+    const protectedRequirements = [
+      "Security or authorization denial stops immediately.",
+      "The orchestrator has ARCS CLI mutation authority only after the relevant phase PASS and any required exact current-turn authorization.",
+      "Every worker starts with this text shape; read-only workers use `VERIFY: none`:",
+    ];
+
+    for (const requirement of protectedRequirements) {
+      expect(ORCHESTRATE_PROMPT_TEXT).toContain(requirement);
+      expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.slice(CAVEMAN_PREAMBLE.length)).toContain(requirement);
+    }
+    expect(CAVEMAN_PREAMBLE).toContain(
+      "security warnings, irreversible-action confirmations, exact-artifact authorization requests",
+    );
+    expect(CAVEMAN_PREAMBLE).toContain("canonical return envelope remain exact and unchanged");
+  });
+
+  it("does not define independent routing or dispatch authority", () => {
+    expect(CAVEMAN_PREAMBLE).toContain("adds no workflow, tool, mutation, approval, routing");
+    expect(CAVEMAN_PREAMBLE).not.toMatch(
+      /software-engineer|tech-architect|graph-explorer|code-reviewer|devil-advocate|arcs-docs/,
+    );
+    expect(CAVEMAN_PREAMBLE).not.toMatch(/## (Dispatch|Lifecycle|Workflow|Retry|Agent)/);
   });
 
   it("has correct agent metadata for ARCS Orchestrator and Caveman", async () => {
@@ -168,7 +182,8 @@ describe("Caveman preamble content regression", () => {
       expect(agents["ARCS Orchestrator"].mode).toBe("primary");
       expect(agents["ARCS Caveman"].color).toBe("#d2691e");
       expect(agents["ARCS Caveman"].mode).toBe("primary");
-      expect(agents["ARCS Caveman"].description).toContain("token-efficient");
+      expect(agents["ARCS Caveman"].description).toContain("terse");
+      expect(agents["ARCS Caveman"].description).toContain("high-efficiency");
     });
   });
 
@@ -186,9 +201,5 @@ describe("Caveman preamble content regression", () => {
       const content = readFileSync(cavemanPrompt, "utf-8");
       expect(content.startsWith(CAVEMAN_PREAMBLE)).toBe(true);
     });
-  });
-
-  it("contains structured-terse token for commit carve-out", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("structured-terse");
   });
 });

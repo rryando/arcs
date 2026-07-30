@@ -35,6 +35,16 @@ import { detectCycle } from "./toposort.js";
 export type { FileRef, TaskPriority, TaskStatus } from "./storage-utils.js";
 export { TASK_PRIORITIES, TASK_STATUSES } from "./storage-utils.js";
 
+export type TaskWorkMode = "bounded" | "inspect";
+
+const TASK_WORK_MODES: readonly TaskWorkMode[] = ["bounded", "inspect"];
+
+function validateTaskWorkMode(workMode: string): asserts workMode is TaskWorkMode {
+  if (!TASK_WORK_MODES.includes(workMode as TaskWorkMode)) {
+    throw new Error(`Invalid task work mode "${workMode}". Expected bounded or inspect.`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Meta types
 // ---------------------------------------------------------------------------
@@ -56,6 +66,8 @@ export interface TaskMeta {
   verify?: string;
   /** Per-node `%% skill:` metadata: which skill to load when executing the task. */
   skill?: string;
+  /** Per-node `%% work-mode:` metadata for implementation task routing. */
+  workMode?: TaskWorkMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -79,6 +91,7 @@ export interface CreateTaskInput {
   acceptance?: string;
   verify?: string;
   skill?: string;
+  workMode?: TaskWorkMode;
   now?: string;
 }
 
@@ -98,6 +111,8 @@ export interface UpdateTaskInput {
   verify?: string | null;
   /** Pass `null` to clear; pass string to set. */
   skill?: string | null;
+  /** Pass `null` to clear; pass a work mode to set. */
+  workMode?: TaskWorkMode | null;
   now?: string;
 }
 
@@ -128,6 +143,16 @@ function validateDependsOn(dependsOn: string[], index: TaskIndex, taskNormalized
 // Index helpers
 // ---------------------------------------------------------------------------
 
+export function normalizeTaskWorkMetadata(task: TaskMeta): TaskMeta {
+  if (task.skill === "quick-dev") {
+    return { ...task, skill: "implementation", workMode: "bounded" };
+  }
+  if (task.skill === "code-agent") {
+    return { ...task, skill: "implementation", workMode: "inspect" };
+  }
+  return { ...task };
+}
+
 async function readTaskIndex(projectDir: string): Promise<TaskIndex> {
   const tasksDir = join(projectDir, "tasks");
   if (!(await fileExists(tasksDir))) {
@@ -138,7 +163,7 @@ async function readTaskIndex(projectDir: string): Promise<TaskIndex> {
   if (!index || !Array.isArray(index.tasks)) {
     return { tasks: [] };
   }
-  return index;
+  return { tasks: index.tasks.map(normalizeTaskWorkMetadata) };
 }
 
 async function writeTaskIndex(projectDir: string, index: TaskIndex): Promise<void> {
@@ -208,6 +233,9 @@ export async function createTask(projectDir: string, input: CreateTaskInput): Pr
   const priority = input.priority ?? "medium";
   validateTaskStatus(status);
   validateTaskPriority(priority);
+  if (input.workMode !== undefined) {
+    validateTaskWorkMode(input.workMode);
+  }
   const sourceFiles = input.sourceFiles ? sanitizeFileRefs(input.sourceFiles) : undefined;
 
   const normalizedId = normalizeIdentifier(input.title);
@@ -223,7 +251,7 @@ export async function createTask(projectDir: string, input: CreateTaskInput): Pr
 
   const ts = nowISO(input.now);
 
-  const meta: TaskMeta = {
+  const meta = normalizeTaskWorkMetadata({
     id: normalizedId,
     normalizedId,
     title: input.title,
@@ -236,9 +264,10 @@ export async function createTask(projectDir: string, input: CreateTaskInput): Pr
     ...(input.acceptance && { acceptance: input.acceptance }),
     ...(input.verify && { verify: input.verify }),
     ...(input.skill && { skill: input.skill }),
+    ...(input.workMode && { workMode: input.workMode }),
     createdAt: ts,
     updatedAt: ts,
-  };
+  });
 
   index.tasks.push(meta);
   await writeTaskIndex(projectDir, index);
@@ -285,13 +314,17 @@ export async function updateTask(projectDir: string, input: UpdateTaskInput): Pr
   if (input.priority !== undefined) {
     validateTaskPriority(input.priority);
   }
+  if (input.workMode !== undefined && input.workMode !== null) {
+    validateTaskWorkMode(input.workMode);
+  }
 
   const normalizedId = normalizeIdentifier(input.id);
   const index = await readTaskIndex(projectDir);
-  const task = index.tasks.find((t) => t.normalizedId === normalizedId);
-  if (!task) {
+  const taskIndex = index.tasks.findIndex((t) => t.normalizedId === normalizedId);
+  if (taskIndex === -1) {
     throw itemNotFound("task", input.id);
   }
+  const task = index.tasks[taskIndex];
 
   if (input.title !== undefined) task.title = input.title;
   if (input.status !== undefined) task.status = input.status;
@@ -346,13 +379,23 @@ export async function updateTask(projectDir: string, input: UpdateTaskInput): Pr
       task.skill = input.skill;
     }
   }
+  if (input.workMode !== undefined) {
+    if (input.workMode === null) {
+      delete task.workMode;
+    } else {
+      task.workMode = input.workMode;
+    }
+  }
   task.updatedAt = nowISO(input.now);
+
+  const normalizedTask = normalizeTaskWorkMetadata(task);
+  index.tasks[taskIndex] = normalizedTask;
 
   await writeTaskIndex(projectDir, index);
   await renderTasksMd(projectDir, index);
 
   invalidateGraphCache(basename(projectDir));
-  return task;
+  return normalizedTask;
 }
 
 export async function deleteTask(projectDir: string, taskId: string): Promise<void> {

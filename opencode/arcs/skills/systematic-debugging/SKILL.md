@@ -43,7 +43,7 @@ flowchart TD
 
     WriteFail --> Implement[Single targeted fix]
     Implement --> Green{Scoped verification passes?}
-    Green -->|Yes| Capture[Capture resolution as ARCS knowledge]
+    Green -->|Yes| Capture[Propose resolution as ARCS knowledge]
     Green -->|No| FailCount
 
     class Found,Repro,Test,FailCount,Green decision
@@ -79,7 +79,7 @@ flowchart TD
 - Write a failing regression test FIRST (proves the bug exists and prevents a fix-before-test path)
 - Implement a single targeted fix
 - Run scoped verification for the files you changed (your dispatch VERIFY command — never the full suite; the devil-advocate completion gate owns that)
-- Capture the resolution as ARCS knowledge after verification passes
+- Prepare the resolution as an ARCS knowledge proposal after verification passes; do not execute `arcs knowledge upsert`
 - If your fix introduces new failures in YOUR scoped tests, revert and return to Phase 2. Failures in files outside your scope are report-only (BLOCKED_BY) — likely a sibling agent's in-flight work; never fix or revert it
 
 ## Log Triage Protocol
@@ -117,26 +117,26 @@ Diagnose: `npm ls <pkg>`, `npm explain <pkg>`, check for multiple copies.
 
 ## ARCS Knowledge Capture
 
-After root cause identified, persist as knowledge:
+After root cause identification, propose durable knowledge for orchestrator fan-in persistence:
 - **gotcha** — environmental/config traps
 - **lesson** — architectural insights from this session
 - **pattern** — reusable solution to recurring problem
 
 Include: root cause summary, evidence, affected files, fix approach.
 
-### Capture Resolution as Knowledge
+### Propose Resolution as Knowledge
 
 After resolving the issue, choose the kind and obtain its required anatomy before authoring a complete entry:
 
 ```bash
-arcs knowledge template <slug> --kind=gotcha --json
+arcs knowledge template --kind=gotcha --json
 # Fill every returned section with observed evidence, affected files, and the fix approach.
 arcs knowledge upsert <slug> "<specific debugging discovery>" \
   --kind=gotcha --summary="<durable takeaway>" --body-file=<complete-body.md> \
-  --source-files=<affected-paths> --json
+  --keywords="<error,component,root-cause>" --source-files=<affected-paths> --json
 ```
 
-Use the same template-first flow for `lesson` and `pattern`; do not copy a body-shaped example that omits the selected kind's required sections.
+Return that command as a ready-to-run proposal. Do not execute `arcs knowledge upsert`; the orchestrator owns fan-in persistence. Use the same template-first flow for `lesson` and `pattern`; do not copy a body-shaped example that omits the selected kind's required sections.
 
 **Kind selection guide:**
 - `gotcha` — surprising behavior, trap, or non-obvious failure mode

@@ -14,11 +14,13 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { readJsonSafeSync, stripJsonComments, validateJson } from "../utils/json.js";
 import {
+  type AgentRegistryRecord,
   opencodeInstalledManifestSchema,
   opencodeSourceManifestSchema,
   packageJsonSchema,
 } from "../utils/json-schemas.js";
 import { PACKAGE_ROOT } from "../utils/paths.js";
+import { validateAgentRegistry } from "./agent-registry.js";
 
 export type InstallState = "absent" | "arcs-managed" | "foreign-existing";
 
@@ -53,10 +55,7 @@ export interface SourceArcsBundleManifest {
     source: string;
     destination: string;
   };
-  agents: Array<{
-    source: string;
-    destination: string;
-  }>;
+  agents: AgentRegistryRecord[];
   ownedPaths: string[];
   plugin: {
     required: boolean;
@@ -75,6 +74,15 @@ export interface InstalledArcsBundleManifest {
   sourceBundleHash: string;
   installedAt: string;
   ownedPaths: string[];
+  agents?: InstalledAgentOwnership[];
+}
+
+export interface InstalledAgentOwnership {
+  id: string;
+  promptDestination: string;
+  sourceHash: string;
+  configKey?: string;
+  configHash?: string;
 }
 
 export interface InstallDetectionResult {
@@ -221,6 +229,9 @@ function validateInstalledManifestPaths(manifest: InstalledArcsBundleManifest): 
   for (const ownedPath of manifest.ownedPaths) {
     assertManifestPath(ownedPath);
   }
+  for (const agent of manifest.agents ?? []) {
+    assertManifestPath(agent.promptDestination, "prompts");
+  }
 }
 
 function resolvePathWithin(root: string, relativePath: string): string {
@@ -260,6 +271,7 @@ export function readSourceArcsBundleManifest(): SourceArcsBundleManifest {
     opencodeSourceManifestSchema,
     manifestPath,
   ) as SourceArcsBundleManifest;
+  validateAgentRegistry({ agents: manifest.agents });
   validateSourceManifestPaths(manifest);
   return manifest;
 }
@@ -420,7 +432,12 @@ export function buildArcsBundleInstallPlan(): InstallPlan {
           ),
     sourceBundleVersion: bundleInfo.sourceBundleVersion,
     sourceBundleHash: bundleInfo.sourceBundleHash,
-    requiredConfigMerges: sourceManifest.config.requiredMerges,
+    requiredConfigMerges: sourceManifest.config.requiredMerges.filter((merge) => {
+      const agentId = merge.path[0] === "agent" ? merge.path[1] : undefined;
+      return !sourceManifest.agents.some(
+        (agent) => agent.id === agentId && agent.status === "retired",
+      );
+    }),
   };
 }
 
@@ -574,10 +591,91 @@ function applyConfigMerges(
   return nextConfig;
 }
 
+function sha256(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function configOwnershipHash(value: unknown): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return sha256(JSON.stringify(value));
+  }
+  const withoutModel = { ...(value as Record<string, unknown>) };
+  delete withoutModel.model;
+  return sha256(JSON.stringify(withoutModel));
+}
+
+function agentConfigDefault(manifest: SourceArcsBundleManifest, agentId: string): unknown {
+  const merge = manifest.config.requiredMerges.find(
+    (candidate) =>
+      candidate.path.length === 2 &&
+      candidate.path[0] === "agent" &&
+      candidate.path[1] === agentId &&
+      typeof candidate.value === "object" &&
+      candidate.value !== null,
+  );
+  return (merge?.value as Record<string, unknown> | undefined)?.model;
+}
+
+function retireManagedAgents(
+  sourceManifest: SourceArcsBundleManifest,
+  previousManifest: InstalledArcsBundleManifest | null,
+  config: Record<string, unknown>,
+): { config: Record<string, unknown>; promptsToRemove: InstalledAgentOwnership[] } {
+  const retired = new Map(
+    sourceManifest.agents
+      .filter((agent) => agent.status === "retired")
+      .map((agent) => [agent.id, agent]),
+  );
+  const promptsToRemove: InstalledAgentOwnership[] = [];
+  const configAgents =
+    typeof config.agent === "object" && config.agent !== null && !Array.isArray(config.agent)
+      ? (config.agent as Record<string, unknown>)
+      : undefined;
+
+  for (const ownership of previousManifest?.agents ?? []) {
+    const record = retired.get(ownership.id);
+    if (!record || record.destination !== ownership.promptDestination) continue;
+
+    const promptPath = opencodePath(ownership.promptDestination);
+    if (existsSync(promptPath) && sha256(readFileSync(promptPath)) === ownership.sourceHash) {
+      promptsToRemove.push(ownership);
+    }
+
+    if (!configAgents || !ownership.configKey || !ownership.configHash) continue;
+    const current = configAgents[ownership.configKey];
+    if (current === undefined || configOwnershipHash(current) !== ownership.configHash) continue;
+
+    const currentEntry = current as Record<string, unknown>;
+    const retiredDefault = agentConfigDefault(sourceManifest, ownership.id);
+    const replacementEntry = record.replacementId ? configAgents[record.replacementId] : undefined;
+    if (
+      record.replacementId &&
+      typeof replacementEntry === "object" &&
+      replacementEntry !== null &&
+      currentEntry.model !== undefined &&
+      currentEntry.model !== retiredDefault
+    ) {
+      const replacement = replacementEntry as Record<string, unknown>;
+      const replacementDefault = agentConfigDefault(sourceManifest, record.replacementId);
+      if (replacement.model === undefined || replacement.model === replacementDefault) {
+        replacement.model = currentEntry.model;
+      }
+    }
+    delete configAgents[ownership.configKey];
+  }
+
+  return { config, promptsToRemove };
+}
+
 function manifestFromPlan(
   plan: InstallPlan,
   sourceManifest: SourceArcsBundleManifest,
+  config: Record<string, unknown>,
 ): InstalledArcsBundleManifest {
+  const configAgents =
+    typeof config.agent === "object" && config.agent !== null && !Array.isArray(config.agent)
+      ? (config.agent as Record<string, unknown>)
+      : {};
   return {
     bundleId: sourceManifest.bundleId,
     installMode: sourceManifest.installMode,
@@ -585,6 +683,22 @@ function manifestFromPlan(
     sourceBundleHash: plan.sourceBundleHash,
     installedAt: new Date().toISOString(),
     ownedPaths: sourceManifest.ownedPaths,
+    agents: sourceManifest.agents
+      .filter((agent) => agent.status === "active" && agent.modes.includes("opencode"))
+      .map((agent) => {
+        const configValue = configAgents[agent.id];
+        return {
+          id: agent.id,
+          promptDestination: agent.destination,
+          sourceHash: sha256(readFileSync(opencodePath(agent.destination))),
+          ...(configValue === undefined
+            ? {}
+            : {
+                configKey: agent.id,
+                configHash: configOwnershipHash(configValue),
+              }),
+        };
+      }),
   };
 }
 
@@ -626,10 +740,12 @@ function installInternal(options: InstallOptions = {}, hooks: InstallHooks = {})
     const stagedPlugin = sourceManifest.plugin.required
       ? stageSourcePath(sourceManifest.plugin.source, stagedDir)
       : null;
-    const stagedAgents = sourceManifest.agents.map((agent) => ({
-      ...agent,
-      stagedPath: stageSourcePath(agent.source, stagedDir),
-    }));
+    const stagedAgents = sourceManifest.agents
+      .filter((agent) => agent.status === "active" && agent.modes.includes("opencode"))
+      .map((agent) => ({
+        ...agent,
+        stagedPath: stageSourcePath(agent.source, stagedDir),
+      }));
 
     for (const pathToRemove of plan.pathsToRemove) {
       removePathIfExists(opencodePath(pathToRemove));
@@ -657,13 +773,18 @@ function installInternal(options: InstallOptions = {}, hooks: InstallHooks = {})
       copyFileSync(agent.stagedPath, opencodePath(agent.destination));
     }
 
-    const preparedConfig = applyConfigMerges(
+    const mergedConfig = applyConfigMerges(
       readJsonFile(opencodeConfigPath()),
       plan.requiredConfigMerges,
     );
+    const retirement = retireManagedAgents(sourceManifest, previousManifest, mergedConfig);
+    for (const ownership of retirement.promptsToRemove) {
+      const backup = backupExistingPath(ownership.promptDestination, backupDir);
+      if (backup) backupMap.set(ownership.promptDestination, backup);
+    }
     hooks.afterConfigPreparedBeforeManifestWrite?.();
-    writeJsonFile(opencodeConfigPath(), preparedConfig);
-    writeInstalledArcsBundleManifest(manifestFromPlan(plan, sourceManifest));
+    writeJsonFile(opencodeConfigPath(), retirement.config);
+    writeInstalledArcsBundleManifest(manifestFromPlan(plan, sourceManifest, retirement.config));
 
     return {
       status: "installed",

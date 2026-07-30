@@ -186,17 +186,13 @@ $ arcs brief --lean --json
 
 ## The Agent Bundle
 
-ARCS ships an OpenCode / Claude Code bundle: a **delegation-first orchestrator**, **8 typed sub-agents**, and **15 skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
+ARCS ships an OpenCode / Claude Code bundle: a **delegation-first orchestrator**, **six typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
 
 ### The orchestrator
 
-It never reads code, runs tests, or explores directly — it routes. It also holds its own operating values rather than only delegating them:
+It never reads code, runs tests, or explores directly — it routes. It resolves facts from the DAG first, falls back to `graph-explorer` for repository evidence, and sends implementation, design, review, verification, and documentation work to typed agents. It does not dispatch on guesses.
 
-- **`the-ladder`** — minimalism applies to orchestration itself. The cheapest rung that answers the need wins: *answer from context → one `arcs` CLI call → `graph-explorer` → typed agent*, with the fewest tasks and smallest disjoint scope per dispatch.
-- **`devil-advocate`** — every plan, dispatch, and "done" is challenged *before* the formal gate ("what breaks without this? who's actually blocked? can fewer agents do it?"); the gate then merely confirms.
-- **confidence-to-orchestrate** — it never dispatches on a guess. Ambiguity is resolved cheaply from the DAG first, then residual unknowns go to the user as batched questions — and it stops asking the moment it can state the goal and "done" in one sentence.
-
-A **read-first knowledge protocol** runs throughout: prior knowledge is read before every non-mechanical dispatch, and durable insight is captured at fan-in via idempotent `arcs knowledge upsert` — so the DAG compounds instead of duplicating.
+A **read-first knowledge protocol** runs throughout: prior knowledge is read before every non-mechanical dispatch, workers return idempotent `arcs knowledge upsert` proposals, and the orchestrator persists them only after their owning phase passes — so the DAG compounds instead of duplicating.
 
 ### Sub-agents
 
@@ -204,14 +200,12 @@ Each has a sharp niche; survivors carry explicit modes. The orchestrator dispatc
 
 | Sub-agent | Role |
 |-----------|------|
-| **graph-explorer** | DAG-first + codegraph-MCP exploration — "where is X / what depends on Y" |
-| **software-engineer** | Writes code; verifies only the files it touched |
-| **tech-architect** | Deep structural analysis, refactor guidance, trade-off evaluation |
-| **oncall-ops** | Debugging, log triage, bisect, root-cause analysis |
-| **code-reviewer** | Read-only review — reactive diff/PR review **and** proactive convention/architecture audit |
+| **software-engineer** | `default` implementation or `incident` diagnosis; uses orchestrator-selected `WORK_MODE: bounded` or `inspect` and verifies only its scoped files |
+| **tech-architect** | Read-only `architecture` design or DAG-first cited `research` |
+| **graph-explorer** | DAG-first location and dependency questions, with codegraph/source fallback when the DAG cannot answer |
+| **code-reviewer** | Read-only reactive `review` or proactive `audit` |
 | **devil-advocate** | Adversarial KISS/YAGNI/DRY gate; its completion gate is the single full-project verification |
-| **arcs-docs** | DAG health, plan/knowledge/diagram curation |
-| **docs-researcher** | External research and documentation; tech-stack scans |
+| **arcs-docs** | Read-only `audit` followed by approved `apply` for the two-pass SYNC workflow |
 
 Every sub-agent opens with the standard return envelope so the orchestrator can parse, not re-read:
 
@@ -220,22 +214,18 @@ STATUS: done | blocked | partial
 FILES_TOUCHED: src/foo.ts
 VERIFY: vitest run test/foo.test.ts → pass
 BLOCKED_BY: <only when blocked/partial — evidence>
+SCOPE_CHANGE: none
+SHORTCUTS: none
 KNOWLEDGE: none
 ```
 
-Sub-agents verify only the files they touched. The **devil-advocate completion gate** runs the session's single full-project pass (full suite + `tsc --noEmit`); on a block, the orchestrator re-dispatches scoped fixes and re-gates.
+Sub-agents verify only the files they touched. The **devil-advocate completion gate** runs the session's single full-project pass (`npm test`, `npm run typecheck`, and `npm run lint`); on a block, the orchestrator re-dispatches scoped fixes and re-gates.
 
 ### Skills (loaded per dispatch)
 
-| Category | Skills |
-|----------|--------|
-| **Work mode** (pick one) | `quick-dev`, `code-agent`, `test-driven-development`, `brainstorming` |
-| **Lifecycle** | `writing-plans`, `executing-plans` (sequential or parallel), `writing-knowledge` |
-| **Quality** | `requesting-code-review`, `deep-pr-review`, `systematic-debugging` |
-| **Discipline** | `the-ladder` (auto-layers under work modes — not a mode you pick) |
-| **Tooling** | `to-diagram`, `init-project`, `caveman-commit`, `enriching-codegraph-proposals` |
+The twelve skills are: `implementation`, `test-driven-development`, `executing-plans`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, and `caveman-commit`.
 
-`the-ladder` climbs to the lowest rung that solves the problem — **YAGNI → standard library → native feature → existing dependency → one line → the minimum that works** — while never simplifying away hard carve-outs (trust-boundary validation, data-loss handling, security, accessibility, anything explicitly requested).
+`implementation` handles both bounded work and limited inspection. New behavior and bug fixes add `test-driven-development`; incidents add `systematic-debugging`; one approved plan node may add `executing-plans`. Design is a finite HITL path: `brainstorming` produces a design, the user approves it, and `writing-plans` is the sole author of the exact plan/task/diagram draft. SYNC is two-pass: `arcs-docs` audits, `devil-advocate` gates the exact proposal, then `arcs-docs` applies it. There are no automatic git actions; add, commit, and push require an explicit current-turn user request.
 
 ---
 

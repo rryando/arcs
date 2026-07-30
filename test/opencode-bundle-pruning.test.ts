@@ -15,7 +15,7 @@ type RuntimeManifest = {
 };
 
 type SourceManifest = {
-  agents: Array<{ source: string }>;
+  agents: Array<{ status: "active" | "retired"; source: string }>;
 };
 
 function readJsonFile<T>(filePath: string): T {
@@ -47,7 +47,9 @@ describe("checked-in opencode bundle pruning", () => {
       ),
       ...runtimeManifest.agents,
       ...runtimeManifest.plugin,
-      ...sourceManifest.agents.map((agent) => agent.source),
+      ...sourceManifest.agents
+        .filter((agent) => agent.status === "active")
+        .map((agent) => agent.source),
     ].sort();
 
     expect(listRelativeFiles(bundleRoot).sort()).toEqual(expectedBundleFiles);
