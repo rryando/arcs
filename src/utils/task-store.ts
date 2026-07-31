@@ -5,7 +5,6 @@
  * with a flat JSON index and markdown render for human-readable output.
  */
 
-import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { invalidateGraphCache } from "../retrieval/graph-invalidate.js";
 import {
@@ -24,7 +23,8 @@ import {
   sanitizeFileRefs,
   validateTaskPriority,
   validateTaskStatus,
-  writeJson,
+  writeFilesTransaction,
+  writeTextAtomic,
 } from "./storage-utils.js";
 import { detectCycle } from "./toposort.js";
 
@@ -166,13 +166,19 @@ async function readTaskIndex(projectDir: string): Promise<TaskIndex> {
   return { tasks: index.tasks.map(normalizeTaskWorkMetadata) };
 }
 
-async function writeTaskIndex(projectDir: string, index: TaskIndex): Promise<void> {
+function taskStoreLockPath(projectDir: string): string {
+  return join(projectDir, "tasks", ".store");
+}
+
+async function writeTaskState(projectDir: string, index: TaskIndex): Promise<void> {
   const tasksDir = join(projectDir, "tasks");
   await ensureDir(tasksDir);
   const indexPath = join(tasksDir, "index.json");
-  await withLock(indexPath, async () => {
-    await writeJson(indexPath, index);
-  });
+  const markdown = await renderTasksContent(projectDir, index);
+  await writeFilesTransaction([
+    { path: indexPath, content: `${JSON.stringify(index, null, 2)}\n` },
+    { path: join(projectDir, "tasks.md"), content: markdown },
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +196,7 @@ function sortByPriority(tasks: TaskMeta[]): TaskMeta[] {
   return [...tasks].sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
 }
 
-export async function renderTasksMd(projectDir: string, index: TaskIndex): Promise<void> {
+async function renderTasksContent(projectDir: string, index: TaskIndex): Promise<string> {
   const metaPath = join(projectDir, "meta.json");
   const meta = await readJsonSafe<{ name?: string }>(metaPath);
   const name = meta?.name ?? "Unknown";
@@ -221,14 +227,18 @@ export async function renderTasksMd(projectDir: string, index: TaskIndex): Promi
     sections.push("");
   }
 
-  await writeFile(join(projectDir, "tasks.md"), sections.join("\n"), "utf-8");
+  return sections.join("\n");
+}
+
+export async function renderTasksMd(projectDir: string, index: TaskIndex): Promise<void> {
+  await writeTextAtomic(join(projectDir, "tasks.md"), await renderTasksContent(projectDir, index));
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function createTask(projectDir: string, input: CreateTaskInput): Promise<TaskMeta> {
+async function createTaskUnlocked(projectDir: string, input: CreateTaskInput): Promise<TaskMeta> {
   const status = input.status ?? "backlog";
   const priority = input.priority ?? "medium";
   validateTaskStatus(status);
@@ -270,11 +280,15 @@ export async function createTask(projectDir: string, input: CreateTaskInput): Pr
   });
 
   index.tasks.push(meta);
-  await writeTaskIndex(projectDir, index);
-  await renderTasksMd(projectDir, index);
+  await writeTaskState(projectDir, index);
 
   invalidateGraphCache(basename(projectDir));
   return meta;
+}
+
+export async function createTask(projectDir: string, input: CreateTaskInput): Promise<TaskMeta> {
+  await ensureDir(join(projectDir, "tasks"));
+  return withLock(taskStoreLockPath(projectDir), () => createTaskUnlocked(projectDir, input));
 }
 
 export async function listTasks(
@@ -307,7 +321,7 @@ export async function getTask(projectDir: string, taskId: string): Promise<TaskM
   return task;
 }
 
-export async function updateTask(projectDir: string, input: UpdateTaskInput): Promise<TaskMeta> {
+async function updateTaskUnlocked(projectDir: string, input: UpdateTaskInput): Promise<TaskMeta> {
   if (input.status !== undefined) {
     validateTaskStatus(input.status);
   }
@@ -391,14 +405,18 @@ export async function updateTask(projectDir: string, input: UpdateTaskInput): Pr
   const normalizedTask = normalizeTaskWorkMetadata(task);
   index.tasks[taskIndex] = normalizedTask;
 
-  await writeTaskIndex(projectDir, index);
-  await renderTasksMd(projectDir, index);
+  await writeTaskState(projectDir, index);
 
   invalidateGraphCache(basename(projectDir));
   return normalizedTask;
 }
 
-export async function deleteTask(projectDir: string, taskId: string): Promise<void> {
+export async function updateTask(projectDir: string, input: UpdateTaskInput): Promise<TaskMeta> {
+  await ensureDir(join(projectDir, "tasks"));
+  return withLock(taskStoreLockPath(projectDir), () => updateTaskUnlocked(projectDir, input));
+}
+
+async function deleteTaskUnlocked(projectDir: string, taskId: string): Promise<void> {
   const normalizedId = normalizeIdentifier(taskId);
   const index = await readTaskIndex(projectDir);
   const task = index.tasks.find((t) => t.normalizedId === normalizedId);
@@ -407,6 +425,11 @@ export async function deleteTask(projectDir: string, taskId: string): Promise<vo
   }
 
   index.tasks = index.tasks.filter((t) => t.normalizedId !== normalizedId);
-  await writeTaskIndex(projectDir, index);
-  await renderTasksMd(projectDir, index);
+  await writeTaskState(projectDir, index);
+  invalidateGraphCache(basename(projectDir));
+}
+
+export async function deleteTask(projectDir: string, taskId: string): Promise<void> {
+  await ensureDir(join(projectDir, "tasks"));
+  await withLock(taskStoreLockPath(projectDir), () => deleteTaskUnlocked(projectDir, taskId));
 }

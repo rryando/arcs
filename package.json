@@ -32,22 +32,30 @@
   ],
   "author": "rryando",
   "license": "MIT",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "build": "tsc",
     "build:opencode-bundle": "npm run build && node scripts/build-opencode-bundle.mjs",
-    "prepack": "npm run build:opencode-bundle",
+    "build:web": "npm --workspace @arcs/web run build",
+    "prepack": "npm run build:opencode-bundle && npm run build:web",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "vitest run",
     "init": "node dist/index.js init",
-    "lint": "biome check src/ test/",
-    "lint:fix": "biome check --fix src/ test/",
-    "format": "biome format --write src/ test/",
-    "typecheck": "tsc --noEmit"
+    "lint": "biome check src/ test/ web/",
+    "lint:fix": "biome check --fix src/ test/ web/",
+    "format": "biome format --write src/ test/ web/",
+    "typecheck": "tsc --noEmit",
+    "web:server": "npm run build && npm run build:web && node dist/index.js web",
+    "web:dev": "npm --workspace @arcs/web run dev"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",
+    "@hono/node-server": "^2.0.12",
     "@rryando/arcs": "^3.9.1",
+    "hono": "^4.12.32",
     "picocolors": "^1.1.1",
     "zod": "^3.24.4"
   },

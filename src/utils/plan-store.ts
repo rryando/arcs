@@ -5,7 +5,7 @@
  * with automatic index maintenance and rebuild-on-read resilience.
  */
 
-import { readdir, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { invalidateGraphCache } from "../retrieval/graph-invalidate.js";
 import {
@@ -23,10 +23,10 @@ import {
   ensureDir,
   fileExists,
   nowISO,
-  rewriteH1,
   sanitizeFileRefs,
   sanitizeKeywords,
   validatePlanStatus,
+  writeFilesTransaction,
   writeJson,
 } from "./storage-utils.js";
 
@@ -80,7 +80,15 @@ export interface UpdatePlanInput {
   summary?: string;
   keywords?: string[];
   sourceFiles?: import("./storage-utils.js").FileRef[];
+  content?: string;
+  diagram?: string | null;
   now?: string;
+}
+
+export interface PlanDocument {
+  meta: PlanMeta;
+  body: string;
+  diagram: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,16 +145,21 @@ async function isPlanIndexStale(plansDir: string, index: PlanIndex): Promise<boo
   return false;
 }
 
-async function writePlanIndex(plansDir: string, index: PlanIndex): Promise<void> {
-  const indexPath = join(plansDir, "index.json");
-  await withLock(indexPath, async () => {
-    await writeJson(indexPath, index);
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+function rewriteBodyTitle(body: string, title: string): string {
+  if (body.startsWith("# ")) {
+    const newline = body.indexOf("\n");
+    return newline === -1 ? `# ${title}\n` : `# ${title}${body.slice(newline)}`;
+  }
+  return `# ${title}\n\n${body}`;
+}
+
+function planStoreLockPath(plansDir: string): string {
+  return join(plansDir, ".store");
+}
 
 export async function createPlan(projectDir: string, input: CreatePlanInput): Promise<PlanMeta> {
   validatePlanStatus(input.status);
@@ -157,43 +170,43 @@ export async function createPlan(projectDir: string, input: CreatePlanInput): Pr
   const plansDir = join(projectDir, "plans");
   await ensureDir(plansDir);
 
-  const metaPath = join(plansDir, `${normalizedId}.meta.json`);
-  if (await fileExists(metaPath)) {
-    throw normalizedIdCollision("plan", input.id, normalizedId);
-  }
+  return withLock(planStoreLockPath(plansDir), async () => {
+    const metaPath = join(plansDir, `${normalizedId}.meta.json`);
+    if (await fileExists(metaPath)) throw normalizedIdCollision("plan", input.id, normalizedId);
 
-  const ts = nowISO(input.now);
-  const bodyFile = join("plans", `${normalizedId}.md`);
+    const ts = nowISO(input.now);
+    const bodyFile = join("plans", `${normalizedId}.md`);
+    const bodyPath = join(projectDir, bodyFile);
+    const indexPath = join(plansDir, "index.json");
+    const meta: PlanMeta = {
+      id: normalizedId,
+      normalizedId,
+      title: input.title,
+      status: input.status,
+      keywords,
+      summary: input.summary ?? "",
+      ...(sourceFiles && sourceFiles.length > 0 && { sourceFiles }),
+      file: bodyFile,
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    const index = (await readJsonSafe<PlanIndex>(indexPath)) ?? { plans: [] };
+    index.plans.push(meta);
 
-  const meta: PlanMeta = {
-    id: normalizedId,
-    normalizedId,
-    title: input.title,
-    status: input.status,
-    keywords,
-    summary: input.summary ?? "",
-    ...(sourceFiles && { sourceFiles }),
-    file: bodyFile,
-    createdAt: ts,
-    updatedAt: ts,
-  };
-
-  await writeJson(metaPath, meta);
-  await writeFile(join(projectDir, bodyFile), buildBody(input.title, input.content), "utf-8");
-
-  const index = (await readJsonSafe<PlanIndex>(join(plansDir, "index.json"))) ?? { plans: [] };
-  index.plans.push(meta);
-  await writePlanIndex(plansDir, index);
-
-  invalidateGraphCache(basename(projectDir));
-  return meta;
+    await writeFilesTransaction([
+      { path: metaPath, content: `${JSON.stringify(meta, null, 2)}\n` },
+      { path: bodyPath, content: buildBody(input.title, input.content) },
+      { path: indexPath, content: `${JSON.stringify(index, null, 2)}\n` },
+    ]);
+    invalidateGraphCache(basename(projectDir));
+    return meta;
+  });
 }
 
-export async function updatePlan(projectDir: string, input: UpdatePlanInput): Promise<PlanMeta> {
-  if (input.status !== undefined) {
-    validatePlanStatus(input.status);
-  }
-
+async function updatePlanUnlocked(
+  projectDir: string,
+  input: UpdatePlanInput,
+): Promise<PlanDocument> {
   const normalizedId = normalizeIdentifier(input.id);
   const plansDir = join(projectDir, "plans");
   const metaPath = join(plansDir, `${normalizedId}.meta.json`);
@@ -203,12 +216,14 @@ export async function updatePlan(projectDir: string, input: UpdatePlanInput): Pr
     throw itemNotFound("plan", input.id);
   }
 
-  const ts = nowISO(input.now);
+  const bodyPath = join(projectDir, meta.file);
+  const diagramPath = join(plansDir, `${normalizedId}.diagram.mmd`);
+  let body = await readFile(bodyPath, "utf-8").catch(() => "");
+  let diagram = await readFile(diagramPath, "utf-8").catch(() => null);
 
   if (input.status !== undefined) meta.status = input.status;
   if (input.title !== undefined && input.title !== meta.title) {
-    const bodyPath = join(projectDir, meta.file);
-    await rewriteH1(bodyPath, input.title);
+    if (input.content === undefined) body = rewriteBodyTitle(body, input.title);
     meta.title = input.title;
   }
   if (input.summary !== undefined) meta.summary = input.summary;
@@ -220,43 +235,77 @@ export async function updatePlan(projectDir: string, input: UpdatePlanInput): Pr
       meta.sourceFiles = sanitizeFileRefs(input.sourceFiles);
     }
   }
-  meta.updatedAt = ts;
+  if (input.content !== undefined) body = input.content;
+  if (input.diagram !== undefined) {
+    diagram = input.diagram === null || input.diagram.trim() === "" ? null : input.diagram;
+  }
+  meta.updatedAt = nowISO(input.now);
 
-  await writeJson(metaPath, meta);
-
-  const index = (await readJsonSafe<PlanIndex>(join(plansDir, "index.json"))) ?? { plans: [] };
+  const indexPath = join(plansDir, "index.json");
+  const index = (await readJsonSafe<PlanIndex>(indexPath)) ?? { plans: [] };
   const idx = index.plans.findIndex((p) => p.normalizedId === normalizedId);
   if (idx >= 0) {
     index.plans[idx] = meta;
   } else {
     index.plans.push(meta);
   }
-  await writePlanIndex(plansDir, index);
+  const mutations: Array<{ path: string; content: string | null }> = [
+    { path: metaPath, content: `${JSON.stringify(meta, null, 2)}\n` },
+    { path: bodyPath, content: body },
+    { path: indexPath, content: `${JSON.stringify(index, null, 2)}\n` },
+  ];
+  if (input.diagram !== undefined) mutations.push({ path: diagramPath, content: diagram });
+  await writeFilesTransaction(mutations);
 
   invalidateGraphCache(basename(projectDir));
-  return meta;
+  return { meta, body, diagram };
+}
+
+async function updatePlanDocumentLocked(
+  projectDir: string,
+  input: UpdatePlanInput,
+): Promise<PlanDocument> {
+  if (input.status !== undefined) validatePlanStatus(input.status);
+  const plansDir = join(projectDir, "plans");
+  await ensureDir(plansDir);
+  return withLock(planStoreLockPath(plansDir), () => updatePlanUnlocked(projectDir, input));
+}
+
+export async function updatePlan(projectDir: string, input: UpdatePlanInput): Promise<PlanMeta> {
+  return (await updatePlanDocumentLocked(projectDir, input)).meta;
+}
+
+export async function updatePlanDocument(
+  projectDir: string,
+  input: UpdatePlanInput,
+): Promise<PlanDocument> {
+  return updatePlanDocumentLocked(projectDir, input);
 }
 
 export async function deletePlan(projectDir: string, id: string): Promise<void> {
   const normalizedId = normalizeIdentifier(id);
   const plansDir = join(projectDir, "plans");
-  const metaPath = join(plansDir, `${normalizedId}.meta.json`);
+  await ensureDir(plansDir);
 
-  const meta = await readJsonSafe<PlanMeta>(metaPath);
-  if (!meta) {
-    throw itemNotFound("plan", id);
-  }
+  await withLock(planStoreLockPath(plansDir), async () => {
+    const metaPath = join(plansDir, `${normalizedId}.meta.json`);
+    const meta = await readJsonSafe<PlanMeta>(metaPath);
+    if (!meta) throw itemNotFound("plan", id);
 
-  const { unlink } = await import("node:fs/promises");
-  const bodyPath = join(projectDir, meta.file);
-  await unlink(metaPath);
-  if (await fileExists(bodyPath)) {
-    await unlink(bodyPath);
-  }
+    const bodyPath = join(projectDir, meta.file);
+    const diagramPath = join(plansDir, `${normalizedId}.diagram.mmd`);
+    const indexPath = join(plansDir, "index.json");
+    const index = (await readJsonSafe<PlanIndex>(indexPath)) ?? { plans: [] };
+    index.plans = index.plans.filter((plan) => plan.normalizedId !== normalizedId);
 
-  const index = (await readJsonSafe<PlanIndex>(join(plansDir, "index.json"))) ?? { plans: [] };
-  index.plans = index.plans.filter((p) => p.normalizedId !== normalizedId);
-  await writePlanIndex(plansDir, index);
+    await writeFilesTransaction([
+      { path: metaPath, content: null },
+      { path: bodyPath, content: null },
+      { path: diagramPath, content: null },
+      { path: indexPath, content: `${JSON.stringify(index, null, 2)}\n` },
+    ]);
+    invalidateGraphCache(basename(projectDir));
+  });
 }
 
 export async function readPlanIndex(projectDir: string): Promise<{ plans: PlanMeta[] }> {

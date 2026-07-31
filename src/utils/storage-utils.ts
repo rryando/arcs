@@ -5,8 +5,10 @@
  * plan-store, knowledge-store, and task-store modules.
  */
 
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   invalidFileRef,
   invalidKeyword,
@@ -173,8 +175,98 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
 }
 
+async function syncDirectory(filePath: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(dirname(filePath), "r");
+    await handle.sync();
+  } catch {
+    // Directory fsync is unsupported on some platforms/filesystems.
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+/**
+ * Durably replace a text file: fsync the staged file, rename atomically, then
+ * fsync the parent directory where supported.
+ */
+export async function writeTextAtomic(filePath: string, content: string): Promise<void> {
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(tempPath, "w");
+    await handle.writeFile(content, "utf-8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(tempPath, filePath);
+    await syncDirectory(filePath);
+  } finally {
+    await handle?.close().catch(() => {});
+    await rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+export interface FileMutation {
+  path: string;
+  /** null removes the file. */
+  content: string | null;
+}
+
+/**
+ * Best-effort multi-file transaction. Every file replacement is individually
+ * atomic/durable; if a later mutation fails, prior files are restored from
+ * their snapshots before the error is rethrown. Callers must hold the
+ * collection-level advisory lock for the whole operation.
+ */
+export async function writeFilesTransaction(mutations: FileMutation[]): Promise<void> {
+  const snapshots = await Promise.all(
+    mutations.map(async (mutation) => {
+      try {
+        return {
+          path: mutation.path,
+          existed: true,
+          content: await readFile(mutation.path, "utf-8"),
+        };
+      } catch {
+        return { path: mutation.path, existed: false, content: "" };
+      }
+    }),
+  );
+
+  try {
+    for (const mutation of mutations) {
+      if (mutation.content === null) {
+        await unlink(mutation.path).catch((error: unknown) => {
+          if (
+            !error ||
+            typeof error !== "object" ||
+            !("code" in error) ||
+            (error as { code: string }).code !== "ENOENT"
+          ) {
+            throw error;
+          }
+        });
+        await syncDirectory(mutation.path);
+      } else {
+        await writeTextAtomic(mutation.path, mutation.content);
+      }
+    }
+  } catch (error) {
+    for (const snapshot of snapshots) {
+      if (snapshot.existed) {
+        await writeTextAtomic(snapshot.path, snapshot.content).catch(() => {});
+      } else {
+        await unlink(snapshot.path).catch(() => {});
+      }
+    }
+    throw error;
+  }
+}
+
 export async function writeJson(filePath: string, data: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+  await writeTextAtomic(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 export function nowISO(override?: string): string {
@@ -212,8 +304,8 @@ export async function rewriteH1(filePath: string, newTitle: string): Promise<voi
   const body = await readFile(filePath, "utf-8");
   if (body.startsWith("# ")) {
     const rest = body.slice(body.indexOf("\n"));
-    await writeFile(filePath, `# ${newTitle}${rest}`, "utf-8");
+    await writeTextAtomic(filePath, `# ${newTitle}${rest}`);
   } else {
-    await writeFile(filePath, `# ${newTitle}\n\n${body}`, "utf-8");
+    await writeTextAtomic(filePath, `# ${newTitle}\n\n${body}`);
   }
 }
