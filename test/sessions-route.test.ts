@@ -7,12 +7,17 @@
  * `/doc` when the route was written.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createSession, getSession } from "../src/utils/session-store.js";
+import {
+  createSession,
+  getSession,
+  listSessions,
+  type SessionMeta,
+} from "../src/utils/session-store.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
@@ -29,8 +34,20 @@ interface OpencodeStub {
   requests: CapturedRequest[];
   /** Status the next `prompt_async` call answers with (default 204). */
   status: number;
+  /** Body the next `POST /session` answers with; null replays the SPA-shell trap. */
+  createdSession: unknown;
   close: () => Promise<void>;
 }
+
+/** Shape of a real `POST /session` response (opencode 0.0.0-main-202607110203). */
+const DEFAULT_CREATED_SESSION = {
+  id: "ses_created_1",
+  slug: "nimble-cactus",
+  projectID: "global",
+  directory: "/work/demo",
+  title: "arcs web session",
+  time: { created: 1785560795148, updated: 1785560795148 },
+};
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolvePromise) => {
@@ -44,18 +61,41 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 async function startOpencodeStub(): Promise<OpencodeStub> {
   const requests: CapturedRequest[] = [];
-  const stub = { status: 204 } as { status: number };
+  const stub = { status: 204, createdSession: DEFAULT_CREATED_SESSION } as {
+    status: number;
+    createdSession: unknown;
+  };
 
   const server: Server = createServer((req, res) => {
     void (async () => {
       const raw = await readBody(req);
+      const url = req.url ?? "";
       requests.push({
         method: req.method ?? "",
-        url: req.url ?? "",
+        url,
         ...(req.headers.authorization && { authorization: req.headers.authorization }),
         ...(req.headers["content-type"] && { contentType: req.headers["content-type"] }),
         body: raw ? JSON.parse(raw) : null,
       });
+
+      // `POST /session` (create) answers with a session object, unlike
+      // `prompt_async` which acks with a bare 204.
+      if (req.method === "POST" && url.startsWith("/session?")) {
+        if (stub.createdSession === null) {
+          // opencode serves its web UI from the same port and answers unknown
+          // paths with a 200 text/html SPA shell — the failure mode a wrong
+          // create path produces.
+          res.writeHead(200, { "content-type": "text/html;charset=UTF-8" });
+          res.end("<!doctype html><html><body></body></html>");
+          return;
+        }
+        res.writeHead(stub.status === 204 ? 200 : stub.status, {
+          "content-type": "application/json",
+        });
+        res.end(JSON.stringify(stub.status === 204 ? stub.createdSession : { name: "StubError" }));
+        return;
+      }
+
       res.writeHead(stub.status, { "content-type": "application/json" });
       res.end(stub.status === 204 ? undefined : JSON.stringify({ name: "StubError" }));
     })();
@@ -72,6 +112,12 @@ async function startOpencodeStub(): Promise<OpencodeStub> {
     },
     set status(value: number) {
       stub.status = value;
+    },
+    get createdSession() {
+      return stub.createdSession;
+    },
+    set createdSession(value: unknown) {
+      stub.createdSession = value;
     },
     close: () =>
       new Promise<void>((resolvePromise) => {
@@ -162,6 +208,130 @@ async function sendMessage(base: string, id: string, body: unknown) {
   };
   return { status: res.status, envelope };
 }
+
+/** The harness registers the project with no workspace paths; most creation
+ *  tests need one, so they opt in explicitly. */
+function setWorkspacePaths(projectDir: string, paths: string[]): void {
+  const path = resolve(projectDir, "meta.json");
+  const meta = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  writeFileSync(path, JSON.stringify({ ...meta, workspacePaths: paths }), "utf-8");
+}
+
+async function createOpencode(base: string, body: unknown = {}) {
+  const res = await fetch(`${base}/api/p/demo/sessions/opencode/new`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const envelope = (await res.json()) as {
+    ok: boolean;
+    data?: SessionMeta;
+    code?: string;
+    message?: string;
+  };
+  return { status: res.status, envelope };
+}
+
+describe("POST /api/p/:slug/sessions/opencode/new", () => {
+  it("creates a live opencode session in the project workspace and indexes it at once", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      setWorkspacePaths(projectDir, ["/work/demo", "/work/demo-secondary"]);
+
+      const { status, envelope } = await createOpencode(base, { title: "arcs web session" });
+
+      expect(status).toBe(201);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.runtimeType).toBe("opencode");
+      expect(envelope.data?.runtimeSessionId).toBe("ses_created_1");
+      expect(envelope.data?.status).toBe("active");
+      expect(envelope.data?.metadata).toMatchObject({
+        directory: "/work/demo",
+        title: "arcs web session",
+      });
+
+      expect(opencode.requests).toHaveLength(1);
+      const request = opencode.requests[0];
+      expect(request.method).toBe("POST");
+      // `POST /session` — NOT `/api/session`, and `directory` is a query
+      // parameter rather than a body field.
+      expect(request.url).toBe("/session?directory=%2Fwork%2Fdemo");
+      expect(request.body).toEqual({ title: "arcs web session" });
+      expect(request.authorization).toBe(
+        `Basic ${Buffer.from("opencode:hunter2").toString("base64")}`,
+      );
+
+      // Visible without waiting for the discovery stream to catch up.
+      const stored = await getSession(projectDir, envelope.data?.normalizedId ?? "");
+      expect(stored.runtimeSessionId).toBe("ses_created_1");
+    });
+  });
+
+  it("sends an empty body when no title is supplied", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      setWorkspacePaths(projectDir, ["/work/demo"]);
+
+      const { status } = await createOpencode(base);
+
+      expect(status).toBe(201);
+      expect(opencode.requests[0].body).toEqual({});
+    });
+  });
+
+  it("refuses to guess a directory when the project has no workspace path", async () => {
+    await withRouteCtx(async ({ base, opencode }) => {
+      const { status, envelope } = await createOpencode(base);
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("PROJECT_WORKSPACE_UNSET");
+      expect(envelope.message).toMatch(/project update-paths/);
+      // Nothing may reach opencode: an unscoped create lands in opencode's own cwd.
+      expect(opencode.requests).toHaveLength(0);
+    });
+  });
+
+  it("reports a missing opencode configuration instead of a generic failure", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      setWorkspacePaths(projectDir, ["/work/demo"]);
+      delete process.env.ARCS_OPENCODE_URL;
+      delete process.env.OPENCODE_URL;
+      delete process.env.OPENCODE_PORT;
+
+      const { status, envelope } = await createOpencode(base);
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("OPENCODE_NOT_CONFIGURED");
+      expect(opencode.requests).toHaveLength(0);
+    });
+  });
+
+  it("rejects a 200 that is opencode's SPA shell rather than a session", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      setWorkspacePaths(projectDir, ["/work/demo"]);
+      opencode.createdSession = null;
+
+      const { status, envelope } = await createOpencode(base);
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("OPENCODE_REQUEST_FAILED");
+      // A wrong path must not leave a phantom session in the index.
+      expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+
+  it("surfaces an opencode rejection with its status", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      setWorkspacePaths(projectDir, ["/work/demo"]);
+      opencode.status = 400;
+
+      const { status, envelope } = await createOpencode(base);
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("OPENCODE_REQUEST_FAILED");
+      expect(envelope.message).toMatch(/400/);
+      expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+});
 
 describe("POST /api/p/:slug/sessions/:id/message", () => {
   it("injects the message into the live opencode session and bumps lastMessageAt", async () => {

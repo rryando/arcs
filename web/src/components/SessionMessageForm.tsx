@@ -13,7 +13,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import type { SessionLinkedNodeType, SessionMeta } from "../api/client";
-import { useSendSessionMessage, useSessions } from "../api/hooks";
+import { useCreateOpencodeSession, useSendSessionMessage, useSessions } from "../api/hooks";
 import { cx, truncate } from "../lib/format";
 import { Dialog, inputClass } from "./Dialog";
 import { SessionStatusBadge } from "./SessionStatusBadge";
@@ -74,6 +74,7 @@ export function SessionMessageForm({
   onClose,
 }: SessionMessageFormProps) {
   const sendMessage = useSendSessionMessage(slug);
+  const createSession = useCreateOpencodeSession(slug);
   const { data: sessionsData } = useSessions(slug);
   const { push } = useToaster();
   const [picked, setPicked] = useState<SessionMeta | null>(null);
@@ -128,6 +129,24 @@ export function SessionMessageForm({
     );
   };
 
+  // Selecting the new session outright (rather than just refreshing the list)
+  // is the point of the affordance: the user wanted somewhere to send a
+  // message, so the picker hands straight over to the compose view — with any
+  // `initialText` still in the textarea.
+  const createAndPick = () => {
+    if (createSession.isPending) return;
+    createSession.mutate(
+      {},
+      {
+        onSuccess: (created) => {
+          setPicked(created);
+          push("success", "opencode session created");
+        },
+        onError: (err) => push("error", err instanceof Error ? err.message : String(err)),
+      },
+    );
+  };
+
   if (!target || !delivery) {
     return (
       <Dialog title="send message — pick a session" onClose={onClose} width="max-w-2xl">
@@ -160,6 +179,24 @@ export function SessionMessageForm({
               </button>
             ))
           )}
+        </div>
+
+        {/* Always offered, not just when the list is empty — an empty picker
+            must never be a dead end, and a filtered-down one is the same
+            problem in miniature. */}
+        <div className="mt-2 flex items-baseline gap-2">
+          <button
+            type="button"
+            disabled={createSession.isPending}
+            onClick={createAndPick}
+            className="shrink-0 border border-term-green/60 px-2 py-0.5 text-[12px] text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
+          >
+            {createSession.isPending ? "starting…" : "+ new opencode session"}
+          </button>
+          <span className="text-[11px] leading-snug text-term-dim">
+            starts in the project workspace. Claude Code sessions cannot be created remotely — run{" "}
+            <span className="kbd">claude</span> in a linked directory instead.
+          </span>
         </div>
 
         <div className="mt-3 flex items-center gap-2 text-[12px]">

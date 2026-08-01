@@ -285,6 +285,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  /** Starts a real opencode session in the project's primary workspace. There is
+   *  no claude-code equivalent — those only exist once a user runs `claude`. */
+  createOpencodeSession: (slug: string, input: { title?: string } = {}) =>
+    request<SessionMeta>(`/api/p/${slug}/sessions/opencode/new`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   updateSession: (slug: string, id: string, input: SessionUpdateInput) =>
     request<SessionMeta>(`/api/p/${slug}/sessions/${id}`, {
       method: "PATCH",

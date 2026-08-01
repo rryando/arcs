@@ -187,6 +187,14 @@ export function useDeleteTask(slug: string) {
   });
 }
 
+export function useCreateOpencodeSession(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: (input: { title?: string }) => api.createOpencodeSession(slug, input),
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
+  });
+}
+
 export function useUpdateSession(slug: string) {
   const invalidate = useInvalidator();
   return useMutation({

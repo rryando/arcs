@@ -137,6 +137,84 @@ export async function sendOpencodeMessage(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Session creation
+// ---------------------------------------------------------------------------
+
+export interface CreateOpencodeSessionInput {
+  /** Worktree the session runs in — required, see the directory note below. */
+  directory: string;
+  title?: string;
+}
+
+/** Only what ARCS needs to mirror the session; the SSE stream fills in the rest. */
+export interface CreatedOpencodeSession {
+  runtimeSessionId: string;
+  title?: string;
+}
+
+/**
+ * Creates a live opencode session bound to a worktree.
+ *
+ * Verified against opencode 0.0.0-main-202607110203 (`GET /doc`, operationId
+ * `session.create`) plus a live server:
+ * - the route is `POST /session` — NOT `/api/session`. opencode serves its own
+ *   web UI from the same port and answers every unknown path with a 200
+ *   text/html SPA shell, so a wrong path looks like a success until the body is
+ *   read. That is why the id is checked below rather than trusting `res.ok`.
+ * - `directory` is a *query* parameter and never a body field. Omitting it does
+ *   not fail; opencode silently creates the session in its own working
+ *   directory, so the caller must always pass the worktree explicitly.
+ * - `title` is the only body field ARCS sets; the response is a full session
+ *   object (`{ id, slug, directory, title, time }`).
+ * - `DELETE /session/:sessionID` exists, so nothing created here is permanent.
+ */
+export async function createOpencodeSession(
+  config: OpencodeConfig,
+  input: CreateOpencodeSessionInput,
+): Promise<CreatedOpencodeSession> {
+  const url = `${config.baseUrl}/session?directory=${encodeURIComponent(input.directory)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...requestHeaders(config) },
+      body: JSON.stringify(input.title ? { title: input.title } : {}),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new DagError(
+      "OPENCODE_UNREACHABLE",
+      `Could not reach opencode at ${config.baseUrl}: ${String(err)}`,
+    );
+  }
+
+  if (!res.ok) {
+    throw new DagError(
+      "OPENCODE_REQUEST_FAILED",
+      `opencode refused to create a session (${res.status})${await errorDetail(res)}`,
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  const info = body as OpencodeSessionInfo | null;
+  if (!info?.id) {
+    throw new DagError(
+      "OPENCODE_REQUEST_FAILED",
+      `opencode answered ${config.baseUrl}/session with something other than a session — ` +
+        "the create-session endpoint may have moved in this opencode build.",
+    );
+  }
+
+  return { runtimeSessionId: info.id, ...(info.title && { title: info.title }) };
+}
+
 async function errorDetail(res: Response): Promise<string> {
   try {
     const body = (await res.text()).trim();

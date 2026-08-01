@@ -12,9 +12,11 @@
  * middleware — no per-route auth.
  */
 
+import { resolve } from "node:path";
 import { Hono } from "hono";
 import { z } from "zod";
 import { DagError } from "../../utils/errors.js";
+import { readJsonSafe } from "../../utils/json.js";
 import {
   createSession,
   deleteSession,
@@ -27,8 +29,13 @@ import {
   type SessionFilters,
   type SessionMeta,
   updateSession,
+  upsertSession,
 } from "../../utils/session-store.js";
-import { readOpencodeConfig, sendOpencodeMessage } from "../opencode-client.js";
+import {
+  createOpencodeSession,
+  readOpencodeConfig,
+  sendOpencodeMessage,
+} from "../opencode-client.js";
 import { parseBody, requireProjectDir, respond } from "../respond.js";
 
 export const sessionsRoute = new Hono();
@@ -57,9 +64,45 @@ const sendMessageSchema = z.object({
   message: z.string().min(1),
 });
 
+const createOpencodeSessionSchema = z.object({
+  title: z.string().min(1).optional(),
+});
+
 function sessionDirectory(session: SessionMeta): string | undefined {
   const directory = session.metadata?.directory;
   return typeof directory === "string" && directory ? directory : undefined;
+}
+
+function requireOpencodeConfig() {
+  const config = readOpencodeConfig();
+  if (!config) {
+    throw new DagError(
+      "OPENCODE_NOT_CONFIGURED",
+      "No opencode endpoint configured — set OPENCODE_PORT (or ARCS_OPENCODE_URL) " +
+        "so ARCS can reach a running `opencode serve`.",
+    );
+  }
+  return config;
+}
+
+/**
+ * The worktree a newly created session should run in.
+ *
+ * Guessing is not an option: opencode happily creates a session in its own
+ * working directory when no directory is supplied, which would silently point
+ * the agent at the wrong repository. An unregistered project is an error.
+ */
+async function primaryWorkspacePath(projectDir: string, slug: string): Promise<string> {
+  const meta = await readJsonSafe<{ workspacePaths?: string[] }>(resolve(projectDir, "meta.json"));
+  const directory = meta?.workspacePaths?.[0];
+  if (!directory) {
+    throw new DagError(
+      "PROJECT_WORKSPACE_UNSET",
+      `Project "${slug}" has no registered workspace path, so there is no directory to ` +
+        `create a session in — run \`arcs project update-paths ${slug} --add <path>\` first.`,
+    );
+  }
+  return directory;
 }
 
 function parseFilters(status: string | undefined, runtimeType: string | undefined): SessionFilters {
@@ -91,6 +134,44 @@ sessionsRoute.post("/api/p/:slug/sessions", async (c) =>
       const projectDir = requireProjectDir(c.req.param("slug"));
       const input = await parseBody(c, createSessionSchema);
       return createSession(projectDir, input);
+    },
+    201,
+  ),
+);
+
+/**
+ * Creates a live opencode session in the project's primary workspace.
+ *
+ * The new session is mirrored into the index straight away rather than waiting
+ * for the discovery stream to notice it, so the caller can select and message
+ * it immediately. The stream's own `session.created` event lands moments later
+ * and merges into the same record.
+ *
+ * There is deliberately no claude-code counterpart: a Claude Code session only
+ * exists once a user runs `claude` in a linked directory, so there is nothing
+ * for ARCS to create remotely.
+ */
+sessionsRoute.post("/api/p/:slug/sessions/opencode/new", async (c) =>
+  respond(
+    c,
+    async () => {
+      const slug = c.req.param("slug");
+      const projectDir = requireProjectDir(slug);
+      const { title } = await parseBody(c, createOpencodeSessionSchema);
+      const directory = await primaryWorkspacePath(projectDir, slug);
+      const config = requireOpencodeConfig();
+
+      const created = await createOpencodeSession(config, {
+        directory,
+        ...(title && { title }),
+      });
+
+      return upsertSession(projectDir, {
+        runtimeType: "opencode",
+        runtimeSessionId: created.runtimeSessionId,
+        status: "active",
+        metadata: { directory, ...(created.title && { title: created.title }) },
+      });
     },
     201,
   ),
@@ -133,17 +214,8 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
       return enqueueSessionMessage(projectDir, session.normalizedId, message);
     }
 
-    const config = readOpencodeConfig();
-    if (!config) {
-      throw new DagError(
-        "OPENCODE_NOT_CONFIGURED",
-        "No opencode endpoint configured — set OPENCODE_PORT (or ARCS_OPENCODE_URL) " +
-          "so ARCS can reach a running `opencode serve`.",
-      );
-    }
-
     await sendOpencodeMessage(
-      config,
+      requireOpencodeConfig(),
       {
         runtimeSessionId: session.runtimeSessionId,
         ...(sessionDirectory(session) && { directory: sessionDirectory(session) }),
