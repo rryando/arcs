@@ -21,7 +21,8 @@ const bundleRoot = process.env.BUNDLE_LINT_BUNDLE_ROOT
   ? resolve(repoRoot, process.env.BUNDLE_LINT_BUNDLE_ROOT)
   : defaultBundleRoot;
 
-/** @type {Array<{severity: 'error'|'warning', kind: string, message: string, file?: string, repair?: string}>} */const issues = [];
+/** @type {Array<{severity: 'error'|'warning', kind: string, message: string, file?: string, repair?: string}>} */ const issues =
+  [];
 
 function addIssue(severity, kind, message, file, repair) {
   const issue = { severity, kind, message };
@@ -55,6 +56,114 @@ if (!existsSync(sourceManifestPath)) {
 }
 const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, "utf-8"));
 
+function isPromptPath(value) {
+  if (typeof value !== "string" || value.includes("\\")) return false;
+  const segments = value.split("/");
+  return (
+    segments.length >= 2 &&
+    segments[0] === "prompts" &&
+    segments.slice(1).every((segment) => segment !== "" && segment !== "." && segment !== "..") &&
+    segments.at(-1).endsWith(".txt")
+  );
+}
+
+function isAgentRegistryRecord(agent) {
+  return (
+    agent &&
+    typeof agent.id === "string" &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent.id) &&
+    ["active", "retired"].includes(agent.status) &&
+    ["primary", "subagent"].includes(agent.kind) &&
+    ["heavy", "standard", "light"].includes(agent.tier) &&
+    Array.isArray(agent.modes) &&
+    agent.modes.length > 0 &&
+    agent.modes.every((mode) => ["opencode", "claudecode"].includes(mode)) &&
+    isPromptPath(agent.source) &&
+    isPromptPath(agent.destination) &&
+    typeof agent.description === "string" &&
+    agent.description.length > 0 &&
+    agent.permissions &&
+    ["edit", "bash", "webfetch", "mcp", "task"].every((permission) =>
+      ["allow", "deny"].includes(agent.permissions[permission]),
+    )
+  );
+}
+
+if (!Array.isArray(sourceManifest.agents)) {
+  addIssue(
+    "error",
+    "invalid-agent-registry",
+    `Source manifest agents must be an array`,
+    "manifest.json",
+  );
+}
+const registryAgents = Array.isArray(sourceManifest.agents) ? sourceManifest.agents : [];
+const registryIds = new Set();
+const registrySources = new Set();
+const registryDestinations = new Set();
+for (const agent of registryAgents) {
+  if (!isAgentRegistryRecord(agent)) {
+    addIssue(
+      "error",
+      "invalid-agent-registry",
+      `Source manifest contains an invalid agent registry record`,
+      "manifest.json",
+    );
+    continue;
+  }
+  if (registryIds.has(agent.id)) {
+    addIssue(
+      "error",
+      "invalid-agent-registry",
+      `Source manifest contains duplicate agent id ${agent.id}`,
+      "manifest.json",
+    );
+  }
+  registryIds.add(agent.id);
+  if (registrySources.has(agent.source)) {
+    addIssue(
+      "error",
+      "invalid-agent-registry",
+      `Source manifest contains duplicate agent source ${agent.source}`,
+      "manifest.json",
+    );
+  }
+  registrySources.add(agent.source);
+  if (registryDestinations.has(agent.destination)) {
+    addIssue(
+      "error",
+      "invalid-agent-registry",
+      `Source manifest contains duplicate agent destination ${agent.destination}`,
+      "manifest.json",
+    );
+  }
+  registryDestinations.add(agent.destination);
+
+  if (agent.status === "active" && agent.kind === "subagent" && agent.modes.includes("opencode")) {
+    const merge = sourceManifest.config?.requiredMerges?.find(
+      (entry) =>
+        entry.path?.length === 2 && entry.path[0] === "agent" && entry.path[1] === agent.id,
+    );
+    const value = merge?.value;
+    if (
+      !value ||
+      value.description !== agent.description ||
+      value.mode !== agent.kind ||
+      value.prompt !== `{file:./${agent.destination}}` ||
+      ["edit", "bash", "webfetch", "mcp"].some(
+        (permission) => value.permission?.[permission] !== agent.permissions[permission],
+      )
+    ) {
+      addIssue(
+        "error",
+        "agent-config-drift",
+        `OpenCode config for ${agent.id} does not match its registry record`,
+        "manifest.json",
+      );
+    }
+  }
+}
+
 // --- Check 1: Every manifest-declared bundled file exists ---
 const declaredFiles = new Set();
 
@@ -77,18 +186,29 @@ for (const [skillName, skillFiles] of Object.entries(manifest.skills ?? {})) {
 for (const agentFile of manifest.agents ?? []) {
   declaredFiles.add(agentFile);
   if (!existsSync(resolve(bundleRoot, agentFile))) {
-    addIssue("error", "missing-declared-file", `Manifest declares ${agentFile} but file is missing`, agentFile);
+    addIssue(
+      "error",
+      "missing-declared-file",
+      `Manifest declares ${agentFile} but file is missing`,
+      agentFile,
+    );
   }
 }
 
 for (const pluginFile of manifest.plugin ?? []) {
   declaredFiles.add(pluginFile);
   if (!existsSync(resolve(bundleRoot, pluginFile))) {
-    addIssue("error", "missing-declared-file", `Manifest declares ${pluginFile} but file is missing`, pluginFile);
+    addIssue(
+      "error",
+      "missing-declared-file",
+      `Manifest declares ${pluginFile} but file is missing`,
+      pluginFile,
+    );
   }
 }
 
 for (const agent of sourceManifest.agents ?? []) {
+  if (agent.status !== "active" || !isPromptPath(agent.source)) continue;
   declaredFiles.add(agent.source);
   if (!existsSync(resolve(bundleRoot, agent.source))) {
     addIssue(

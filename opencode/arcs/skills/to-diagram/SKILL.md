@@ -118,7 +118,8 @@ Between plan-level header and `flowchart TD` declaration:
 %% node: T003
 %% title: Build order management UI
 %% status: backlog
-%% skill: code-agent
+%% skill: implementation
+%% work-mode: inspect
 %% scope: src/components/orders/, src/pages/orders/
 %% files: src/components/orders/OrderList.tsx (optional)
 %% acceptance: Order list renders with pagination
@@ -127,7 +128,9 @@ Between plan-level header and `flowchart TD` declaration:
 %% delegate: yes (optional)
 ```
 
-**Required:** node, title, status, skill, scope, acceptance. **Optional:** files, verify, blocked-by, delegate.
+**Required:** node, title, status, skill, work-mode, scope, acceptance. **Optional:** files, verify, blocked-by, delegate.
+
+Implementation nodes use `%% skill: implementation` plus `%% work-mode: bounded|inspect`. Structured task metadata supplies this canonical pair directly.
 
 `verify` must name a command scoped to the node's files (e.g. `npm test -- --testPathPattern=orders`, `vitest run test/orders.test.ts`) — never the bare full suite (`npm test`, `vitest run`). The devil-advocate completion gate owns the single full-project pass.
 
@@ -187,7 +190,8 @@ Plans with 15+ nodes: cluster into `subgraph` blocks by phase. If unreadable, sp
 %% node: T001
 %% title: Design database schema for orders
 %% status: done
-%% skill: quick-dev
+%% skill: implementation
+%% work-mode: bounded
 %% scope: db/migrations/
 %% acceptance: Migration runs; orders table has all required columns
 %% verify: npm run db:migrate
@@ -196,6 +200,7 @@ Plans with 15+ nodes: cluster into `subgraph` blocks by phase. If unreadable, sp
 %% title: Build REST API endpoints
 %% status: inProgress
 %% skill: test-driven-development
+%% work-mode: bounded
 %% scope: src/api/orders/
 %% acceptance: CRUD endpoints return correct status codes
 %% verify: npm test -- --testPathPattern=api/orders

@@ -1,4 +1,4 @@
-import type { TaskMeta } from "./project-memory.js";
+import { normalizeTaskWorkMetadata, type TaskMeta } from "./task-store.js";
 
 export interface DiagramNode {
   nodeId: string;
@@ -73,7 +73,7 @@ export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): Gen
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
-    const t = sorted[i];
+    const t = normalizeTaskWorkMetadata(sorted[i]);
     const deps = t.dependsOn ?? [];
     const blockedBy = deps
       .map((depId) => taskIdToNodeId.get(depId))
@@ -83,7 +83,8 @@ export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): Gen
       `%% node: ${node.nodeId}`,
       `%% title: ${t.title}`,
       `%% status: ${t.status}`,
-      `%% skill: ${t.skill ?? "quick-dev"}`,
+      `%% skill: ${t.skill ?? "implementation"}`,
+      `%% work-mode: ${t.workMode ?? "bounded"}`,
       `%% scope: ${t.scope ?? "(TBD)"}`,
     );
     if (t.sourceFiles && t.sourceFiles.length > 0) {

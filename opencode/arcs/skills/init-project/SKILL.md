@@ -26,7 +26,7 @@ flowchart TD
     F -->|no| H[Skip graph step, log gap]
     G --> G2[ingestGraph → ≤20 proposals]
     G2 --> G3[Enrich queue: list → keep/merge/drop → promote/drop]
-    G3 --> I[Fan out: tech-architect + docs-researcher]:::sub
+    G3 --> I[Fan out: tech-architect analysis + research modes]:::sub
     H --> I
     I --> K[Done]
 ```
@@ -63,7 +63,7 @@ The orchestrator runs codegraph directly during INIT to produce structural **pro
    - 5 cross-module couplings (`kind=gotcha`, high-degree links across top-level dirs; relations hard-coded as `["calls"]`)
 
    Codegraph never writes directly to the knowledge surface. The init envelope returns `data.codegraph.pending_enrichment: true` to signal that proposals are waiting.
-5. **Enrich** with the `enriching-codegraph-proposals` skill — read `arcs proposal list <slug> --json`, decide per-proposal verdicts (keep / merge / drop), then persist keeps and merges via `arcs proposal promote` and drops via `arcs proposal drop`. Pending codegraph proposals never bypass this lifecycle into knowledge.
+5. **Enrich** with the `enriching-codegraph-proposals` skill — read `arcs proposal list <slug> --json`, decide per-proposal verdicts (keep / merge / drop), and return exact proposed promote/drop commands for orchestrator application. Pending codegraph proposals never bypass this lifecycle into knowledge.
 6. **Optional graph queries** for evidence during enrichment (sub-agents may run these via the codegraph MCP server, which auto-syncs through its own file watcher):
    - `codegraph_search "entry points and main commands"` → seeds for "key files" reference entries
    - `codegraph_explore` on core modules → seeds for "core modules" entries
@@ -87,8 +87,8 @@ Update via `arcs project update-doc <slug> <doc> --content="..."`.
 
 | Sub-agent | Owns | Knowledge kinds it produces |
 |-----------|------|----------------------------|
-| `tech-architect` | Module boundaries, clusters, dependency direction, cross-module couplings, structural gotchas, lessons | `architecture`, `module`, `gotcha`, `lesson` |
-| `docs-researcher` | Tech stack, third-party libraries, key files, features | `reference`, `feature` |
+| `tech-architect` (analysis mode) | Module boundaries, clusters, dependency direction, cross-module couplings, structural gotchas, lessons | `architecture`, `module`, `gotcha`, `lesson` |
+| `tech-architect` (`AGENT_MODE: research`) | Tech stack, third-party libraries, key files, features | `reference`, `feature` |
 | `code-reviewer` (audit mode, optional) | Coding-style + convention scan from existing code | `pattern` |
 
 Dispatch in parallel — all agents in one message, per the orchestrator's Parallelism rules. Each agent receives:
@@ -96,20 +96,20 @@ Dispatch in parallel — all agents in one message, per the orchestrator's Paral
 - Targeted codegraph queries for evidence (e.g., `codegraph_node` / `codegraph_impact` output for the modules they own)
 - Explicit scope (which files / which kinds to produce)
 
-Raw `KnowledgeProposal` records stay in the proposal lifecycle above. Each typed agent may instead return an independently authored finding: `{title, kind, summary, keywords, sourceFiles, body}`. After deduplication, the orchestrator may write only those independent findings directly via `arcs knowledge upsert`.
+Raw `KnowledgeProposal` records stay in the proposal lifecycle above. Each typed agent may instead return an independently authored finding: `{title, kind, summary, keywords, sourceFiles, body}`. Workers do not execute `arcs knowledge upsert`; after deduplication they return substantive ready-to-run commands for orchestrator fan-in persistence.
 
 ## Knowledge Categories for Analysis Sub-Agents
 
 | Category | Kind | What to discover | Primary agent |
 |----------|------|------------------|---------------|
-| tech stack | `architecture` | Languages, frameworks, runtimes, build tools, versions | `docs-researcher` |
-| key files | `reference` | Entry points, config files, main modules, purposes | `docs-researcher` (use `codegraph_search "entry points"`) |
+| tech stack | `architecture` | Languages, frameworks, runtimes, build tools, versions | `tech-architect` (`AGENT_MODE: research`) |
+| key files | `reference` | Entry points, config files, main modules, purposes | `tech-architect` (`AGENT_MODE: research`; use `codegraph_search "entry points"`) |
 | code patterns | `pattern` | Recurring design patterns, abstractions, error handling | `code-reviewer` (audit mode) or `tech-architect` |
 | coding style | `pattern` | Formatting, linting, import ordering, file organization | `code-reviewer` (audit mode) |
 | core modules | `module` | Core modules / shared functions — what, where, interconnections | `tech-architect` (god nodes from codegraph) |
-| external services | `module` | APIs, databases, message queues the project interacts with | `docs-researcher` |
-| third-party libraries | `reference` | Key dependencies and why they are used | `docs-researcher` |
-| features | `feature` | Major user-facing or system-facing features | `docs-researcher` |
+| external services | `module` | APIs, databases, message queues the project interacts with | `tech-architect` (`AGENT_MODE: research`) |
+| third-party libraries | `reference` | Key dependencies and why they are used | `tech-architect` (`AGENT_MODE: research`) |
+| features | `feature` | Major user-facing or system-facing features | `tech-architect` (`AGENT_MODE: research`) |
 | cross-module couplings | `gotcha` | Hot edges between modules surfaced by codegraph | `tech-architect` (auto from `ingestGraph`) |
 | architecture clusters | `architecture` | Pseudo-community / directory groupings from codegraph | `tech-architect` (auto from `ingestGraph`) |
 
@@ -139,13 +139,14 @@ arcs proposal promote foo <id> --merge-with=<existing-knowledge-id> --body-file=
 arcs proposal drop foo <id> --reason="..." --json
 
 # 5. Fan out typed agents (parallel) for entries beyond proposal scope
-#    tech-architect   → architecture/module/gotcha/lesson entries
-#    docs-researcher  → reference/feature entries
+#    tech-architect (analysis mode)          → architecture/module/gotcha/lesson entries
+#    tech-architect (AGENT_MODE: research)   → reference/feature entries
 
-# 6. Write only independently authored, non-proposal-derived findings directly.
-# Obtain the kind-specific body anatomy before authoring it:
-arcs knowledge template foo --kind=architecture --json
+# 6. Propose only independently authored, non-proposal-derived findings.
+# Obtain the kind-specific body anatomy before authoring the ready-to-run command:
+arcs knowledge template --kind=architecture --json
 arcs knowledge upsert foo "Tech stack: TypeScript + Node 20" --kind=architecture --summary="..." --body-file=... --source-files=package.json --json
+# Return the upsert; do not execute it. The orchestrator persists it at fan-in.
 ```
 
 ## Exit Conditions

@@ -176,6 +176,51 @@ const configMergeSchema = z.object({
   mode: z.enum(["overwrite", "if-absent", "merge"]).optional(),
 });
 
+export const agentTierSchema = z.enum(["heavy", "standard", "light"]);
+export const agentStatusSchema = z.enum(["active", "retired"]);
+export const agentKindSchema = z.enum(["primary", "subagent"]);
+export const agentModeSchema = z.enum(["opencode", "claudecode"]);
+const agentPermissionSchema = z.enum(["allow", "deny"]);
+
+function isPromptPath(value: string): boolean {
+  const segments = value.split("/");
+  return (
+    segments.length >= 2 &&
+    segments[0] === "prompts" &&
+    segments.slice(1).every((segment) => segment !== "" && segment !== "." && segment !== "..") &&
+    !value.includes("\\") &&
+    (segments.at(-1)?.endsWith(".txt") ?? false)
+  );
+}
+
+const agentPromptPathSchema = z
+  .string()
+  .refine(isPromptPath, "must be a safe relative .txt path under prompts/");
+
+export const agentRegistryRecordSchema = z.object({
+  id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  status: agentStatusSchema,
+  kind: agentKindSchema,
+  tier: agentTierSchema,
+  modes: z.array(agentModeSchema).min(1),
+  source: agentPromptPathSchema,
+  destination: agentPromptPathSchema,
+  description: z.string().min(1),
+  permissions: z.object({
+    edit: agentPermissionSchema,
+    bash: agentPermissionSchema,
+    webfetch: agentPermissionSchema,
+    mcp: agentPermissionSchema,
+    task: agentPermissionSchema,
+  }),
+  replacementId: z
+    .string()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+    .optional(),
+});
+
+export type AgentRegistryRecord = z.infer<typeof agentRegistryRecordSchema>;
+
 export const opencodeSourceManifestSchema = z.object({
   bundleId: z.string(),
   installMode: z.string(),
@@ -185,12 +230,7 @@ export const opencodeSourceManifestSchema = z.object({
     source: z.string(),
     destination: z.string(),
   }),
-  agents: z.array(
-    z.object({
-      source: z.string(),
-      destination: z.string(),
-    }),
-  ),
+  agents: z.array(agentRegistryRecordSchema),
   ownedPaths: z.array(z.string()),
   plugin: z.object({
     required: z.boolean(),
@@ -209,4 +249,16 @@ export const opencodeInstalledManifestSchema = z.object({
   sourceBundleHash: z.string(),
   installedAt: z.string(),
   ownedPaths: z.array(z.string()),
+  agents: z
+    .array(
+      z.object({
+        id: z.string(),
+        promptDestination: agentPromptPathSchema,
+        sourceHash: z.string(),
+        configKey: z.string().optional(),
+        configHash: z.string().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
 });

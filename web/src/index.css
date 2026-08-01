@@ -1,0 +1,170 @@
+@import "tailwindcss";
+@import "@fontsource-variable/jetbrains-mono";
+@import "highlight.js/styles/tokyo-night-dark.css";
+
+@theme {
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-term-bg: #050505;
+  --color-term-panel: #101010;
+  --color-term-inset: #1a1a1a;
+  --color-term-border: #2c2c2c;
+  --color-term-border-hi: #474747;
+  --color-term-fg: #f2f2f2;
+  --color-term-dim: #8f8f8f;
+  --color-term-green: #4ade80;
+  --color-term-amber: #fbbf24;
+  --color-term-red: #f87171;
+  --color-term-cyan: #22d3ee;
+  --color-term-magenta: #e879f9;
+  --color-term-blue: #60a5fa;
+  --color-term-purple: #a78bfa;
+  --color-term-orange: #fb923c;
+  --color-term-teal: #2dd4bf;
+  --color-term-lime: #a3e635;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-term-bg font-mono text-[13px] leading-relaxed text-term-fg antialiased;
+  }
+
+  ::selection {
+    background: var(--color-term-fg);
+    color: var(--color-term-bg);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-term-bg);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-term-border);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-term-border-hi);
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+  }
+}
+
+@layer components {
+  /* keyboard hint chip */
+  .kbd {
+    @apply inline-block border border-term-border bg-term-panel px-1 text-[11px] leading-4 text-term-dim;
+  }
+
+  /* subtle CRT scanline overlay */
+  .scanlines {
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent 0px,
+      transparent 2px,
+      rgb(0 0 0 / 0.045) 3px,
+      transparent 4px
+    );
+  }
+
+  /* ---- markdown document viewer ---- */
+  .md {
+    @apply max-w-none text-[13px] leading-relaxed;
+  }
+  .md h1 {
+    @apply mt-0 mb-4 border-b border-term-border pb-2 text-xl font-bold text-term-green;
+  }
+  .md h2 {
+    @apply mt-7 mb-3 border-b border-term-border/60 pb-1 text-base font-bold text-term-green;
+  }
+  .md h3 {
+    @apply mt-5 mb-2 text-sm font-bold text-term-cyan;
+  }
+  .md h4 {
+    @apply mt-4 mb-2 text-sm font-bold text-term-fg;
+  }
+  .md p {
+    @apply my-3;
+  }
+  .md ul {
+    @apply my-3 list-none pl-4;
+  }
+  .md ul > li {
+    @apply relative my-1;
+  }
+  .md ul > li::before {
+    content: "▸";
+    @apply absolute -left-4 text-term-dim;
+  }
+  .md ul > li > ul {
+    @apply my-1;
+  }
+  .md ol {
+    @apply my-3 list-decimal pl-6 marker:text-term-dim;
+  }
+  .md a {
+    @apply text-term-cyan underline underline-offset-2 hover:text-term-green;
+  }
+  .md strong {
+    @apply font-bold text-term-fg;
+  }
+  .md code:not(pre code) {
+    @apply border border-term-border bg-term-panel px-1 py-0.5 text-[12px] text-term-amber;
+  }
+  .md pre {
+    @apply my-4 overflow-x-auto border border-term-border bg-term-inset p-3;
+  }
+  .md pre code {
+    @apply text-[12px];
+    background: transparent;
+  }
+  .md blockquote {
+    @apply my-3 border-l-2 border-term-amber/60 pl-3 text-term-dim;
+  }
+  .md table {
+    @apply my-4 w-full border-collapse;
+  }
+  .md th {
+    @apply border border-term-border bg-term-panel px-2 py-1 text-left font-bold text-term-green;
+  }
+  .md td {
+    @apply border border-term-border px-2 py-1 align-top;
+  }
+  .md hr {
+    @apply my-6 border-term-border;
+  }
+  .md input[type="checkbox"] {
+    @apply mr-1 accent-emerald-500;
+  }
+  .hljs {
+    background: transparent;
+  }
+
+  /* CodeMirror host fills its container */
+  .cm-host,
+  .cm-host .cm-editor {
+    height: 100%;
+  }
+  .cm-host .cm-editor {
+    @apply border border-term-border bg-term-inset text-[13px] outline-none;
+  }
+  .cm-host .cm-scroller {
+    font-family: var(--font-mono);
+  }
+}

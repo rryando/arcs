@@ -6,6 +6,7 @@ import color from "picocolors";
 import { detectCodegraph } from "../utils/codegraph.js";
 import { PACKAGE_ROOT } from "../utils/paths.js";
 import { detectRtk } from "../utils/rtk.js";
+import { type AgentTier, getActiveAgents, getAgentsByTier } from "./agent-registry.js";
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
   type ArcsConfig,
@@ -24,6 +25,25 @@ import {
   opencodeHasAgent,
   writeOpencodeAgent,
 } from "./instructions.js";
+
+const HOST_AGENT_TIERS: Array<{ name: string; tier: AgentTier }> = [
+  { name: "plan", tier: "heavy" },
+  { name: "general", tier: "heavy" },
+  { name: "build", tier: "standard" },
+];
+
+function tierAgentNames(tier: AgentTier): string {
+  return [
+    ...getAgentsByTier()[tier].map((agent) => agent.id),
+    ...HOST_AGENT_TIERS.filter((agent) => agent.tier === tier).map((agent) => agent.name),
+  ].join(", ");
+}
+
+function registryTierAgentNames(tier: AgentTier): string {
+  return getAgentsByTier()
+    [tier].map((agent) => agent.id)
+    .join(", ");
+}
 
 // ---------------------------------------------------------------------------
 // TUI Wizard
@@ -172,10 +192,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       process.exit(0);
     }
 
-    p.note(
-      "Used by: software-engineer, docs-researcher, arcs-docs, oncall-ops, plan, general",
-      "Heavy tier agents",
-    );
+    p.note(`Used by: ${tierAgentNames("heavy")}`, "Heavy tier agents");
 
     const standardModel = await selectModel(
       "Standard model (general purpose)",
@@ -188,7 +205,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       process.exit(0);
     }
 
-    p.note("Used by: build, ARCS Orchestrator, ARCS Caveman", "Standard tier agents");
+    p.note(`Used by: ${tierAgentNames("standard")}`, "Standard tier agents");
 
     const lightModel = await selectModel(
       "Light/fast model (read-only, exploration)",
@@ -201,7 +218,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       process.exit(0);
     }
 
-    p.note("Used by: graph-explorer, code-reviewer, tech-architect", "Light tier agents");
+    p.note(`Used by: ${tierAgentNames("light")}`, "Light tier agents");
 
     // T004 will wire modelConfig into agent registration calls below.
     const modelConfig: ModelTierConfig = {
@@ -222,18 +239,11 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     }
 
     if (customizeAgents) {
-      // Agent tier mapping for display
-      const agentTiers: Array<{ name: string; tier: "heavy" | "standard" | "light" }> = [
-        { name: "software-engineer", tier: "heavy" },
-        { name: "docs-researcher", tier: "heavy" },
-        { name: "arcs-docs", tier: "heavy" },
-        { name: "oncall-ops", tier: "heavy" },
-        { name: "plan", tier: "heavy" },
-        { name: "general", tier: "heavy" },
-        { name: "build", tier: "standard" },
-        { name: "graph-explorer", tier: "light" },
-        { name: "code-reviewer", tier: "light" },
-        { name: "tech-architect", tier: "light" },
+      const agentTiers = [
+        ...getActiveAgents()
+          .filter((agent) => agent.kind === "subagent" && agent.tier !== "standard")
+          .map((agent) => ({ name: agent.id, tier: agent.tier })),
+        ...HOST_AGENT_TIERS,
       ];
 
       p.note("Select a model for each agent, or keep the tier default.", "Per-Agent Customization");
@@ -368,9 +378,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
       p.note(
         "ARCS agents are grouped into three tiers.\n" +
-          "  Heavy  — reasoning & synthesis (software-engineer, arcs-docs, oncall-ops…)\n" +
-          "  Standard — orchestration (arcs-orchestrate, devil-advocate…)\n" +
-          "  Light  — read-only exploration (code-reviewer, tech-architect…)\n\n" +
+          `  Heavy  — reasoning & synthesis (${registryTierAgentNames("heavy")})\n` +
+          `  Standard — orchestration (${registryTierAgentNames("standard")})\n` +
+          `  Light  — read-only exploration (${registryTierAgentNames("light")})\n\n` +
           'Use "inherit" to delegate model choice to Claude Code defaults.',
         "Claude Code Model Tiers",
       );

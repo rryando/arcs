@@ -37,6 +37,69 @@ function setupBundleRoot(tempRoot: string, opts: { withSkills?: boolean } = {}) 
   const bundleRoot = resolve(tempRoot, "bundle");
   writeFile(bundleRoot, "prompts/software-engineer.txt", "software engineer prompt body");
   writeFile(bundleRoot, "prompts/devil-advocate.txt", "devil's advocate prompt body");
+  writeFile(bundleRoot, "prompts/arcs-orchestrate.txt", "orchestrator prompt body");
+  writeFile(
+    bundleRoot,
+    "manifest.json",
+    JSON.stringify({
+      agents: [
+        {
+          id: "software-engineer",
+          status: "active",
+          kind: "subagent",
+          tier: "heavy",
+          modes: ["opencode", "claudecode"],
+          source: "prompts/software-engineer.txt",
+          destination: "prompts/software-engineer.txt",
+          description:
+            "Implementation specialist. Writes code, runs tests, ships features. Loads quick-dev, code-agent, test-driven-development, and executing-plans skills as needed.",
+          permissions: {
+            edit: "allow",
+            bash: "allow",
+            webfetch: "allow",
+            mcp: "allow",
+            task: "deny",
+          },
+        },
+        {
+          id: "devil-advocate",
+          status: "active",
+          kind: "subagent",
+          tier: "standard",
+          modes: ["opencode", "claudecode"],
+          source: "prompts/devil-advocate.txt",
+          destination: "prompts/devil-advocate.txt",
+          description:
+            "Adversarial phase-gate agent. Checks work at phase boundaries using KISS/YAGNI/DRY principles. Runs tests, reads diffs, delivers pass/block verdicts. Cannot edit code.",
+          permissions: {
+            edit: "deny",
+            bash: "allow",
+            webfetch: "allow",
+            mcp: "allow",
+            task: "deny",
+          },
+        },
+        {
+          id: "arcs-orchestrate",
+          status: "active",
+          kind: "primary",
+          tier: "standard",
+          modes: ["opencode", "claudecode"],
+          source: "prompts/arcs-orchestrate.txt",
+          destination: "prompts/arcs-orchestrate.txt",
+          description:
+            "The central coordinator for executing plans, managing agent dispatch, and handling DAG workflows.",
+          permissions: {
+            edit: "allow",
+            bash: "allow",
+            webfetch: "allow",
+            mcp: "allow",
+            task: "allow",
+          },
+        },
+      ],
+    }),
+  );
   if (opts.withSkills) {
     writeFile(bundleRoot, "skills/brainstorming/SKILL.md", "# brainstorming skill\n");
     writeFile(
@@ -52,6 +115,16 @@ function setupBundleRoot(tempRoot: string, opts: { withSkills?: boolean } = {}) 
     );
   }
   return bundleRoot;
+}
+
+function mutateRegistry(
+  bundleRoot: string,
+  mutate: (agents: Array<Record<string, unknown>>) => void,
+) {
+  const manifestPath = resolve(bundleRoot, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  mutate(manifest.agents);
+  writeFileSync(manifestPath, JSON.stringify(manifest));
 }
 
 describe("deploy-claudecode-bundle", () => {
@@ -336,17 +409,13 @@ describe("deploy-claudecode-bundle", () => {
     }
   });
 
-  it("identifies known agent stems no longer in source as orphans and removes them", () => {
+  it("does not prune agent files that are outside the active registry", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-orphans-"));
     const configRoot = resolve(tempRoot, "config");
 
     try {
       const bundleRoot = setupBundleRoot(tempRoot);
 
-      // Pre-populate with:
-      // 1. A valid active agent file (which will be unchanged/changed)
-      // 2. An older sub-agent file whose stem is in agentMetadata but not in source (orphan)
-      // 3. A file that is not in agentMetadata and not in source (should NOT be marked as orphan or deleted)
       writeFile(configRoot, "agents/tech-architect.md", "some tech-architect prompt content");
       writeFile(configRoot, "agents/random-other.md", "some random content");
 
@@ -358,7 +427,7 @@ describe("deploy-claudecode-bundle", () => {
 
       expect(procDry.status).toBe(0);
       const resultDry = JSON.parse(procDry.stdout) as DeployResult;
-      expect(resultDry.filesRemoved).toContain("agents/tech-architect.md");
+      expect(resultDry.filesRemoved).not.toContain("agents/tech-architect.md");
       expect(resultDry.filesRemoved).not.toContain("agents/random-other.md");
       expect(existsSync(resolve(configRoot, "agents/tech-architect.md"))).toBe(true);
 
@@ -371,11 +440,254 @@ describe("deploy-claudecode-bundle", () => {
 
       expect(procWrite.status).toBe(0);
       const resultWrite = JSON.parse(procWrite.stdout) as DeployResult;
-      expect(resultWrite.filesRemoved).toContain("agents/tech-architect.md");
+      expect(resultWrite.filesRemoved).not.toContain("agents/tech-architect.md");
       expect(resultWrite.filesRemoved).not.toContain("agents/random-other.md");
 
-      expect(existsSync(resolve(configRoot, "agents/tech-architect.md"))).toBe(false);
+      expect(existsSync(resolve(configRoot, "agents/tech-architect.md"))).toBe(true);
       expect(existsSync(resolve(configRoot, "agents/random-other.md"))).toBe(true);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retires only unchanged agent files proven owned by prior deploy metadata", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-agent-retirement-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      expect(
+        runDeploy({
+          DEPLOY_BUNDLE_ROOT: bundleRoot,
+          DEPLOY_CONFIG_ROOT: configRoot,
+          DEPLOY_DRY_RUN: "false",
+        }).status,
+      ).toBe(0);
+      writeFile(configRoot, "agents/random-other.md", "foreign");
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[1].status = "retired";
+        agents[1].replacementId = "software-engineer";
+      });
+
+      const dryRun = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+      });
+      expect(dryRun.status).toBe(0);
+      expect((JSON.parse(dryRun.stdout) as DeployResult).filesRemoved).toContain(
+        "agents/devil-advocate.md",
+      );
+      expect(existsSync(resolve(configRoot, "agents/devil-advocate.md"))).toBe(true);
+
+      const deployed = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(deployed.status).toBe(0);
+      expect(existsSync(resolve(configRoot, "agents/devil-advocate.md"))).toBe(false);
+      expect(readFileSync(resolve(configRoot, "agents/random-other.md"), "utf-8")).toBe("foreign");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a user-modified agent file when its registry record retires", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-agent-retirement-modified-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+      writeFile(configRoot, "agents/devil-advocate.md", "user modified");
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[1].status = "retired";
+        agents[1].replacementId = "software-engineer";
+      });
+
+      const deployed = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(deployed.status).toBe(0);
+      expect((JSON.parse(deployed.stdout) as DeployResult).filesRemoved).not.toContain(
+        "agents/devil-advocate.md",
+      );
+      expect(readFileSync(resolve(configRoot, "agents/devil-advocate.md"), "utf-8")).toBe(
+        "user modified",
+      );
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("deploys only active agents and rejects unregistered prompt files", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-registry-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      const manifestPath = resolve(bundleRoot, "manifest.json");
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+      manifest.agents[1].status = "retired";
+      manifest.agents[1].replacementId = "software-engineer";
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+
+      const retired = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+      });
+      expect(retired.status).toBe(0);
+      expect((JSON.parse(retired.stdout) as DeployResult).filesAdded).not.toContain(
+        "agents/devil-advocate.md",
+      );
+
+      writeFile(bundleRoot, "prompts/unregistered.txt", "must not deploy");
+      const unregistered = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+      });
+      expect(unregistered.status).toBe(1);
+      expect(unregistered.stderr).toContain("Unregistered prompt file");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("deploys active Claude agents but ignores active OpenCode-only agents", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-agent-modes-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[0].modes = ["opencode"];
+        agents[1].modes = ["claudecode"];
+      });
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(0);
+      const result = JSON.parse(proc.stdout) as DeployResult;
+      expect(result.filesAdded).toContain("agents/devil-advocate.md");
+      expect(result.filesAdded).not.toContain("agents/software-engineer.md");
+      expect(existsSync(resolve(configRoot, "agents/devil-advocate.md"))).toBe(true);
+      expect(existsSync(resolve(configRoot, "agents/software-engineer.md"))).toBe(false);
+      const installedManifest = JSON.parse(
+        readFileSync(resolve(configRoot, ".arcs-bundle.json"), "utf-8"),
+      );
+      expect(installedManifest.agents.map((agent: { id: string }) => agent.id)).toEqual([
+        "devil-advocate",
+        "arcs-orchestrate",
+      ]);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "missing",
+      (agents: Array<Record<string, unknown>>) => {
+        agents[1].replacementId = "missing-agent";
+      },
+    ],
+    [
+      "wrong kind",
+      (agents: Array<Record<string, unknown>>) => {
+        agents[1].replacementId = "arcs-orchestrate";
+      },
+    ],
+    [
+      "missing deployment mode",
+      (agents: Array<Record<string, unknown>>) => {
+        agents[1].replacementId = "software-engineer";
+        agents[0].modes = ["opencode"];
+      },
+    ],
+  ])("rejects a retired agent with a %s replacement", (_label, makeIncompatible) => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-retirement-invalid-"));
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[1].status = "retired";
+        makeIncompatible(agents);
+      });
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: resolve(tempRoot, "config"),
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toMatch(/retired agent.*active compatible replacement.*kind and modes/i);
+      expect(existsSync(resolve(tempRoot, "config"))).toBe(false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["traversal source", "source", "prompts/../outside.txt"],
+    ["absolute source", "source", "/tmp/outside.txt"],
+    ["non-txt source", "source", "prompts/software-engineer.md"],
+    ["traversal destination", "destination", "prompts/../outside.txt"],
+    ["empty destination segment", "destination", "prompts//software-engineer.txt"],
+    ["dot destination segment", "destination", "prompts/./software-engineer.txt"],
+    ["absolute destination", "destination", "/tmp/outside.txt"],
+    ["non-txt destination", "destination", "prompts/software-engineer.md"],
+    ["malformed id", "id", "../software-engineer"],
+  ])("rejects registry records with %s", (_label, field, value) => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-invalid-registry-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[0][field] = value;
+      });
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toContain("Invalid agent registry record");
+      expect(existsSync(resolve(tempRoot, "outside.txt"))).toBe(false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate prompt destinations", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-duplicate-destination-"));
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[1].destination = agents[0].destination;
+      });
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: resolve(tempRoot, "config"),
+      });
+
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toContain("Duplicate agent registry destination");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

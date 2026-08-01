@@ -26,6 +26,35 @@ function writeFile(rootPath: string, relativePath: string, content: string) {
   writeFileSync(outputPath, content);
 }
 
+function registryAgent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "software-engineer",
+    status: "active",
+    kind: "subagent",
+    tier: "heavy",
+    modes: ["opencode", "claudecode"],
+    source: "prompts/software-engineer.txt",
+    destination: "prompts/software-engineer.txt",
+    description: "Implementation specialist",
+    permissions: {
+      edit: "allow",
+      bash: "allow",
+      webfetch: "allow",
+      mcp: "allow",
+      task: "deny",
+    },
+    ...overrides,
+  };
+}
+
+function runLint(bundleRoot: string) {
+  return spawnSync("node", [linterScript], {
+    cwd: root,
+    env: { ...process.env, BUNDLE_LINT_BUNDLE_ROOT: bundleRoot },
+    encoding: "utf-8",
+  });
+}
+
 describe("bundle linter", () => {
   it("reports missing manifest-declared files", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-missing-"));
@@ -39,7 +68,7 @@ describe("bundle linter", () => {
         plugin: [],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
-      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
+      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test", agents: [] }));
       // Only write SKILL.md, not notes.md
       writeFile(bundleRoot, "skills/planner/SKILL.md", "skill");
 
@@ -80,7 +109,7 @@ describe("bundle linter", () => {
         preservedFiles: ["manifest.json", "bundle-runtime.json", ".opencode/plugins/arcs.js"],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
-      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
+      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test", agents: [] }));
       writeFile(bundleRoot, "skills/planner/SKILL.md", "skill");
       writeFile(bundleRoot, "skills/planner/stale.md", "stale");
 
@@ -120,7 +149,7 @@ describe("bundle linter", () => {
         plugin: [],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
-      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
+      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test", agents: [] }));
       writeFile(bundleRoot, "skills/planner/notes.md", "notes");
 
       const proc = spawnSync("node", [linterScript], {
@@ -158,7 +187,7 @@ describe("bundle linter", () => {
         plugin: [],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
-      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
+      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test", agents: [] }));
       writeFile(bundleRoot, "skills/to-diagram/SKILL.md", "skill");
       // Don't write the .mjs file — should be caught as missing-declared-file
 
@@ -197,7 +226,7 @@ describe("bundle linter", () => {
         plugin: [],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
-      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
+      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test", agents: [] }));
       writeFile(bundleRoot, "skills/arcs-dashboard/SKILL.md", "skill");
       // package.json without type field
       writeFile(bundleRoot, "skills/arcs-dashboard/package.json", JSON.stringify({}));
@@ -242,7 +271,7 @@ describe("bundle linter", () => {
         preservedFiles: ["manifest.json", "bundle-runtime.json", ".opencode/plugins/arcs.js"],
       };
       writeFile(bundleRoot, "bundle-runtime.json", JSON.stringify(manifest, null, 2));
-      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test" }));
+      writeFile(bundleRoot, "manifest.json", JSON.stringify({ bundleId: "test", agents: [] }));
       writeFile(bundleRoot, ".opencode/plugins/arcs.js", "plugin");
       writeFile(bundleRoot, "skills/planner/SKILL.md", "skill");
 
@@ -275,5 +304,189 @@ describe("bundle linter", () => {
     const result = JSON.parse(proc.stdout) as LintResult;
     expect(result.summary.errors).toBe(0);
     expect(proc.status).toBe(0);
+  });
+
+  it("reports malformed agent registry records", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-registry-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({
+          agents: [],
+          skills: {},
+          plugin: [],
+          preservedFiles: ["manifest.json", "bundle-runtime.json"],
+        }),
+      );
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({ agents: [{ id: "software-engineer", status: "active" }] }),
+      );
+
+      const proc = spawnSync("node", [linterScript], {
+        cwd: root,
+        env: { ...process.env, BUNDLE_LINT_BUNDLE_ROOT: bundleRoot },
+        encoding: "utf-8",
+      });
+      const result = JSON.parse(proc.stdout) as LintResult;
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({ severity: "error", kind: "invalid-agent-registry" }),
+      );
+      expect(proc.status).toBe(1);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("requires active prompt sources but permits retired records to reference deleted prompts", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-agent-status-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      const activeAgent = registryAgent({ kind: "primary" });
+      const retiredAgent = registryAgent({
+        id: "oncall-ops",
+        status: "retired",
+        replacementId: "software-engineer",
+        kind: "primary",
+        source: "prompts/oncall-ops.txt",
+        destination: "prompts/oncall-ops.txt",
+      });
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({
+          agents: [],
+          skills: {},
+          plugin: [],
+          preservedFiles: ["manifest.json", "bundle-runtime.json"],
+        }),
+      );
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({ agents: [activeAgent, retiredAgent], config: { requiredMerges: [] } }),
+      );
+
+      const missingActive = runLint(bundleRoot);
+      const missingActiveResult = JSON.parse(missingActive.stdout) as LintResult;
+      expect(missingActiveResult.issues).toContainEqual(
+        expect.objectContaining({
+          severity: "error",
+          kind: "missing-declared-file",
+          file: "prompts/software-engineer.txt",
+        }),
+      );
+      expect(missingActiveResult.issues).not.toContainEqual(
+        expect.objectContaining({ file: "prompts/oncall-ops.txt" }),
+      );
+
+      writeFile(bundleRoot, "prompts/software-engineer.txt", "active prompt");
+      const activePresent = runLint(bundleRoot);
+      const activePresentResult = JSON.parse(activePresent.stdout) as LintResult;
+      expect(activePresentResult.issues).toEqual([]);
+      expect(activePresent.status).toBe(0);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("validates retired registry records even though their prompt sources may be absent", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-retired-registry-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({ agents: [], skills: {}, plugin: [], preservedFiles: [] }),
+      );
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({
+          agents: [registryAgent({ status: "retired", source: "prompts/../deleted.txt" })],
+        }),
+      );
+
+      const proc = runLint(bundleRoot);
+      const result = JSON.parse(proc.stdout) as LintResult;
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({ severity: "error", kind: "invalid-agent-registry" }),
+      );
+      expect(proc.status).toBe(1);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["traversal source", { source: "prompts/../outside.txt" }],
+    ["malformed destination", { destination: "prompts//software-engineer.txt" }],
+    ["malformed id", { id: "../software-engineer" }],
+    ["non-txt destination", { destination: "prompts/software-engineer.md" }],
+  ])("rejects agent registry records with %s", (_label, overrides) => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-invalid-registry-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({ agents: [], skills: {}, plugin: [], preservedFiles: [] }),
+      );
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({ agents: [registryAgent(overrides)], config: { requiredMerges: [] } }),
+      );
+
+      const proc = runLint(bundleRoot);
+      const result = JSON.parse(proc.stdout) as LintResult;
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({ severity: "error", kind: "invalid-agent-registry" }),
+      );
+      expect(proc.status).toBe(1);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate agent prompt destinations", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-duplicate-destination-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({ agents: [], skills: {}, plugin: [], preservedFiles: [] }),
+      );
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({
+          agents: [registryAgent(), registryAgent({ id: "devil-advocate" })],
+          config: { requiredMerges: [] },
+        }),
+      );
+
+      const proc = runLint(bundleRoot);
+      const result = JSON.parse(proc.stdout) as LintResult;
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({
+          severity: "error",
+          kind: "invalid-agent-registry",
+          message: expect.stringContaining("duplicate agent destination"),
+        }),
+      );
+      expect(proc.status).toBe(1);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

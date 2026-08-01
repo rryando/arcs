@@ -15,18 +15,16 @@ User wants to track a new project, bootstrap documentation, or connect a repo to
 flowchart TD
     classDef sub fill:#8b5cf6,color:#fff
 
-    A[Gather: name, description, repoUrl?, dependsOn?] --> B[arcs project list → conflict check]
-    B --> C[Present summary to user]
-    C -->|confirmed| D[arcs project init]
-    D --> E[arcs project update-doc × 4]
-    E --> F{codegraph on PATH?}
-    F -->|yes| G[codegraph index --force --quiet]
-    F -->|no| H[Skip graph step, log gap]
-    G --> G2[ingestGraph → ≤20 proposals]
-    G2 --> G3[codegraph MCP explore / impact for enrichment]:::sub
-    H & G3 --> I[Fan out: tech-architect + docs-researcher]:::sub
-    I --> J[Collect proposals → dedup → arcs knowledge create × N]
-    J --> K[Done]
+    A[Gather identity and exact requested artifacts] --> B[Read-only analyses, max four per round]:::sub
+    B --> C[Present exact project and docs artifact set]
+    C --> D[devil-advocate INIT gate]
+    D -->|PASS| E[Request current-turn exact authorization]
+    E -->|authorized| F[Orchestrator: arcs project init + approved docs]
+    F --> G{pending_enrichment?}
+    G -->|yes| H[Read-only enrichment proposals]:::sub
+    H --> I[Gate proposals, then orchestrator persists]
+    G -->|no| J[Validate and report]
+    I --> J
 ```
 
 ## CLI Primer
@@ -38,14 +36,17 @@ Discovery: `arcs --commands --json`
 
 ## Constraints
 
-- Do NOT read repo to infer name/description — gather from user
+- Gather project identity and requested artifact scope from the user; repository analysis supplies evidence, not authority
 - Verify `dependsOn` targets exist via `arcs project list --json`
 - Init creates empty plans/ and knowledge/ indexes
-- Repo analysis is **fan-out across typed agents**, not a generic "analysis sub-agent" (see Agent Dispatch table below)
+- Repo analysis is read-only fan-out across typed agents, with at most four disjoint analyses per round
+- No durable write occurs before the INIT gate passes and the user authorizes the exact artifact set in the current turn
+- Plans, tasks, and diagrams use the separate HITL design pipeline: `brainstorming` design approval, then `writing-plans` as sole author, gate, and exact-revision authorization
+- No automatic git actions; add, commit, and push require an explicit current-turn user request
 
 ## Codegraph Sub-Flow (DEFAULT: ON when binary present)
 
-The orchestrator runs codegraph directly during INIT to produce structural **proposals** before any sub-agent reads code. Proposals land on the proposal-store ledger (`pending_enrichment: true`); agents enrich them into knowledge entries via the `enriching-codegraph-proposals` skill.
+`arcs project init` uses codegraph when available and degrades cleanly when it is absent. Ingestion creates structural **proposals**, not accepted knowledge. If init reports `pending_enrichment: true`, the orchestrator dispatches the read-only `enriching-codegraph-proposals` skill and persists only proposals that pass their owning gate.
 
 1. **Detect:** `detectCodegraph()` from `src/utils/codegraph.ts`. If unavailable, skip cleanly — never block INIT on codegraph.
 2. **Trust the gitignore guarantee:** `runIndex()` already auto-appends `.codegraph/` to `.gitignore` (`ensureGitignoreEntry`). Don't redundantly check or modify `.gitignore` from agents — running the index is sufficient.
@@ -58,14 +59,14 @@ The orchestrator runs codegraph directly during INIT to produce structural **pro
    - 8 god nodes (`kind=module`, ranked by callers+callees / impact)
    - 8 architecture clusters (`kind=architecture`, synthesized pseudo-communities by directory prefix)
    - 5 cross-module couplings (`kind=gotcha`, high-degree links across top-level dirs)
-5. **Enrich** with the `enriching-codegraph-proposals` skill — read `arcs proposal list <slug> --json`, decide per-proposal verdicts (keep / merge / drop), persist via `arcs proposal promote` and `arcs proposal drop`. Sub-agents may run read-only codegraph MCP queries for evidence (the MCP server auto-syncs via its own file watcher):
+5. **Enrich read-only** with the `enriching-codegraph-proposals` skill — read `arcs proposal list <slug> --json` and return exact keep / merge / drop proposed mutations. Sub-agents may run read-only codegraph MCP queries for evidence:
    - `codegraph_search "entry points and main commands"` → seeds for "key files" reference entries
    - `codegraph_explore` on core modules → seeds for "core modules" entries
    - `codegraph_node "<godNodeLabel>"` → structural summary for module entry bodies
    - `codegraph_impact "<critical-symbol>"` → reverse-impact map for high-risk modules
    - `codegraph_callers` / `codegraph_callees "<symbol>"` → dependency paths for architecture entries
-6. **Hand to typed agents:** the proposals + query results go to the sub-agents listed in **Agent Dispatch** below; they merge graph evidence with code reading and return finalized knowledge entries.
-7. **Write** the entries directly via `arcs batch --file=ops.json` (one batch invocation for all knowledge entries) or `arcs knowledge create` per entry.
+6. **Gate:** `devil-advocate` reviews the exact enrichment proposal.
+7. **Persist after PASS:** the orchestrator applies only the gated proposal operations. Workers never write knowledge directly.
 
 If codegraph is missing, log "codegraph not on PATH; proceeding without graph signal" and skip steps 3–5. Sub-agents still run; they just lack the graph priors.
 
@@ -82,23 +83,23 @@ If codegraph is missing, log "codegraph not on PATH; proceeding without graph si
 
 | Sub-agent | Owns | Knowledge kinds it produces |
 |-----------|------|----------------------------|
-| `tech-architect` | Module boundaries, clusters, dependency direction, cross-module couplings, structural gotchas, lessons | `architecture`, `module`, `gotcha`, `lesson` |
-| `docs-researcher` | Tech stack, third-party libraries, key files, features | `reference`, `feature` |
+| `tech-architect` (`AGENT_MODE: architecture`) | Module boundaries, clusters, dependency direction, cross-module couplings, structural gotchas, lessons | `architecture`, `module`, `gotcha`, `lesson` |
+| `tech-architect` (`AGENT_MODE: research`) | Tech stack, third-party libraries, key files, features | `reference`, `feature` |
 | `code-reviewer` (audit mode, optional) | Coding-style + convention scan from existing code | `pattern` |
 
-Dispatch in parallel. Each agent receives the relevant `KnowledgeProposal` records from `ingestGraph` plus targeted codegraph MCP queries for evidence. Each agent returns finalized proposals (title, kind, summary, keywords, sourceFiles, body) for the orchestrator to write directly via `arcs knowledge create` (or `arcs batch`).
+Dispatch only disjoint read-only analyses in parallel, with a maximum of four agents per round. Each agent receives relevant graph evidence and returns proposals; persistence remains with the orchestrator after the owning gate passes.
 
 ## Knowledge Categories for Analysis Sub-Agents
 
 | Category | Kind | What to discover | Primary agent |
 |----------|------|------------------|---------------|
-| tech stack | `architecture` | Languages, frameworks, runtimes, build tools, versions | `docs-researcher` |
-| key files | `reference` | Entry points, config files, main modules, purposes | `docs-researcher` (codegraph_search "entry points") |
+| tech stack | `architecture` | Languages, frameworks, runtimes, build tools, versions | `tech-architect` (`AGENT_MODE: research`) |
+| key files | `reference` | Entry points, config files, main modules, purposes | `tech-architect` (`AGENT_MODE: research`; codegraph_search "entry points") |
 | code patterns | `pattern` | Recurring design patterns, abstractions, error handling | `code-reviewer` (audit mode) or `tech-architect` |
 | coding style | `pattern` | Formatting, linting, import ordering, file organization | `code-reviewer` (audit mode) |
 | core modules | `module` | Core modules/shared functions — what, where, interconnections | `tech-architect` (god nodes from codegraph) |
-| external services | `module` | APIs, databases, message queues the project interacts with | `docs-researcher` |
-| third-party libraries | `reference` | Key dependencies and why they are used | `docs-researcher` |
-| features | `feature` | Major user-facing or system-facing features | `docs-researcher` |
+| external services | `module` | APIs, databases, message queues the project interacts with | `tech-architect` (`AGENT_MODE: research`) |
+| third-party libraries | `reference` | Key dependencies and why they are used | `tech-architect` (`AGENT_MODE: research`) |
+| features | `feature` | Major user-facing or system-facing features | `tech-architect` (`AGENT_MODE: research`) |
 | cross-module couplings | `gotcha` | Hot edges between modules surfaced by codegraph | `tech-architect` (auto from `ingestGraph`) |
 | architecture clusters | `architecture` | Pseudo-community/directory groupings from codegraph | `tech-architect` (auto from `ingestGraph`) |

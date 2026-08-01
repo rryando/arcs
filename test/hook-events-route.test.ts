@@ -1,0 +1,289 @@
+/**
+ * Claude Code hook endpoint tests.
+ *
+ * Stands in for the hook script: every case is the exact HTTP request
+ * `scripts/claude-code-session-hook.mjs` puts on the wire for a given stdin
+ * event, so the server contract is verified without a live Claude Code session.
+ */
+
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+import { writeHookToken } from "../src/utils/hook-token-store.js";
+import {
+  createSession,
+  enqueueSessionMessage,
+  getSession,
+  listSessions,
+} from "../src/utils/session-store.js";
+import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
+import { withTempDataDir } from "./helpers/temp-data-dir.js";
+
+const TOKEN = "test-hook-token-0123456789";
+
+interface Ctx {
+  base: string;
+  projectDir: string;
+}
+
+interface HookEnvelope {
+  ok: boolean;
+  data?: { sessionId: string; queuedMessages: string[] };
+  code?: string;
+  message?: string;
+}
+
+async function withHookCtx(run: (ctx: Ctx) => Promise<void>): Promise<void> {
+  await withTempDataDir(async (dir) => {
+    writeFileSync(
+      resolve(dir, "meta.json"),
+      JSON.stringify({
+        version: "1.0",
+        projects: [{ id: "demo", name: "Demo", status: "active", dependsOn: [] }],
+      }),
+      "utf-8",
+    );
+    const projectDir = resolve(dir, "projects", "demo");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      resolve(projectDir, "meta.json"),
+      JSON.stringify({
+        id: "demo",
+        name: "Demo",
+        description: "test project",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        workspacePaths: [],
+      }),
+      "utf-8",
+    );
+    await writeHookToken(projectDir, TOKEN);
+
+    let server: WebServerHandle | null = null;
+    try {
+      server = await startWebServer({ port: 0, host: "127.0.0.1", watch: false });
+      await run({ base: server.url, projectDir });
+    } finally {
+      await server?.close();
+    }
+  });
+}
+
+async function postEvent(
+  base: string,
+  body: unknown,
+  options: { token?: string | null; slug?: string } = {},
+) {
+  const token = options.token === undefined ? TOKEN : options.token;
+  const res = await fetch(`${base}/api/hook/${options.slug ?? "demo"}/event`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, envelope: (await res.json()) as HookEnvelope };
+}
+
+describe("POST /api/hook/:slug/event — token gate", () => {
+  it("rejects a request with no Authorization header", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(
+        base,
+        { hook_event_name: "SessionStart", session_id: "cc-1" },
+        { token: null },
+      );
+
+      expect(status).toBe(401);
+      expect(envelope.code).toBe("hook_unauthorized");
+      expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+
+  it("rejects a wrong token", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status } = await postEvent(
+        base,
+        { hook_event_name: "SessionStart", session_id: "cc-1" },
+        { token: "not-the-token-000000000000" },
+      );
+
+      expect(status).toBe(401);
+      expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+
+  it("rejects a non-Bearer scheme", async () => {
+    await withHookCtx(async ({ base }) => {
+      const res = await fetch(`${base}/api/hook/demo/event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Basic ${TOKEN}` },
+        body: JSON.stringify({ hook_event_name: "SessionStart", session_id: "cc-1" }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  it("answers 401 (not 404) for an unknown project so slugs cannot be probed", async () => {
+    await withHookCtx(async ({ base }) => {
+      const { status, envelope } = await postEvent(
+        base,
+        { hook_event_name: "SessionStart", session_id: "cc-1" },
+        { slug: "nosuchproject" },
+      );
+
+      expect(status).toBe(401);
+      expect(envelope.code).toBe("hook_unauthorized");
+    });
+  });
+
+  it("still enforces the global loopback guard on top of the token", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const res = await fetch(`${base}/api/hook/demo/event`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: "https://evil.example.com",
+        },
+        body: JSON.stringify({ hook_event_name: "SessionStart", session_id: "cc-1" }),
+      });
+
+      // Two layers, both mandatory: a valid token does not buy past the
+      // cross-site check.
+      expect(res.status).toBe(403);
+      expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+});
+
+describe("POST /api/hook/:slug/event — session lifecycle", () => {
+  it("registers a claude-code session on SessionStart", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "3f1a2b4c-0000-4000-8000-000000000001",
+        cwd: "/work/demo",
+        source: "startup",
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+
+      const session = await getSession(projectDir, envelope.data?.sessionId ?? "");
+      expect(session.runtimeType).toBe("claude-code");
+      expect(session.runtimeSessionId).toBe("3f1a2b4c-0000-4000-8000-000000000001");
+      expect(session.status).toBe("active");
+      expect(session.metadata).toEqual({ directory: "/work/demo", source: "startup" });
+    });
+  });
+
+  it("is idempotent across repeated SessionStart events", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const event = { hook_event_name: "SessionStart", session_id: "cc-repeat", cwd: "/work/demo" };
+      await postEvent(base, event);
+      await postEvent(base, { ...event, source: "resume" });
+
+      expect(await listSessions(projectDir)).toHaveLength(1);
+    });
+  });
+
+  it("drains the queue on UserPromptSubmit and leaves it empty afterwards", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc-drain",
+      });
+      await enqueueSessionMessage(projectDir, session.normalizedId, "check T004");
+      await enqueueSessionMessage(projectDir, session.normalizedId, "then report back");
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-drain",
+        prompt: "what next?",
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual(["check T004", "then report back"]);
+
+      const second = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-drain",
+        prompt: "and now?",
+      });
+      expect(second.envelope.data?.queuedMessages).toEqual([]);
+      expect((await getSession(projectDir, session.normalizedId)).messageQueue).toBeUndefined();
+    });
+  });
+
+  it("registers an unknown session on UserPromptSubmit instead of dropping the checkpoint", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-never-started",
+        cwd: "/work/demo",
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+
+      const session = await getSession(projectDir, "cc-never-started");
+      expect(session.runtimeType).toBe("claude-code");
+      expect(session.status).toBe("active");
+    });
+  });
+
+  it("completes the session on SessionEnd", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, { hook_event_name: "SessionStart", session_id: "cc-end" });
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "SessionEnd",
+        session_id: "cc-end",
+        reason: "logout",
+      });
+
+      expect(status).toBe(200);
+      expect((await getSession(projectDir, "cc-end")).status).toBe("completed");
+    });
+  });
+
+  it("404s a SessionEnd for a session ARCS never saw", async () => {
+    await withHookCtx(async ({ base }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionEnd",
+        session_id: "cc-ghost",
+        reason: "other",
+      });
+
+      expect(status).toBe(404);
+      expect(envelope.code).toBe("ITEM_NOT_FOUND");
+    });
+  });
+
+  it("rejects an unknown hook event name", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "PreToolUse",
+        session_id: "cc-1",
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("INVALID_BODY");
+      expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+
+  it("ignores unknown extra fields Claude Code may add", async () => {
+    await withHookCtx(async ({ base }) => {
+      const { status } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-extra",
+        transcript_path: "/tmp/transcript.jsonl",
+        permission_mode: "acceptEdits",
+      });
+
+      expect(status).toBe(200);
+    });
+  });
+});

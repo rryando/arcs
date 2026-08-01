@@ -2,6 +2,8 @@
  * Adapter that builds BM25 retrieval indexes from ARCS project knowledge and plan entries.
  */
 
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
 import { getProjectDir } from "../utils/paths.js";
 import {
   type KnowledgeMeta,
@@ -23,6 +25,26 @@ export interface RetrievalIndex {
   searchKnowledge(query: string, limit?: number): ScoredEntry[];
   searchPlans(query: string, limit?: number): ScoredEntry[];
   searchAll(query: string, limit?: number): ScoredEntry[];
+}
+
+const retrievalCache = new Map<string, { signature: string; index: RetrievalIndex }>();
+
+async function sourceSignature(projectDir: string): Promise<string | null> {
+  const paths = [
+    join(projectDir, "knowledge", "index.json"),
+    join(projectDir, "plans", "index.json"),
+  ];
+  const parts = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        const info = await stat(path);
+        return `${info.mtimeMs}:${info.size}:${info.ino}`;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return parts.some((part) => part === null) ? null : parts.join("|");
 }
 
 const FIELD_WEIGHTS = { title: 3, keywords: 2, summary: 1 };
@@ -74,6 +96,9 @@ function buildSearchFn(
  */
 export async function buildProjectRetrievalIndex(slug: string): Promise<RetrievalIndex> {
   const projectDir = getProjectDir(slug);
+  const signature = await sourceSignature(projectDir);
+  const cached = retrievalCache.get(projectDir);
+  if (signature !== null && cached?.signature === signature) return cached.index;
 
   let knowledgeEntries: KnowledgeMeta[] = [];
   let planEntries: PlanMeta[] = [];
@@ -131,5 +156,8 @@ export async function buildProjectRetrievalIndex(slug: string): Promise<Retrieva
     return merged.slice(0, limit);
   };
 
-  return { searchKnowledge, searchPlans, searchAll };
+  const index = { searchKnowledge, searchPlans, searchAll };
+  if (signature !== null) retrievalCache.set(projectDir, { signature, index });
+  else retrievalCache.delete(projectDir);
+  return index;
 }

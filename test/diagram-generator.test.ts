@@ -109,7 +109,8 @@ describe("generateDiagramFromTasks — per-node metadata propagation", () => {
     const tasks = [makeTask({ id: "task-a", title: "Task A" })];
     const { mmd } = generateDiagramFromTasks("plan-default", tasks);
 
-    expect(mmd).toContain("%% skill: quick-dev");
+    expect(mmd).toContain("%% skill: implementation");
+    expect(mmd).toContain("%% work-mode: bounded");
     expect(mmd).toContain("%% scope: (TBD)");
     expect(mmd).toContain("%% acceptance: (TBD)");
     expect(mmd).toContain("%% verify: npm test");
@@ -122,7 +123,8 @@ describe("generateDiagramFromTasks — per-node metadata propagation", () => {
       makeTask({
         id: "task-a",
         title: "Task A",
-        skill: "code-agent",
+        skill: "implementation",
+        workMode: "inspect",
         scope: "src/foo.ts",
         acceptance: "passes test X",
         verify: "vitest run foo.test.ts",
@@ -131,7 +133,8 @@ describe("generateDiagramFromTasks — per-node metadata propagation", () => {
     ];
     const { mmd } = generateDiagramFromTasks("plan-meta", tasks);
 
-    expect(mmd).toContain("%% skill: code-agent");
+    expect(mmd).toContain("%% skill: implementation");
+    expect(mmd).toContain("%% work-mode: inspect");
     expect(mmd).toContain("%% scope: src/foo.ts");
     expect(mmd).toContain("%% files: src/foo.ts:line-42");
     expect(mmd).toContain("%% acceptance: passes test X");
@@ -150,12 +153,13 @@ describe("generateDiagramFromTasks — per-node metadata propagation", () => {
     expect(mmd).toContain("%% files: src/foo.ts, src/bar.ts:fn-baz");
   });
 
-  it("preserves canonical metadata order (skill, scope, files, acceptance, verify)", () => {
+  it("preserves canonical metadata order (skill, work-mode, scope, files, acceptance, verify)", () => {
     const tasks = [
       makeTask({
         id: "task-a",
         title: "Task A",
         skill: "tdd",
+        workMode: "inspect",
         scope: "src/x.ts",
         acceptance: "x works",
         verify: "x test",
@@ -165,13 +169,15 @@ describe("generateDiagramFromTasks — per-node metadata propagation", () => {
     const { mmd } = generateDiagramFromTasks("plan-order", tasks);
 
     const skillIdx = mmd.indexOf("%% skill: tdd");
+    const workModeIdx = mmd.indexOf("%% work-mode: inspect");
     const scopeIdx = mmd.indexOf("%% scope: src/x.ts");
     const filesIdx = mmd.indexOf("%% files: src/x.ts");
     const accIdx = mmd.indexOf("%% acceptance: x works");
     const verIdx = mmd.indexOf("%% verify: x test");
 
     expect(skillIdx).toBeGreaterThan(-1);
-    expect(skillIdx).toBeLessThan(scopeIdx);
+    expect(skillIdx).toBeLessThan(workModeIdx);
+    expect(workModeIdx).toBeLessThan(scopeIdx);
     expect(scopeIdx).toBeLessThan(filesIdx);
     expect(filesIdx).toBeLessThan(accIdx);
     expect(accIdx).toBeLessThan(verIdx);
@@ -188,10 +194,22 @@ describe("generateDiagramFromTasks — per-node metadata propagation", () => {
     ];
     const { mmd } = generateDiagramFromTasks("plan-mixed", tasks);
 
-    expect(mmd).toContain("%% skill: quick-dev"); // default
+    expect(mmd).toContain("%% skill: implementation"); // default
+    expect(mmd).toContain("%% work-mode: bounded"); // default
     expect(mmd).toContain("%% scope: src/foo.ts"); // populated
     expect(mmd).toContain("%% acceptance: (TBD)"); // default
     expect(mmd).toContain("%% verify: npm test"); // default
     expect(mmd).not.toContain("%% files:"); // omitted entirely
+  });
+
+  it.each([
+    ["quick-dev", "bounded"],
+    ["code-agent", "inspect"],
+  ] as const)("renders legacy %s tasks with canonical work metadata", (skill, workMode) => {
+    const tasks = [makeTask({ id: "task-a", title: "Task A", skill })];
+    const { mmd } = generateDiagramFromTasks("plan-legacy", tasks);
+
+    expect(mmd).toContain("%% skill: implementation");
+    expect(mmd).toContain(`%% work-mode: ${workMode}`);
   });
 });

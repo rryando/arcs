@@ -38,6 +38,21 @@ function readSourceManifest(): SourceArcsBundleManifest {
   return JSON.parse(readFileSync(sourceManifestPath, "utf-8")) as SourceArcsBundleManifest;
 }
 
+function withSourceManifest<T>(
+  mutate: (manifest: SourceArcsBundleManifest) => void,
+  run: () => T,
+): T {
+  const original = readFileSync(sourceManifestPath, "utf-8");
+  const manifest = JSON.parse(original) as SourceArcsBundleManifest;
+  mutate(manifest);
+  writeFileSync(sourceManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
+  try {
+    return run();
+  } finally {
+    writeFileSync(sourceManifestPath, original, "utf-8");
+  }
+}
+
 function readExpectedSourceBundleVersion(): string {
   const sourceManifest = readSourceManifest();
 
@@ -61,7 +76,9 @@ function curatedBundlePayloadFiles(): string[] {
     ),
     ...runtimeManifest.agents,
     ...runtimeManifest.plugin,
-    ...sourceManifest.agents.map((agent) => agent.source),
+    ...sourceManifest.agents
+      .filter((agent) => agent.status === "active")
+      .map((agent) => agent.source),
   ].sort((a, b) => a.localeCompare(b));
 }
 
@@ -98,7 +115,7 @@ function expectRuntimePayloadInstalled(homeDir: string): void {
     ).toBe(true);
   }
 
-  for (const agent of sourceManifest.agents) {
+  for (const agent of sourceManifest.agents.filter((agent) => agent.status === "active")) {
     expect(existsSync(resolve(homeDir, ".config", "opencode", agent.destination))).toBe(true);
   }
 }
@@ -151,13 +168,25 @@ describe("opencode ARCS bundle install detection", () => {
     [
       "agent source",
       (manifest: SourceArcsBundleManifest) => {
-        manifest.agents = [{ source: "skills/agent.txt", destination: "prompts/agent.txt" }];
+        manifest.agents = [
+          {
+            ...readSourceManifest().agents[0],
+            source: "skills/agent.txt",
+            destination: "prompts/agent.txt",
+          },
+        ];
       },
     ],
     [
       "agent destination",
       (manifest: SourceArcsBundleManifest) => {
-        manifest.agents = [{ source: "prompts/agent.txt", destination: "../agent.txt" }];
+        manifest.agents = [
+          {
+            ...readSourceManifest().agents[0],
+            source: "prompts/agent.txt",
+            destination: "../agent.txt",
+          },
+        ];
       },
     ],
     [
@@ -352,13 +381,9 @@ describe("opencode ARCS bundle installer", () => {
             mode: "subagent",
             model: "github-copilot/claude-haiku-4.5",
           },
-          "docs-researcher": {
-            mode: "subagent",
-            model: "github-copilot/claude-opus-4.6",
-          },
           "tech-architect": {
             mode: "subagent",
-            model: "github-copilot/claude-haiku-4.5",
+            model: "github-copilot/claude-sonnet-4.6",
           },
         },
       });
@@ -564,6 +589,127 @@ describe("opencode ARCS bundle installer", () => {
       expect(readFileSync(foreignPlugin, "utf-8")).toBe("foreign plugin");
       expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({ existing: true });
       expect(readInstalledArcsBundleManifest()).toMatchObject(priorManifest);
+    });
+  });
+
+  it("retires only unchanged managed prompts and config entries", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      installArcsBundle({ autoConfirmReplacement: true });
+      const promptPath = resolve(homeDir, ".config", "opencode", "prompts", "graph-explorer.txt");
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+
+      withSourceManifest(
+        (manifest) => {
+          const retired = manifest.agents.find((agent) => agent.id === "graph-explorer");
+          if (!retired) throw new Error("missing fixture agent");
+          retired.status = "retired";
+          retired.replacementId = "software-engineer";
+        },
+        () => installArcsBundle({ autoConfirmReplacement: true }),
+      );
+
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(existsSync(promptPath)).toBe(false);
+      expect(config.agent).not.toHaveProperty("graph-explorer");
+      expect(readInstalledArcsBundleManifest()?.agents).not.toContainEqual(
+        expect.objectContaining({ id: "graph-explorer" }),
+      );
+    });
+  });
+
+  it("preserves user-modified retired prompts and config entries", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      installArcsBundle({ autoConfirmReplacement: true });
+      const promptPath = resolve(homeDir, ".config", "opencode", "prompts", "graph-explorer.txt");
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      writeFileSync(promptPath, "user-owned prompt", "utf-8");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      config.agent["graph-explorer"].description = "user-owned config";
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      withSourceManifest(
+        (manifest) => {
+          const retired = manifest.agents.find((agent) => agent.id === "graph-explorer");
+          if (!retired) throw new Error("missing fixture agent");
+          retired.status = "retired";
+          retired.replacementId = "software-engineer";
+        },
+        () => installArcsBundle({ autoConfirmReplacement: true }),
+      );
+
+      const after = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(readFileSync(promptPath, "utf-8")).toBe("user-owned prompt");
+      expect(after.agent["graph-explorer"].description).toBe("user-owned config");
+    });
+  });
+
+  it("rejects retirement before install when its replacement is missing", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      withSourceManifest(
+        (manifest) => {
+          const retired = manifest.agents.find((agent) => agent.id === "graph-explorer");
+          if (!retired) throw new Error("missing fixture agent");
+          retired.status = "retired";
+          retired.replacementId = "missing-agent";
+        },
+        () => {
+          expect(() => installArcsBundle({ autoConfirmReplacement: true })).toThrow(
+            /retired agent.*replacement/i,
+          );
+          expect(existsSync(resolve(homeDir, ".config", "opencode", "opencode.json"))).toBe(false);
+          expect(existsSync(resolve(homeDir, ".config", "opencode", ".arcs-bundle.json"))).toBe(
+            false,
+          );
+        },
+      );
+    });
+  });
+
+  it("migrates a retired model override only when the replacement has no override", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      installArcsBundle({ autoConfirmReplacement: true });
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      config.agent["graph-explorer"].model = "user/retired-model";
+      delete config.agent["software-engineer"].model;
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      withSourceManifest(
+        (manifest) => {
+          const retired = manifest.agents.find((agent) => agent.id === "graph-explorer");
+          if (!retired) throw new Error("missing fixture agent");
+          retired.status = "retired";
+          retired.replacementId = "software-engineer";
+        },
+        () => installArcsBundle({ autoConfirmReplacement: true }),
+      );
+
+      expect(JSON.parse(readFileSync(configPath, "utf-8")).agent["software-engineer"].model).toBe(
+        "user/retired-model",
+      );
+    });
+
+    await withTempHomeDir(async (homeDir) => {
+      installArcsBundle({ autoConfirmReplacement: true });
+      const configPath = resolve(homeDir, ".config", "opencode", "opencode.json");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      config.agent["graph-explorer"].model = "user/retired-model";
+      config.agent["software-engineer"].model = "user/replacement-model";
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      withSourceManifest(
+        (manifest) => {
+          const retired = manifest.agents.find((agent) => agent.id === "graph-explorer");
+          if (!retired) throw new Error("missing fixture agent");
+          retired.status = "retired";
+          retired.replacementId = "software-engineer";
+        },
+        () => installArcsBundle({ autoConfirmReplacement: true }),
+      );
+
+      expect(JSON.parse(readFileSync(configPath, "utf-8")).agent["software-engineer"].model).toBe(
+        "user/replacement-model",
+      );
     });
   });
 });

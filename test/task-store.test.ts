@@ -2,7 +2,7 @@
 // Tests for task-store dependsOn field
 // ---------------------------------------------------------------------------
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -124,20 +124,22 @@ describe("task-store: per-node diagram metadata fields", () => {
     expect(task.sourceFiles).toBeUndefined();
   });
 
-  it("round-trips all 5 metadata fields on create", async () => {
+  it("round-trips diagram metadata fields on create", async () => {
     const dir = makeProjectDir();
     const task = await createTask(dir, {
       title: "Round Trip",
       scope: "src/foo.ts",
       acceptance: "passes test X",
       verify: "vitest run foo.test.ts",
-      skill: "quick-dev",
+      skill: "implementation",
+      workMode: "bounded",
       sourceFiles: [{ path: "src/foo.ts", anchor: "line-42" }],
     });
     expect(task.scope).toBe("src/foo.ts");
     expect(task.acceptance).toBe("passes test X");
     expect(task.verify).toBe("vitest run foo.test.ts");
-    expect(task.skill).toBe("quick-dev");
+    expect(task.skill).toBe("implementation");
+    expect(task.workMode).toBe("bounded");
     expect(task.sourceFiles).toEqual([{ path: "src/foo.ts", anchor: "line-42" }]);
   });
 
@@ -148,7 +150,8 @@ describe("task-store: per-node diagram metadata fields", () => {
       scope: "src/bar.ts",
       acceptance: "bar works",
       verify: "npm test",
-      skill: "code-agent",
+      skill: "implementation",
+      workMode: "inspect",
       sourceFiles: [{ path: "src/bar.ts" }],
     });
     // Force a fresh read by listing tasks (hits the JSON index)
@@ -159,7 +162,8 @@ describe("task-store: per-node diagram metadata fields", () => {
     expect(fetched?.scope).toBe("src/bar.ts");
     expect(fetched?.acceptance).toBe("bar works");
     expect(fetched?.verify).toBe("npm test");
-    expect(fetched?.skill).toBe("code-agent");
+    expect(fetched?.skill).toBe("implementation");
+    expect(fetched?.workMode).toBe("inspect");
     expect(fetched?.sourceFiles).toEqual([{ path: "src/bar.ts" }]);
   });
 
@@ -172,11 +176,13 @@ describe("task-store: per-node diagram metadata fields", () => {
       acceptance: "x is good",
       verify: "x test",
       skill: "tdd",
+      workMode: "inspect",
     });
     expect(updated.scope).toBe("src/x.ts");
     expect(updated.acceptance).toBe("x is good");
     expect(updated.verify).toBe("x test");
     expect(updated.skill).toBe("tdd");
+    expect(updated.workMode).toBe("inspect");
   });
 
   it("update with null clears metadata fields", async () => {
@@ -187,6 +193,7 @@ describe("task-store: per-node diagram metadata fields", () => {
       acceptance: "ok",
       verify: "test",
       skill: "quick-dev",
+      workMode: "bounded",
     });
     const cleared = await updateTask(dir, {
       id: task.normalizedId,
@@ -194,11 +201,13 @@ describe("task-store: per-node diagram metadata fields", () => {
       acceptance: null,
       verify: null,
       skill: null,
+      workMode: null,
     });
     expect(cleared.scope).toBeUndefined();
     expect(cleared.acceptance).toBeUndefined();
     expect(cleared.verify).toBeUndefined();
     expect(cleared.skill).toBeUndefined();
+    expect(cleared.workMode).toBeUndefined();
   });
 
   it("update with empty sourceFiles array clears the field", async () => {
@@ -218,13 +227,72 @@ describe("task-store: per-node diagram metadata fields", () => {
       scope: "src/foo.ts",
       acceptance: "passes",
       verify: "test",
-      skill: "quick-dev",
+      skill: "implementation",
+      workMode: "bounded",
     });
     // Only update scope; other fields must remain.
     const updated = await updateTask(dir, { id: task.normalizedId, scope: "src/bar.ts" });
     expect(updated.scope).toBe("src/bar.ts");
     expect(updated.acceptance).toBe("passes");
     expect(updated.verify).toBe("test");
-    expect(updated.skill).toBe("quick-dev");
+    expect(updated.skill).toBe("implementation");
+    expect(updated.workMode).toBe("bounded");
+  });
+
+  it.each([
+    ["quick-dev", "bounded"],
+    ["code-agent", "inspect"],
+  ] as const)("normalizes legacy %s metadata on read without modifying the source", async (skill, workMode) => {
+    const dir = makeProjectDir();
+    const indexPath = resolve(dir, "tasks", "index.json");
+    mkdirSync(resolve(dir, "tasks"), { recursive: true });
+    const source = `${JSON.stringify(
+      {
+        tasks: [
+          {
+            id: "legacy-task",
+            normalizedId: "legacy-task",
+            title: "Legacy Task",
+            status: "backlog",
+            priority: "medium",
+            skill,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`;
+    writeFileSync(indexPath, source);
+
+    const { getTask, listTasks } = await import("../src/utils/task-store.js");
+    await expect(getTask(dir, "legacy-task")).resolves.toMatchObject({
+      skill: "implementation",
+      workMode,
+    });
+    await expect(listTasks(dir)).resolves.toEqual([
+      expect.objectContaining({ skill: "implementation", workMode }),
+    ]);
+    expect(readFileSync(indexPath, "utf-8")).toBe(source);
+  });
+
+  it.each([
+    ["quick-dev", "bounded"],
+    ["code-agent", "inspect"],
+  ] as const)("persists legacy %s writes as canonical metadata", async (skill, workMode) => {
+    const dir = makeProjectDir();
+    const task = await createTask(dir, { title: "Legacy Input", skill });
+
+    expect(task).toMatchObject({ skill: "implementation", workMode });
+    expect(readFileSync(resolve(dir, "tasks", "index.json"), "utf-8")).not.toContain(skill);
+  });
+
+  it("rejects unsupported work modes at the storage boundary", async () => {
+    const dir = makeProjectDir();
+
+    await expect(
+      createTask(dir, { title: "Invalid Mode", workMode: "unbounded" as "bounded" }),
+    ).rejects.toThrow('Invalid task work mode "unbounded"');
   });
 });

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { readJsonSafeSync } from "../utils/json.js";
+import { type AgentTier, getActiveAgent, getAgentTierMap } from "./agent-registry.js";
 import { ORCHESTRATE_PROMPT_TEXT } from "./arcs-orchestrate.js";
 import { ORCHESTRATE_CAVEMAN_PROMPT_TEXT } from "./arcs-orchestrate-caveman.js";
 import type { ModelTierConfig } from "./config.js";
@@ -55,21 +56,19 @@ function ensureCodegraphMcpEntry(config: Record<string, unknown>): void {
 // Agent Model Resolution
 // ---------------------------------------------------------------------------
 
-/** Tier assignment for each known agent. */
-const AGENT_TIER_MAP: Record<string, "heavy" | "standard" | "light"> = {
-  "software-engineer": "heavy",
-  "docs-researcher": "heavy",
-  "arcs-docs": "heavy",
-  "oncall-ops": "heavy",
+/** OpenCode host agents are not owned by the ARCS registry. */
+const HOST_AGENT_TIER_MAP: Record<string, AgentTier> = {
   plan: "heavy",
   general: "heavy",
   build: "standard",
-  "ARCS Orchestrator": "standard",
-  "ARCS Caveman": "standard",
-  "devil-advocate": "standard",
-  "graph-explorer": "light",
-  "code-reviewer": "light",
-  "tech-architect": "light",
+};
+
+const registryAgentTiers = getAgentTierMap();
+const AGENT_TIER_MAP: Record<string, AgentTier> = {
+  ...registryAgentTiers,
+  ...HOST_AGENT_TIER_MAP,
+  "ARCS Orchestrator": registryAgentTiers["arcs-orchestrate"],
+  "ARCS Caveman": registryAgentTiers["arcs-orchestrate-caveman"],
 };
 
 /**
@@ -77,7 +76,7 @@ const AGENT_TIER_MAP: Record<string, "heavy" | "standard" | "light"> = {
  */
 function resolveAgentModel(
   agentName: string,
-  tier: "heavy" | "standard" | "light",
+  tier: AgentTier,
   modelConfig: ModelTierConfig,
 ): string {
   return modelConfig.perAgent?.[agentName] ?? modelConfig[tier];
@@ -112,21 +111,24 @@ function opencodePromptsDir(): string {
 
 /** Path to the ARCS orchestrator prompt file. */
 function opencodePromptPath(): string {
-  return resolve(opencodePromptsDir(), "arcs-orchestrate.txt");
+  return resolve(opencodeConfigDir(), getActiveAgent("arcs-orchestrate").destination);
 }
 
 /** Path to the ARCS Caveman orchestrator prompt file. */
 function opencodeCavemanPromptPath(): string {
-  return resolve(opencodePromptsDir(), "arcs-orchestrate-caveman.txt");
+  return resolve(opencodeConfigDir(), getActiveAgent("arcs-orchestrate-caveman").destination);
 }
+
+const orchestratorAgent = getActiveAgent("arcs-orchestrate");
+const cavemanAgent = getActiveAgent("arcs-orchestrate-caveman");
 
 /**
  * The OpenCode agent entry for ARCS orchestrator.
  */
 export const ARCS_AGENT_ENTRY = {
-  description: "ARCS - (Orchestrator)",
-  mode: "primary" as const,
-  prompt: "{file:./prompts/arcs-orchestrate.txt}",
+  description: orchestratorAgent.description,
+  mode: orchestratorAgent.kind,
+  prompt: `{file:./${orchestratorAgent.destination}}`,
   color: "#00bcd4",
 };
 
@@ -135,9 +137,9 @@ export const ARCS_AGENT_ENTRY = {
  * Orchestrator, but with caveman speech layered on top for token efficiency.
  */
 export const ARCS_CAVEMAN_AGENT_ENTRY = {
-  description: "ARCS - Caveman (token-efficient orchestrator)",
-  mode: "primary" as const,
-  prompt: "{file:./prompts/arcs-orchestrate-caveman.txt}",
+  description: cavemanAgent.description,
+  mode: cavemanAgent.kind,
+  prompt: `{file:./${cavemanAgent.destination}}`,
   color: "#d2691e",
 };
 

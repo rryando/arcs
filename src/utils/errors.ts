@@ -63,6 +63,28 @@ export function invalidTaskPriority(priority: string): DagError {
   return new DagError("INVALID_TASK_PRIORITY", `Invalid task priority "${priority}".`);
 }
 
+export function invalidSessionStatus(status: string): DagError {
+  return new DagError("INVALID_SESSION_STATUS", `Invalid session status "${status}".`);
+}
+
+export function invalidSessionRuntimeType(runtimeType: string): DagError {
+  return new DagError(
+    "INVALID_SESSION_RUNTIME_TYPE",
+    `Invalid session runtime type "${runtimeType}".`,
+  );
+}
+
+export function invalidSessionId(runtimeSessionId: string): DagError {
+  return new DagError(
+    "INVALID_SESSION_ID",
+    `Invalid runtime session id "${runtimeSessionId}". Must contain at least one alphanumeric character.`,
+  );
+}
+
+export function invalidSessionLink(detail: string): DagError {
+  return new DagError("INVALID_SESSION_LINK", `Invalid session link: ${detail}`);
+}
+
 export function invalidKnowledgeKind(kind: string): DagError {
   return new DagError("INVALID_KNOWLEDGE_KIND", `Invalid knowledge kind "${kind}".`);
 }
@@ -76,7 +98,7 @@ export function invalidFileRef(detail: string): DagError {
 }
 
 export function normalizedIdCollision(
-  kind: "plan" | "knowledge entry" | "task",
+  kind: "plan" | "knowledge entry" | "task" | "session",
   requestedId: string,
   normalizedId: string,
 ): DagError {
@@ -86,7 +108,10 @@ export function normalizedIdCollision(
   );
 }
 
-export function itemNotFound(kind: "plan" | "knowledge entry" | "task", id: string): DagError {
+export function itemNotFound(
+  kind: "plan" | "knowledge entry" | "task" | "session",
+  id: string,
+): DagError {
   return new DagError("ITEM_NOT_FOUND", `Could not find ${kind} "${id}".`);
 }
 

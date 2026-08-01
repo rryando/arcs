@@ -15,6 +15,27 @@ describe("ARCS-native skill inventory", () => {
   const nativeSkillFiles = runtimeManifest.preservedFiles.filter((path) =>
     path.startsWith("skills/"),
   );
+  const exactSkillInventory = [
+    "brainstorming",
+    "caveman-commit",
+    "deep-pr-review",
+    "enriching-codegraph-proposals",
+    "executing-plans",
+    "implementation",
+    "init-project",
+    "systematic-debugging",
+    "test-driven-development",
+    "to-diagram",
+    "writing-knowledge",
+    "writing-plans",
+  ];
+
+  it("ships exactly the 12 active skills", () => {
+    const managedSkills = Object.keys(runtimeManifest.skills);
+    const nativeSkills = nativeSkillFiles.map((path) => path.split("/")[1]);
+
+    expect([...managedSkills, ...nativeSkills].sort()).toEqual(exactSkillInventory);
+  });
 
   it("keeps native skills outside the manifest-managed runtime skill inventory", () => {
     const manifestManagedFiles = new Set(
