@@ -2,10 +2,11 @@
  * Markdown document viewer — GFM rendering with syntax highlighting,
  * heading anchors, and a generated table-of-contents rail.
  *
- * With a `slug`, every heading also carries a send affordance: it ships the
- * heading's own source section (heading line down to the next same-or-shallower
- * heading) to a live session, so an agent gets the exact markdown, not a
- * re-serialized copy of the rendered DOM.
+ * Every heading carries copy affordances (section source, anchor link), and —
+ * with a `slug` — a send affordance: it ships the heading's own source section
+ * (heading line down to the next same-or-shallower heading) to a live session,
+ * so an agent gets the exact markdown, not a re-serialized copy of the rendered
+ * DOM. The copy buttons run entirely client-side, so they need no `slug`.
  */
 
 import { type ReactNode, useMemo, useState } from "react";
@@ -31,6 +32,17 @@ function textOfChildren(children: unknown): string {
   return "";
 }
 
+/** Copy buttons share the send button's hover-reveal look; the "copied" state
+ * stays visible without a hover so the confirmation survives the mouse leaving. */
+function headingButtonClass(copied: boolean): string {
+  return cx(
+    "ml-2 align-middle text-[12px] font-normal focus-visible:opacity-100",
+    copied
+      ? "text-term-green opacity-100"
+      : "text-term-dim opacity-0 group-hover:opacity-100 hover:text-term-green",
+  );
+}
+
 export function MarkdownViewer({
   content,
   className,
@@ -52,19 +64,34 @@ export function MarkdownViewer({
   const sections = useMemo(() => extractSections(content), [content]);
   const sectionById = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const [sendTarget, setSendTarget] = useState<MarkdownSection | null>(null);
+  // `${headingId}:text` | `${headingId}:link` — only the clicked button confirms.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
   const nextHeadingId = createHeadingIdGenerator();
+
+  // `navigator.clipboard` needs a secure context and is absent in some embeds;
+  // a copy that cannot happen is a silent no-op, never a thrown error.
+  const copy = async (key: string, text: string) => {
+    try {
+      if (!navigator.clipboard) return;
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1500);
+  };
 
   // Ids come from the same generator sequence as `extractSections`, so a
   // rendered heading finds its own source range by id. A heading the scanner
   // does not see (setext form) simply gets no send button.
   const renderHeading = (depth: 1 | 2 | 3 | 4, children: ReactNode) => {
     const id = nextHeadingId(textOfChildren(children));
-    const section = slug ? sectionById.get(id) : undefined;
+    const section = sectionById.get(id);
     const body = (
       <>
         {children}
-        {section && (
+        {slug && section && (
           <button
             type="button"
             title="send this section to a session"
@@ -74,6 +101,28 @@ export function MarkdownViewer({
             ✉
           </button>
         )}
+        {section && (
+          <button
+            type="button"
+            title="copy this section's markdown"
+            onClick={() =>
+              void copy(`${id}:text`, content.slice(section.startOffset, section.endOffset).trim())
+            }
+            className={headingButtonClass(copiedKey === `${id}:text`)}
+          >
+            {copiedKey === `${id}:text` ? "✓" : "⧉"}
+          </button>
+        )}
+        <button
+          type="button"
+          title="copy a link to this section"
+          onClick={() =>
+            void copy(`${id}:link`, `${window.location.origin}${window.location.pathname}#${id}`)
+          }
+          className={headingButtonClass(copiedKey === `${id}:link`)}
+        >
+          {copiedKey === `${id}:link` ? "✓" : "#"}
+        </button>
       </>
     );
     if (depth === 1)
