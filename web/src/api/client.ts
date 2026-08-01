@@ -95,6 +95,37 @@ export interface TaskMeta {
   updatedAt: string;
 }
 
+export type SessionStatus = "active" | "idle" | "completed" | "failed" | "disconnected";
+export type SessionRuntimeType = "opencode" | "claude-code";
+export type SessionLinkedNodeType = "task" | "plan";
+
+export interface SessionMeta {
+  id: string;
+  normalizedId: string;
+  runtimeType: SessionRuntimeType;
+  runtimeSessionId: string;
+  status: SessionStatus;
+  startedAt: string;
+  lastMessageAt?: string;
+  updatedAt: string;
+  userEmail?: string;
+  /** Always set together with `linkedNodeId` — a half-set link never persists. */
+  linkedNodeType?: SessionLinkedNodeType;
+  /** Normalized task/plan id — never a diagram node id (T001…). */
+  linkedNodeId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SessionUpdateInput {
+  status?: SessionStatus;
+  lastMessageAt?: string | null;
+  userEmail?: string | null;
+  metadata?: Record<string, unknown> | null;
+  /** `null` on either linkage field unlinks the session entirely. */
+  linkedNodeType?: SessionLinkedNodeType | null;
+  linkedNodeId?: string | null;
+}
+
 export interface PlanMeta {
   id: string;
   normalizedId: string;
@@ -166,7 +197,16 @@ export interface Proposal {
 export interface ChangeEvent {
   type: "changed";
   slug: string | null;
-  area: "root" | "knowledge" | "tasks" | "plans" | "proposals" | "docs" | "meta" | "other";
+  area:
+    | "root"
+    | "knowledge"
+    | "tasks"
+    | "plans"
+    | "proposals"
+    | "sessions"
+    | "docs"
+    | "meta"
+    | "other";
   path: string;
   at: string;
 }
@@ -229,6 +269,35 @@ export const api = {
     }),
   deleteTask: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/tasks/${id}`, { method: "DELETE" }),
+
+  sessions: (slug: string, opts: { status?: string; runtimeType?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.runtimeType) params.set("runtimeType", opts.runtimeType);
+    const query = params.toString();
+    return request<{ sessions: SessionMeta[] }>(
+      `/api/p/${slug}/sessions${query ? `?${query}` : ""}`,
+    );
+  },
+  session: (slug: string, id: string) => request<SessionMeta>(`/api/p/${slug}/sessions/${id}`),
+  createSession: (slug: string, input: Record<string, unknown>) =>
+    request<SessionMeta>(`/api/p/${slug}/sessions`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateSession: (slug: string, id: string, input: SessionUpdateInput) =>
+    request<SessionMeta>(`/api/p/${slug}/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteSession: (slug: string, id: string) =>
+    request<{ deleted: boolean }>(`/api/p/${slug}/sessions/${id}`, { method: "DELETE" }),
+  /** Live-injects a prompt into the runtime behind the session (opencode only). */
+  sendSessionMessage: (slug: string, id: string, message: string) =>
+    request<SessionMeta>(`/api/p/${slug}/sessions/${id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
 
   plans: (slug: string) => request<{ plans: PlanMeta[] }>(`/api/p/${slug}/plans`),
   plan: (slug: string, id: string) =>

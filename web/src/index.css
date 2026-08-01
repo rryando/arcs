@@ -5,19 +5,23 @@
 @theme {
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --color-term-bg: #070a07;
-  --color-term-panel: #0b100b;
-  --color-term-inset: #060806;
-  --color-term-border: #1d2a1d;
-  --color-term-border-hi: #3a5340;
-  --color-term-fg: #b9dcb9;
-  --color-term-dim: #647c66;
-  --color-term-green: #7ee787;
-  --color-term-amber: #e5b567;
-  --color-term-red: #ff7a7a;
-  --color-term-cyan: #6fc3df;
-  --color-term-magenta: #c792ea;
-  --color-term-blue: #79b8ff;
+  --color-term-bg: #050505;
+  --color-term-panel: #101010;
+  --color-term-inset: #1a1a1a;
+  --color-term-border: #2c2c2c;
+  --color-term-border-hi: #474747;
+  --color-term-fg: #f2f2f2;
+  --color-term-dim: #8f8f8f;
+  --color-term-green: #4ade80;
+  --color-term-amber: #fbbf24;
+  --color-term-red: #f87171;
+  --color-term-cyan: #22d3ee;
+  --color-term-magenta: #e879f9;
+  --color-term-blue: #60a5fa;
+  --color-term-purple: #a78bfa;
+  --color-term-orange: #fb923c;
+  --color-term-teal: #2dd4bf;
+  --color-term-lime: #a3e635;
 }
 
 @layer base {
@@ -32,8 +36,8 @@
   }
 
   ::selection {
-    background: var(--color-term-green);
-    color: #06110a;
+    background: var(--color-term-fg);
+    color: var(--color-term-bg);
   }
 
   ::-webkit-scrollbar {

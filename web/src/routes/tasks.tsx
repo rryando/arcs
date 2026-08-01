@@ -20,6 +20,7 @@ import {
   TextInput,
 } from "../components/Dialog";
 import { Panel } from "../components/Panel";
+import { LinkedSessions } from "../components/SessionLinkModal";
 import { useToaster } from "../components/Toaster";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { formatFileRefs, parseFileRefs } from "../lib/file-refs";
@@ -36,9 +37,12 @@ const STATUS_GLYPH: Record<string, string> = {
 
 const STATUS_TEXT_CLASS: Record<string, string> = {
   backlog: "text-term-dim",
+  planned: "text-term-purple",
   in_progress: "text-term-amber",
+  blocked: "text-term-red",
   done: "text-term-green",
-  cancelled: "text-term-red",
+  cancelled: "text-term-orange",
+  archived: "text-term-lime",
 };
 
 function nextStatus(current: string): string {
@@ -349,6 +353,7 @@ function StatusChip({
 
 function TaskFormDialog({
   title,
+  slug,
   existingTasks,
   planOptions,
   initial,
@@ -502,6 +507,7 @@ function TaskFormDialog({
           </Field>
         </div>
       </div>
+      {initial && <LinkedSessions slug={slug} nodeType="task" nodeId={initial.normalizedId} />}
       <FormActions
         submitLabel={initial ? "save" : "create"}
         onSubmit={submit}

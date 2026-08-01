@@ -60,6 +60,7 @@ export function RootLayout() {
         { keys: "g k", description: "go to knowledge", group: "goto", run: go("/knowledge") },
         { keys: "g t", description: "go to tasks", group: "goto", run: go("/tasks") },
         { keys: "g p", description: "go to plans", group: "goto", run: go("/plans") },
+        { keys: "g e", description: "go to sessions", group: "goto", run: go("/sessions") },
         { keys: "g g", description: "go to graph", group: "goto", run: go("/graph") },
         { keys: "g r", description: "go to proposals", group: "goto", run: go("/proposals") },
       );

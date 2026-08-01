@@ -13,7 +13,16 @@ import { join } from "node:path";
 export interface ChangeEvent {
   type: "changed";
   slug: string | null;
-  area: "root" | "knowledge" | "tasks" | "plans" | "proposals" | "docs" | "meta" | "other";
+  area:
+    | "root"
+    | "knowledge"
+    | "tasks"
+    | "plans"
+    | "proposals"
+    | "sessions"
+    | "docs"
+    | "meta"
+    | "other";
   path: string;
   at: string;
 }
@@ -57,6 +66,7 @@ export function classifyChange(
     return { slug, area: "tasks" };
   if (rest === "plans" || rest.startsWith("plans/")) return { slug, area: "plans" };
   if (rest === "proposals" || rest.startsWith("proposals/")) return { slug, area: "proposals" };
+  if (rest === "sessions" || rest.startsWith("sessions/")) return { slug, area: "sessions" };
   if (rest === "meta.json") return { slug, area: "meta" };
   if (rest.endsWith(".md")) return { slug, area: "docs" };
   return { slug, area: "other" };
@@ -135,7 +145,7 @@ function startFallbackWatchers(dataDir: string): void {
   for (const slug of slugs) {
     const projectAbs = join(projectsRoot, slug);
     watchDir(projectAbs, `projects/${slug}`);
-    for (const sub of ["knowledge", "tasks", "plans", "proposals"]) {
+    for (const sub of ["knowledge", "tasks", "plans", "proposals", "sessions"]) {
       watchDir(join(projectAbs, sub), `projects/${slug}/${sub}`);
     }
   }

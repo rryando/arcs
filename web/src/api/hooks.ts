@@ -4,7 +4,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, type SessionLinkedNodeType, type SessionUpdateInput } from "./client";
 
 export const qk = {
   projects: ["projects"] as const,
@@ -15,6 +15,7 @@ export const qk = {
   knowledge: (slug: string) => ["knowledge", slug] as const,
   knowledgeEntry: (slug: string, id: string) => ["knowledge", slug, id] as const,
   tasks: (slug: string) => ["tasks", slug] as const,
+  sessions: (slug: string) => ["sessions", slug] as const,
   plans: (slug: string) => ["plans", slug] as const,
   plan: (slug: string, id: string) => ["plan", slug, id] as const,
   graph: (slug: string) => ["graph", slug] as const,
@@ -41,6 +42,8 @@ export function keysForArea(slug: string | null, area: string): readonly (readon
       return [...all, qk.tasks(slug), qk.graph(slug), qk.project(slug), qk.doc(slug, "tasks")];
     case "plans":
       return [...all, qk.plans(slug), qk.graph(slug), qk.project(slug)];
+    case "sessions":
+      return [...all, qk.sessions(slug), qk.project(slug)];
     case "proposals":
       return [qk.projects, qk.proposals(slug), qk.project(slug)];
     case "docs":
@@ -69,6 +72,21 @@ export const useKnowledgeEntry = (slug: string, id: string) =>
   useQuery({ queryKey: qk.knowledgeEntry(slug, id), queryFn: () => api.knowledgeEntry(slug, id) });
 export const useTasks = (slug: string) =>
   useQuery({ queryKey: qk.tasks(slug), queryFn: () => api.tasks(slug) });
+export const useSessions = (slug: string) =>
+  useQuery({ queryKey: qk.sessions(slug), queryFn: () => api.sessions(slug) });
+/**
+ * Sessions linked to one task/plan. Shares `qk.sessions(slug)` with
+ * `useSessions`, so the existing "sessions" watcher invalidation refreshes it
+ * for free and no by-link backend query is needed — session counts per project
+ * are small enough to filter client-side.
+ */
+export const useLinkedSessions = (slug: string, nodeType: SessionLinkedNodeType, nodeId: string) =>
+  useQuery({
+    queryKey: qk.sessions(slug),
+    queryFn: () => api.sessions(slug),
+    select: (data) =>
+      data.sessions.filter((s) => s.linkedNodeType === nodeType && s.linkedNodeId === nodeId),
+  });
 export const usePlans = (slug: string) =>
   useQuery({ queryKey: qk.plans(slug), queryFn: () => api.plans(slug) });
 export const usePlan = (slug: string, id: string) =>
@@ -166,6 +184,32 @@ export function useDeleteTask(slug: string) {
   return useMutation({
     mutationFn: (id: string) => api.deleteTask(slug, id),
     onSuccess: () => invalidate([qk.tasks(slug), qk.flatIndex, qk.projects, qk.project(slug)]),
+  });
+}
+
+export function useUpdateSession(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: SessionUpdateInput }) =>
+      api.updateSession(slug, id, input),
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
+  });
+}
+
+export function useSendSessionMessage(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: ({ id, message }: { id: string; message: string }) =>
+      api.sendSessionMessage(slug, id, message),
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
+  });
+}
+
+export function useDeleteSession(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteSession(slug, id),
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
   });
 }
 

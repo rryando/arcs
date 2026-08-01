@@ -12,11 +12,11 @@ import { truncate } from "../lib/format";
 cytoscape.use(fcose);
 
 const TYPE_COLORS: Record<NodeType, string> = {
-  knowledge: "#7ee787",
-  task: "#6fc3df",
-  plan: "#e5b567",
-  file: "#647c66",
-  project: "#c792ea",
+  knowledge: "#22d3ee",
+  task: "#60a5fa",
+  plan: "#e879f9",
+  file: "#8f8f8f",
+  project: "#2dd4bf",
 };
 
 /** Relations that get direction arrows; symmetric pairs are deduped. */
@@ -85,7 +85,7 @@ export function GraphCanvas({
         data: {
           id: n.id,
           label: truncate(n.title ?? n.id, 34),
-          color: TYPE_COLORS[n.type] ?? "#647c66",
+          color: TYPE_COLORS[n.type] ?? "#8f8f8f",
           nodeType: n.type,
         },
       });
@@ -124,32 +124,32 @@ export function GraphCanvas({
           style: {
             "background-color": "data(color)",
             label: "data(label)",
-            color: "#647c66",
+            color: "#8f8f8f",
             "font-family": "JetBrains Mono Variable, monospace",
             "font-size": 9,
             "text-valign": "bottom",
             "text-margin-y": 3,
-            "text-outline-color": "#070a07",
+            "text-outline-color": "#050505",
             "text-outline-width": 2,
             width: 13,
             height: 13,
             "border-width": 1,
-            "border-color": "#1d2a1d",
+            "border-color": "#2c2c2c",
           },
         },
         {
           selector: "node[nodeType = 'project']",
-          style: { width: 22, height: 22, "font-size": 11, color: "#b9dcb9" },
+          style: { width: 22, height: 22, "font-size": 11, color: "#f2f2f2" },
         },
         {
           selector: "node:selected",
-          style: { "border-color": "#7ee787", "border-width": 2, color: "#7ee787" },
+          style: { "border-color": "#f2f2f2", "border-width": 2, color: "#f2f2f2" },
         },
         {
           selector: "edge",
           style: {
             width: "mapData(weight, 0, 1, 0.5, 2)",
-            "line-color": "#263626",
+            "line-color": "#474747",
             "curve-style": "bezier",
             "target-arrow-shape": "none",
             opacity: 0.75,
@@ -159,7 +159,7 @@ export function GraphCanvas({
           selector: "edge[directed = 1]",
           style: {
             "target-arrow-shape": "triangle",
-            "target-arrow-color": "#3a5340",
+            "target-arrow-color": "#8f8f8f",
             "arrow-scale": 0.7,
           },
         },

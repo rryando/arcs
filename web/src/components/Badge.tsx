@@ -12,6 +12,10 @@ const COLORS = {
   cyan: "text-term-cyan border-term-cyan/40",
   magenta: "text-term-magenta border-term-magenta/40",
   blue: "text-term-blue border-term-blue/40",
+  purple: "text-term-purple border-term-purple/40",
+  orange: "text-term-orange border-term-orange/40",
+  teal: "text-term-teal border-term-teal/40",
+  lime: "text-term-lime border-term-lime/40",
   dim: "text-term-dim border-term-border",
 } as const;
 
@@ -70,14 +74,15 @@ export function statusColor(status: string): BadgeColor {
     case "active":
       return "green";
     case "blocked":
-    case "cancelled":
       return "red";
+    case "cancelled":
+      return "orange";
     case "planned":
-      return "cyan";
+      return "purple";
+    case "archived":
+      return "lime";
     case "proposed":
     case "backlog":
-      return "dim";
-    case "archived":
       return "dim";
     default:
       return "dim";
@@ -102,13 +107,13 @@ export function priorityColor(priority: string): BadgeColor {
 export function typeColor(type: string): BadgeColor {
   switch (type) {
     case "knowledge":
-      return "green";
-    case "task":
       return "cyan";
+    case "task":
+      return "blue";
     case "plan":
-      return "amber";
-    case "project":
       return "magenta";
+    case "project":
+      return "teal";
     case "file":
       return "dim";
     default:

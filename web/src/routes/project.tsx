@@ -12,6 +12,7 @@ const TABS = [
   { path: "/knowledge", label: "knowledge", key: "g k", count: "knowledge" as const },
   { path: "/tasks", label: "tasks", key: "g t", count: "tasks" as const },
   { path: "/plans", label: "plans", key: "g p", count: "plans" as const },
+  { path: "/sessions", label: "sessions", key: "g e" },
   { path: "/graph", label: "graph", key: "g g" },
   { path: "/proposals", label: "proposals", key: "g r", count: "proposals" as const },
 ];
