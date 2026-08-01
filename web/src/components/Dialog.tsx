@@ -176,7 +176,7 @@ export function SelectInput({
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} className={inputClass}>
       {options.map((o) => (
-        <option key={o.value} value={o.value} className="bg-term-panel">
+        <option key={o.value} value={o.value}>
           {o.label ?? o.value}
         </option>
       ))}

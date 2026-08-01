@@ -60,6 +60,15 @@
   button {
     font: inherit;
   }
+
+  /* Browsers largely ignore background-color set via class/inline style on
+     <option> (and use a native light popup), while `color` does apply — which
+     renders light theme text on a white dropdown. Theme both elements directly. */
+  select,
+  option {
+    background: var(--color-term-inset);
+    color: var(--color-term-fg);
+  }
 }
 
 @layer components {

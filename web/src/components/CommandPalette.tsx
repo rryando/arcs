@@ -138,7 +138,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
             }}
             onKeyDown={onKeyDown}
             placeholder="jump to project, knowledge, plan, task…"
-            className="flex-1 bg-transparent text-[13px] text-term-fg outline-none placeholder:text-term-dim/60"
+            className="flex-1 bg-term-panel text-[13px] text-term-fg outline-none placeholder:text-term-dim/60"
           />
           <span className="kbd">esc</span>
         </div>

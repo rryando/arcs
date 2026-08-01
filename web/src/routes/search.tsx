@@ -110,7 +110,7 @@ export function SearchPage() {
               }
             }}
             placeholder="search the knowledge base…"
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-term-fg outline-none placeholder:text-term-dim/60"
+            className="min-w-0 flex-1 bg-term-inset text-[13px] text-term-fg outline-none placeholder:text-term-dim/60"
           />
           <select
             value={slug}
