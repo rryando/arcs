@@ -17,13 +17,52 @@ import {
 import { failure, success } from "../output-envelope.js";
 
 /** Matches `arcs web`'s own default — override when that port is taken. */
-const DEFAULT_SERVER_URL = "http://127.0.0.1:4173";
+export const DEFAULT_SERVER_URL = "http://127.0.0.1:4173";
 
 /**
  * One script registered under three events; it dispatches internally on the
  * `hook_event_name` field Claude Code puts on stdin.
  */
-const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd"] as const;
+export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd"] as const;
+
+export type HookEvent = (typeof HOOK_EVENTS)[number];
+
+export interface ProvisionedHook {
+  token: string;
+  hookScriptPath: string;
+  serverUrl: string;
+  command: string;
+}
+
+/**
+ * Rotates the project's hook token and builds the `command` string a
+ * settings.json hook entry must run.
+ *
+ * Shared by this command (which prints the snippet for manual pasting) and by
+ * `utils/claude-code-hook-install.ts` (which writes it into a workspace's
+ * `.claude/settings.local.json` after an explicit confirm). One source of truth
+ * for the command string: a drift between the two would produce hooks that
+ * authenticate against a token nobody stored.
+ */
+export async function provisionHookCommand(options: {
+  projectDir: string;
+  slug: string;
+  serverUrl?: string;
+}): Promise<ProvisionedHook> {
+  const serverUrl = (options.serverUrl ?? DEFAULT_SERVER_URL).replace(/\/+$/, "");
+  const token = randomUUID();
+  await writeHookToken(options.projectDir, token);
+
+  const hookScriptPath = resolve(PACKAGE_ROOT, "scripts", "claude-code-session-hook.mjs");
+  // Env assignments prefixed to the command: a settings.json `command` is just
+  // a shell string, which is how the per-project token reaches the script
+  // without baking secrets into the script itself.
+  const command =
+    `ARCS_HOOK_TOKEN=${token} ARCS_HOOK_SLUG=${options.slug} ` +
+    `ARCS_HOOK_URL=${serverUrl} node ${hookScriptPath}`;
+
+  return { token, hookScriptPath, serverUrl, command };
+}
 
 const hooksInstallParams = {
   slug: {
@@ -78,19 +117,13 @@ async function handleHooksInstallClaudeCode(
   if (!resolved.ok) return resolved.result;
 
   const { slug, projectDir } = resolved;
-  const serverUrl = params.url.replace(/\/+$/, "");
 
   try {
-    const token = randomUUID();
-    await writeHookToken(projectDir, token);
-
-    const hookScriptPath = resolve(PACKAGE_ROOT, "scripts", "claude-code-session-hook.mjs");
-    // Env assignments prefixed to the command: a settings.json `command` is just
-    // a shell string, which is how the per-project token reaches the script
-    // without baking secrets into the script itself.
-    const command =
-      `ARCS_HOOK_TOKEN=${token} ARCS_HOOK_SLUG=${slug} ` +
-      `ARCS_HOOK_URL=${serverUrl} node ${hookScriptPath}`;
+    const { token, hookScriptPath, serverUrl, command } = await provisionHookCommand({
+      projectDir,
+      slug,
+      serverUrl: params.url,
+    });
 
     return success({
       project: slug,
