@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
-import { extractHeadings } from "../web/src/lib/markdown-headings.js";
+import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { type Binding, eventToKey, matchBindings } from "../web/src/lib/shortcuts.js";
 
 function keyEvent(
@@ -167,5 +167,44 @@ describe("markdown heading anchors", () => {
       { depth: 2, text: "Visible", id: "visible" },
       { depth: 2, text: "Visible", id: "visible-2" },
     ]);
+  });
+});
+
+describe("markdown heading sections", () => {
+  const slice = (markdown: string) =>
+    extractSections(markdown).map((s) => markdown.slice(s.startOffset, s.endOffset).trim());
+
+  it("runs a section to the next same-or-shallower heading, subsections included", () => {
+    const md = "# Title\n\nintro\n\n## A\n\na body\n\n### A1\n\nnested\n\n## B\n\nb body\n";
+    expect(slice(md)).toEqual([
+      "# Title\n\nintro\n\n## A\n\na body\n\n### A1\n\nnested\n\n## B\n\nb body",
+      "## A\n\na body\n\n### A1\n\nnested",
+      "### A1\n\nnested",
+      "## B\n\nb body",
+    ]);
+  });
+
+  it("keeps ids aligned with extractHeadings", () => {
+    const md = "# Title\n\n## Repeat\n\n## Repeat\n";
+    expect(extractSections(md).map((s) => ({ depth: s.depth, text: s.text, id: s.id }))).toEqual(
+      extractHeadings(md),
+    );
+  });
+
+  it("excludes preamble text before the first heading", () => {
+    const md = "loose intro\n\n## First\n\nbody\n";
+    const sections = extractSections(md);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.startOffset).toBe(md.indexOf("## First"));
+    expect(slice(md)).toEqual(["## First\n\nbody"]);
+  });
+
+  it("does not split a section on headings inside fenced code blocks", () => {
+    const md = "## Visible\n\n```md\n## Hidden\n```\n\ntail\n";
+    expect(slice(md)).toEqual(["## Visible\n\n```md\n## Hidden\n```\n\ntail"]);
+  });
+
+  it("treats a document with no headings as having no sections", () => {
+    expect(extractSections("just prose\n")).toEqual([]);
   });
 });

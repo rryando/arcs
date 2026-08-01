@@ -277,7 +277,7 @@ export function KnowledgeDetail() {
                 ))}
               </div>
             )}
-            <MarkdownViewer content={data.body} />
+            <MarkdownViewer content={data.body} slug={slug} />
           </div>
         </div>
       )}

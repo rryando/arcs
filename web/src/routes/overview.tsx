@@ -205,7 +205,7 @@ export function Overview() {
               className="h-full min-h-96"
             />
           ) : doc?.exists ? (
-            <MarkdownViewer content={doc.content} />
+            <MarkdownViewer content={doc.content} slug={slug} />
           ) : (
             <div className="text-term-dim">
               no {selectedDoc.label} yet — press <span className="kbd">e</span> to write one

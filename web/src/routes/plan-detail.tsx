@@ -265,7 +265,12 @@ export function PlanDetail() {
               </div>
             )}
             <LinkedSessions slug={slug} nodeType="plan" nodeId={meta.normalizedId} />
-            <MarkdownViewer content={data.body} />
+            <MarkdownViewer
+              content={data.body}
+              slug={slug}
+              linkedNodeType="plan"
+              linkedNodeId={meta.normalizedId}
+            />
           </div>
         </div>
       ) : (
