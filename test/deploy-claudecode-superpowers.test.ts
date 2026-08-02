@@ -724,6 +724,16 @@ describe("deploy-claudecode-bundle", () => {
       // devil-advocate is standard tier
       const daContent = readFileSync(resolve(configRoot, "agents/devil-advocate.md"), "utf-8");
       expect(daContent).toContain("model: claude-sonnet-4-5");
+
+      // Tier selection is persisted so a later `arcs init` can reuse it
+      const installedManifest = JSON.parse(
+        readFileSync(resolve(configRoot, ".arcs-bundle.json"), "utf-8"),
+      );
+      expect(installedManifest.tierModels).toEqual({
+        heavy: "claude-opus-4-5",
+        standard: "claude-sonnet-4-5",
+        light: "claude-haiku-3-5",
+      });
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -745,6 +755,15 @@ describe("deploy-claudecode-bundle", () => {
       expect(proc.status).toBe(0);
       const seContent = readFileSync(resolve(configRoot, "agents/software-engineer.md"), "utf-8");
       expect(seContent).toContain("model: inherit");
+
+      const installedManifest = JSON.parse(
+        readFileSync(resolve(configRoot, ".arcs-bundle.json"), "utf-8"),
+      );
+      expect(installedManifest.tierModels).toEqual({
+        heavy: "inherit",
+        standard: "inherit",
+        light: "inherit",
+      });
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

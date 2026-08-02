@@ -460,6 +460,9 @@ function main() {
           sourceBundleVersion: "deploy-script",
           sourceBundleHash: sha256(readFileSync(resolve(bundleRoot, "manifest.json"))),
           installedAt: new Date().toISOString(),
+          // Persisted so a later `arcs init` can reuse the previous tier
+          // selection instead of re-prompting for it.
+          tierModels,
           ownedPaths: [],
           agents: agentSources.map((agent) => ({
             id: agent.stem,

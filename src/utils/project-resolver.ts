@@ -22,6 +22,19 @@ export interface ResolvedProject {
   name: string;
   description: string;
   projectDir: string;
+  /**
+   * First registered workspace path of the matched project, absolute and
+   * `~`-expanded. Empty string only when the project somehow carries no
+   * workspace path — deliberately NOT `process.cwd()`, since callers that write
+   * into a workspace (e.g. the Claude Code hook installer) must refuse rather
+   * than target whatever directory the CLI happened to run from.
+   */
+  workspacePath: string;
+}
+
+/** Absolute form of a stored workspace path, expanding a leading `~`. */
+function expandWorkspacePath(p: string): string {
+  return p.startsWith("~") ? resolve(homedir(), p.slice(2)) : resolve(p);
 }
 
 type ResolveSuccess = { ok: true } & ResolvedProject;
@@ -68,8 +81,7 @@ export async function resolveProject(pathOrSlug: string | undefined): Promise<Re
           ),
         };
       }
-      const first = paths[0];
-      queryPath = first.startsWith("~") ? resolve(homedir(), first.slice(2)) : resolve(first);
+      queryPath = expandWorkspacePath(paths[0]);
     } catch {
       return {
         ok: false,
@@ -127,11 +139,13 @@ export async function resolveProject(pathOrSlug: string | undefined): Promise<Re
 
   const slug = matchResult.slug;
   const meta = projectMetas.get(slug);
+  const firstWorkspacePath = meta?.workspacePaths?.[0];
   return {
     ok: true,
     slug,
     name: meta?.name ?? slug,
     description: meta?.description ?? "",
     projectDir: getProjectDir(slug),
+    workspacePath: firstWorkspacePath ? expandWorkspacePath(firstWorkspacePath) : "",
   };
 }

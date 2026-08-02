@@ -58,7 +58,7 @@ These are the six agents and the only routes:
 | \`devil-advocate\` | phase name | mandatory phase and completion gates | none |
 | \`arcs-docs\` | \`audit\` / \`apply\` | two-pass SYNC only | \`enriching-codegraph-proposals\` when pending; \`init-project\` for INIT artifacts |
 
-The twelve available skills are exactly: \`implementation\`, \`test-driven-development\`, \`executing-plans\`, \`systematic-debugging\`, \`brainstorming\`, \`writing-plans\`, \`to-diagram\`, \`writing-knowledge\`, \`init-project\`, \`enriching-codegraph-proposals\`, \`deep-pr-review\`, and \`caveman-commit\`. Test-first work and approved-plan execution are distinct disciplines; never substitute one for the other. \`caveman-commit\` formats a commit only after git authorization.
+The thirteen available skills are exactly: \`implementation\`, \`test-driven-development\`, \`executing-plans\`, \`systematic-debugging\`, \`brainstorming\`, \`writing-plans\`, \`to-diagram\`, \`writing-knowledge\`, \`init-project\`, \`enriching-codegraph-proposals\`, \`deep-pr-review\`, \`caveman-commit\`, and \`install-claude-code-hook\`. Test-first work and approved-plan execution are distinct disciplines; never substitute one for the other. \`caveman-commit\` formats a commit only after git authorization. \`install-claude-code-hook\` retrofits the Claude Code session-bridge hook onto an already-inited project only after explicit user confirmation; like \`caveman-commit\` it is general-utility and belongs to no single agent row above.
 
 ## Lifecycle
 

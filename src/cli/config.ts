@@ -122,6 +122,69 @@ export async function diagnoseOpenCodeConfig(): Promise<
 }
 
 /**
+ * Diagnoses the installed Claude Code bundle manifest (~/.claude/.arcs-bundle.json),
+ * written by scripts/deploy-claudecode-bundle.mjs on every deploy, and reads back the
+ * `tierModels` it persisted so a later `arcs init` can reuse the previous selection
+ * instead of re-prompting.
+ *
+ * Mirrors {@link diagnoseOpenCodeConfig}'s three-state shape, with two deliberate
+ * distinctions:
+ * - A parseable file that is not an ARCS Claude Code bundle manifest (wrong `bundleId`
+ *   or no installed agents) is "missing", not "corrupt" — it is a foreign/unrelated
+ *   file, not damage.
+ * - A valid manifest whose `tierModels` is absent or incomplete is "ok" WITHOUT
+ *   `tierModels` (e.g. a bundle deployed before this field existed). Tier read-back is
+ *   strictly all-or-nothing: a partial substitution could silently mis-tier agents on
+ *   the next deploy, so a half-known selection is reported as no selection at all.
+ */
+export async function diagnoseClaudeCodeBundle(): Promise<
+  | { status: "missing"; path: string }
+  | { status: "ok"; path: string; tierModels?: { heavy: string; standard: string; light: string } }
+  | { status: "corrupt"; path: string; error: string }
+> {
+  const path = join(homedir(), ".claude", ".arcs-bundle.json");
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch {
+    return { status: "missing", path };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    return { status: "corrupt", path, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { status: "missing", path };
+  }
+  const manifest = parsed as Record<string, unknown>;
+  if (manifest.bundleId !== "arcs-claudecode-bundle") return { status: "missing", path };
+  if (!Array.isArray(manifest.agents) || manifest.agents.length === 0) {
+    return { status: "missing", path };
+  }
+
+  const tiers = manifest.tierModels;
+  if (tiers === null || typeof tiers !== "object" || Array.isArray(tiers)) {
+    return { status: "ok", path };
+  }
+  const { heavy, standard, light } = tiers as Record<string, unknown>;
+  if (
+    typeof heavy !== "string" ||
+    typeof standard !== "string" ||
+    typeof light !== "string" ||
+    !heavy ||
+    !standard ||
+    !light
+  ) {
+    return { status: "ok", path };
+  }
+  return { status: "ok", path, tierModels: { heavy, standard, light } };
+}
+
+/**
  * Extracts model tier pre-fills from parsed opencode config.
  */
 export function extractModelPreFills(config: unknown): ModelTierConfig {

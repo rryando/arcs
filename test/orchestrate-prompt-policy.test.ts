@@ -60,7 +60,7 @@ describe("orchestrate prompt policy — canonical control flow", () => {
     }
   });
 
-  it("routes exactly six typed agents and twelve on-disk skills", () => {
+  it("routes exactly six typed agents and thirteen on-disk skills", () => {
     const matrix = section("## Agent and Skill Matrix", "## Lifecycle");
     const agents = [
       "software-engineer",
@@ -82,7 +82,7 @@ describe("orchestrate prompt policy — canonical control flow", () => {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
-    expect(skills).toHaveLength(12);
+    expect(skills).toHaveLength(13);
     for (const skill of skills) expect(matrix, skill).toContain(`\`${skill}\``);
     expect(matrix).not.toMatch(
       /`(?:oncall-ops|docs-researcher|quick-dev|code-agent|requesting-code-review|the-ladder)`/,

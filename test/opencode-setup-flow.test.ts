@@ -1,5 +1,5 @@
 import * as childProcess from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runSetup } from "../src/cli/setup.js";
@@ -305,6 +305,420 @@ describe("OpenCode setup flow", () => {
       expect((prompts as any).__text).not.toHaveBeenCalledWith(
         expect.objectContaining({ message: expect.stringContaining("explore [light:") }),
       );
+    });
+  });
+
+  describe("reuse existing OpenCode config confirm", () => {
+    const REUSE_MESSAGE = "Reuse the existing OpenCode model config?";
+    const HEAVY_PROMPT = "Heavy model (reasoning, synthesis)";
+    const STANDARD_PROMPT = "Standard model (general purpose)";
+    const LIGHT_PROMPT = "Light/fast model (read-only, exploration)";
+
+    /** Config that satisfies every detection leg: parses, ARCS agent registered, all tiers filled. */
+    function writeFullyConfigured(homeDir: string) {
+      writeFileSync(
+        resolve(homeDir, ".config", "opencode", "opencode.json"),
+        JSON.stringify(
+          {
+            model: "provider/existing-model",
+            small_model: "provider/existing-small",
+            agent: { "ARCS Orchestrator": { mode: "primary", prompt: "old-prompt" } },
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    async function resetSelect() {
+      const prompts = await import("@clack/prompts");
+      vi.mocked((prompts as any).__select).mockReset();
+      vi.mocked((prompts as any).__select).mockResolvedValue("");
+    }
+
+    it("offers reuse and skips every model prompt when the user accepts", async () => {
+      const prompts = await import("@clack/prompts");
+      const installer = await import("../src/cli/bundle-installer.js");
+      await resetSelect();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // reuse existing config
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+
+      await withTempHomeDir(async (homeDir) => {
+        const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+        writeFullyConfigured(homeDir);
+
+        await runSetup("config");
+
+        // The confirm surfaces the detected values it will reuse
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining(REUSE_MESSAGE),
+            initialValue: true,
+          }),
+        );
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining("provider/existing-model"),
+          }),
+        );
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining("provider/existing-small"),
+          }),
+        );
+
+        // No tier prompts, no per-agent customization prompt
+        expect((prompts as any).__select).not.toHaveBeenCalled();
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__text).not.toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+        expect((prompts as any).__confirm).not.toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Customize model for individual agents?" }),
+        );
+
+        // Agent registration still ran, using the pre-fill-derived config
+        expect(installer.installArcsBundle).toHaveBeenCalledWith({
+          autoConfirmReplacement: false,
+        });
+        const updated = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+        expect(updated.default_agent).toBe("ARCS Orchestrator");
+        expect(updated.model).toBe("provider/existing-model");
+        expect(updated.small_model).toBe("provider/existing-small");
+        const agents = updated.agent as Record<string, Record<string, unknown>>;
+        expect(agents["ARCS Orchestrator"].model).toBe("provider/existing-model");
+        expect(agents["ARCS Orchestrator"].prompt).not.toBe("old-prompt");
+      });
+    });
+
+    it("falls through to the full model prompt sequence when the user declines reuse", async () => {
+      const prompts = await import("@clack/prompts");
+      await resetSelect();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(false) // decline reuse
+        .mockResolvedValueOnce(false) // customizeAgents
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+      vi.mocked((prompts as any).__text).mockImplementation(({ message }: { message: string }) => {
+        if (message === HEAVY_PROMPT) return "heavy-model";
+        if (message === STANDARD_PROMPT) return "standard-model";
+        if (message === LIGHT_PROMPT) return "light-model";
+        return "";
+      });
+
+      await withTempHomeDir(async (homeDir) => {
+        const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+        writeFullyConfigured(homeDir);
+
+        await runSetup("config");
+
+        // Reuse was offered and declined — the full sequence still runs
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining(REUSE_MESSAGE) }),
+        );
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__text).toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Customize model for individual agents?" }),
+        );
+
+        const updated = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+        expect(updated.model).toBe("standard-model");
+        expect(updated.small_model).toBe("light-model");
+      });
+    });
+
+    it("never offers reuse when the ARCS agent is not registered yet", async () => {
+      const prompts = await import("@clack/prompts");
+      await resetSelect();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(false) // customizeAgents
+        .mockResolvedValueOnce(true) // register agent
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+      vi.mocked((prompts as any).__text).mockImplementation(({ message }: { message: string }) => {
+        if (message === HEAVY_PROMPT) return "heavy-model";
+        if (message === STANDARD_PROMPT) return "standard-model";
+        if (message === LIGHT_PROMPT) return "light-model";
+        return "";
+      });
+
+      await withTempHomeDir(async (homeDir) => {
+        const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+        // Models present, but no ARCS agent entry — one detection leg fails.
+        writeFileSync(
+          configFile,
+          JSON.stringify(
+            { model: "provider/existing-model", small_model: "provider/existing-small" },
+            null,
+            2,
+          ),
+        );
+
+        await runSetup("init");
+
+        expect((prompts as any).__confirm).not.toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining(REUSE_MESSAGE) }),
+        );
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__text).toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+
+        const updated = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+        expect(updated.model).toBe("standard-model");
+        expect(updated.small_model).toBe("light-model");
+      });
+    });
+  });
+
+  describe("reuse existing Claude Code config confirm", () => {
+    const REUSE_MESSAGE = "Reuse the existing Claude Code model config?";
+    const HEAVY_PROMPT = "Heavy model (reasoning, synthesis)";
+    const STANDARD_PROMPT = "Standard model (orchestration)";
+    const LIGHT_PROMPT = "Light/fast model (read-only, exploration)";
+
+    const REUSED = { heavy: "claude-opus-4-7", standard: "claude-sonnet-4-6", light: "inherit" };
+
+    /** Manifest shape written by scripts/deploy-claudecode-bundle.mjs on every deploy. */
+    function writeBundleManifest(homeDir: string, manifest: unknown) {
+      mkdirSync(resolve(homeDir, ".claude"), { recursive: true });
+      writeFileSync(
+        resolve(homeDir, ".claude", ".arcs-bundle.json"),
+        JSON.stringify(manifest, null, 2),
+      );
+    }
+
+    function manifestWith(tierModels?: Record<string, string>) {
+      return {
+        bundleId: "arcs-claudecode-bundle",
+        agents: [
+          {
+            id: "arcs-orchestrate",
+            promptDestination: "agents/arcs-orchestrate.md",
+            sourceHash: "abc",
+          },
+        ],
+        ...(tierModels ? { tierModels } : {}),
+      };
+    }
+
+    /** Selects Claude Code only, stubs the deploy spawn, and resets the select mock. */
+    async function setupClaudeOnly() {
+      const prompts = await import("@clack/prompts");
+      const actualChildProcess =
+        await vi.importActual<typeof import("node:child_process")>("node:child_process");
+
+      vi.mocked((prompts as any).__multiselect).mockResolvedValue(["claudecode"]);
+      vi.mocked((prompts as any).__select).mockReset();
+      vi.mocked((prompts as any).__select).mockResolvedValue("");
+
+      vi.mocked(childProcess.spawnSync).mockImplementation(((cmd: any, args: any, options: any) => {
+        if (cmd === "node") {
+          return {
+            status: 0,
+            stdout: JSON.stringify({
+              source: "mock-source",
+              destination: "mock-destination",
+              filesAdded: [],
+              filesChanged: [],
+              filesRemoved: [],
+            }),
+            stderr: "",
+          } as any;
+        }
+        if (
+          cmd === "rtk" ||
+          cmd === "codegraph" ||
+          cmd === "sh" ||
+          cmd === "npm" ||
+          cmd === "brew"
+        ) {
+          return { status: 1, stdout: "", stderr: "" } as any;
+        }
+        return (actualChildProcess.spawnSync as any)(cmd, args, options);
+      }) as any);
+    }
+
+    function expectDeployedWith(models: { heavy: string; standard: string; light: string }) {
+      expect(childProcess.spawnSync).toHaveBeenCalledWith(
+        "node",
+        expect.arrayContaining([expect.stringContaining("deploy-claudecode-bundle.mjs")]),
+        expect.objectContaining({
+          env: expect.objectContaining({
+            DEPLOY_MODEL_HEAVY: models.heavy,
+            DEPLOY_MODEL_STANDARD: models.standard,
+            DEPLOY_MODEL_LIGHT: models.light,
+          }),
+        }),
+      );
+    }
+
+    it("offers reuse and skips every tier prompt when the user accepts", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(true) // reuse existing config
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+
+      await withTempHomeDir(async (homeDir) => {
+        writeBundleManifest(homeDir, manifestWith(REUSED));
+
+        await runSetup("config");
+
+        // The confirm surfaces the recovered values it will reuse
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining(REUSE_MESSAGE),
+            initialValue: true,
+          }),
+        );
+        for (const value of [REUSED.heavy, REUSED.standard, REUSED.light]) {
+          expect((prompts as any).__confirm).toHaveBeenCalledWith(
+            expect.objectContaining({ message: expect.stringContaining(value) }),
+          );
+        }
+
+        // No tier prompts at all
+        expect((prompts as any).__select).not.toHaveBeenCalled();
+
+        // Deploy still runs, with the recovered values verbatim
+        expectDeployedWith(REUSED);
+      });
+    });
+
+    it("falls through to the tier prompt sequence when the user declines reuse", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(false) // decline reuse
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+      vi.mocked((prompts as any).__select).mockImplementation(
+        ({ message }: { message: string }) => {
+          if (message === HEAVY_PROMPT) return "picked-heavy";
+          if (message === STANDARD_PROMPT) return "picked-standard";
+          if (message === LIGHT_PROMPT) return "picked-light";
+          return "";
+        },
+      );
+
+      await withTempHomeDir(async (homeDir) => {
+        writeBundleManifest(homeDir, manifestWith(REUSED));
+
+        await runSetup("config");
+
+        expect((prompts as any).__confirm).toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining(REUSE_MESSAGE) }),
+        );
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__select).toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+
+        expectDeployedWith({
+          heavy: "picked-heavy",
+          standard: "picked-standard",
+          light: "picked-light",
+        });
+      });
+    });
+
+    it("never offers reuse when the manifest records an incomplete tier set", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+      vi.mocked((prompts as any).__select).mockImplementation(
+        ({ message }: { message: string }) => {
+          if (message === HEAVY_PROMPT) return "picked-heavy";
+          if (message === STANDARD_PROMPT) return "picked-standard";
+          if (message === LIGHT_PROMPT) return "picked-light";
+          return "";
+        },
+      );
+
+      await withTempHomeDir(async (homeDir) => {
+        // "ok" manifest, but light is missing — tier read-back is all-or-nothing.
+        writeBundleManifest(
+          homeDir,
+          manifestWith({ heavy: REUSED.heavy, standard: REUSED.standard }),
+        );
+
+        await runSetup("init");
+
+        expect((prompts as any).__confirm).not.toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining(REUSE_MESSAGE) }),
+        );
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__select).toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+
+        expectDeployedWith({
+          heavy: "picked-heavy",
+          standard: "picked-standard",
+          light: "picked-light",
+        });
+      });
+    });
+
+    it("never offers reuse when no bundle manifest exists", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+      vi.mocked((prompts as any).__select).mockImplementation(
+        ({ message }: { message: string }) => {
+          if (message === HEAVY_PROMPT) return "picked-heavy";
+          if (message === STANDARD_PROMPT) return "picked-standard";
+          if (message === LIGHT_PROMPT) return "picked-light";
+          return "";
+        },
+      );
+
+      await withTempHomeDir(async () => {
+        // No ~/.claude/.arcs-bundle.json seeded at all.
+        await runSetup("init");
+
+        expect((prompts as any).__confirm).not.toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining(REUSE_MESSAGE) }),
+        );
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__select).toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+
+        expectDeployedWith({
+          heavy: "picked-heavy",
+          standard: "picked-standard",
+          light: "picked-light",
+        });
+      });
     });
   });
 

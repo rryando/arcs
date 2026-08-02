@@ -10,6 +10,7 @@ import {
   validateAgentRegistry,
 } from "../src/cli/agent-registry.js";
 import {
+  diagnoseClaudeCodeBundle,
   diagnoseOpenCodeConfig,
   extractModelPreFills,
   readOpenCodeConfig,
@@ -303,6 +304,124 @@ describe("diagnoseOpenCodeConfig", () => {
     expect(result.status).toBe("corrupt");
     if (result.status === "corrupt") {
       expect(result.error).toBeTruthy();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B3. diagnoseClaudeCodeBundle — reads back tierModels from the installed manifest
+// ---------------------------------------------------------------------------
+
+describe("diagnoseClaudeCodeBundle", () => {
+  let tempDir: string;
+  let originalHome: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "arcs-test-"));
+    originalHome = process.env.HOME;
+    process.env.HOME = tempDir;
+  });
+
+  afterEach(async () => {
+    process.env.HOME = originalHome;
+    await rm(tempDir, { recursive: true });
+  });
+
+  async function writeManifest(content: unknown): Promise<void> {
+    const claudeDir = join(tempDir, ".claude");
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      join(claudeDir, ".arcs-bundle.json"),
+      typeof content === "string" ? content : JSON.stringify(content),
+    );
+  }
+
+  const installedAgents = [
+    { id: "arcs-orchestrate", promptDestination: "agents/arcs-orchestrate.md", sourceHash: "abc" },
+  ];
+
+  it("reports 'missing' when the manifest does not exist", async () => {
+    const result = await diagnoseClaudeCodeBundle();
+    expect(result.status).toBe("missing");
+  });
+
+  it("reports 'ok' with tierModels when all three tiers are present", async () => {
+    await writeManifest({
+      bundleId: "arcs-claudecode-bundle",
+      agents: installedAgents,
+      tierModels: { heavy: "big/model", standard: "mid/model", light: "small/model" },
+    });
+    const result = await diagnoseClaudeCodeBundle();
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.tierModels).toEqual({
+        heavy: "big/model",
+        standard: "mid/model",
+        light: "small/model",
+      });
+    }
+  });
+
+  it("reports 'corrupt' when the manifest exists but is invalid JSON", async () => {
+    await writeManifest('{ "bundleId": "arcs-claudecode-bundle"');
+    const result = await diagnoseClaudeCodeBundle();
+    expect(result.status).toBe("corrupt");
+    if (result.status === "corrupt") {
+      expect(result.error).toBeTruthy();
+    }
+  });
+
+  it("reports 'missing' for valid JSON that is not an ARCS bundle manifest", async () => {
+    await writeManifest({});
+    expect((await diagnoseClaudeCodeBundle()).status).toBe("missing");
+
+    await writeManifest({
+      bundleId: "some-other-tool-bundle",
+      agents: installedAgents,
+      tierModels: { heavy: "big/model", standard: "mid/model", light: "small/model" },
+    });
+    expect((await diagnoseClaudeCodeBundle()).status).toBe("missing");
+  });
+
+  it("reports 'missing' when the manifest has no installed agents", async () => {
+    await writeManifest({ bundleId: "arcs-claudecode-bundle", agents: [] });
+    const result = await diagnoseClaudeCodeBundle();
+    expect(result.status).toBe("missing");
+  });
+
+  it("reports 'ok' without tierModels when the field is absent entirely", async () => {
+    // A bundle deployed before tierModels was persisted.
+    await writeManifest({ bundleId: "arcs-claudecode-bundle", agents: installedAgents });
+    const result = await diagnoseClaudeCodeBundle();
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.tierModels).toBeUndefined();
+      expect("tierModels" in result).toBe(false);
+    }
+  });
+
+  it("reports 'ok' without tierModels when only some tiers are populated", async () => {
+    // All-or-nothing: a partial selection must never produce a partial substitution.
+    await writeManifest({
+      bundleId: "arcs-claudecode-bundle",
+      agents: installedAgents,
+      tierModels: { heavy: "big/model", standard: "mid/model", light: "" },
+    });
+    const emptyLight = await diagnoseClaudeCodeBundle();
+    expect(emptyLight.status).toBe("ok");
+    if (emptyLight.status === "ok") {
+      expect(emptyLight.tierModels).toBeUndefined();
+    }
+
+    await writeManifest({
+      bundleId: "arcs-claudecode-bundle",
+      agents: installedAgents,
+      tierModels: { heavy: "big/model", standard: "mid/model" },
+    });
+    const missingLight = await diagnoseClaudeCodeBundle();
+    expect(missingLight.status).toBe("ok");
+    if (missingLight.status === "ok") {
+      expect(missingLight.tierModels).toBeUndefined();
     }
   });
 });

@@ -10,6 +10,7 @@ import { type AgentTier, getActiveAgents, getAgentsByTier } from "./agent-regist
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
   type ArcsConfig,
+  diagnoseClaudeCodeBundle,
   diagnoseOpenCodeConfig,
   extractModelPreFills,
   getAvailableModels,
@@ -178,98 +179,138 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       );
     }
 
-    // Fetch available models from authenticated providers
-    const availableModels = await getAvailableModels(preFills.heavy);
-
-    const heavyModel = await selectModel(
-      "Heavy model (reasoning, synthesis)",
-      availableModels,
-      preFills.heavy,
-    );
-
-    if (p.isCancel(heavyModel)) {
-      p.cancel("Setup cancelled.");
-      process.exit(0);
-    }
-
-    p.note(`Used by: ${tierAgentNames("heavy")}`, "Heavy tier agents");
-
-    const standardModel = await selectModel(
-      "Standard model (general purpose)",
-      availableModels,
-      preFills.standard,
-    );
-
-    if (p.isCancel(standardModel)) {
-      p.cancel("Setup cancelled.");
-      process.exit(0);
-    }
-
-    p.note(`Used by: ${tierAgentNames("standard")}`, "Standard tier agents");
-
-    const lightModel = await selectModel(
-      "Light/fast model (read-only, exploration)",
-      availableModels,
-      preFills.light,
-    );
-
-    if (p.isCancel(lightModel)) {
-      p.cancel("Setup cancelled.");
-      process.exit(0);
-    }
-
-    p.note(`Used by: ${tierAgentNames("light")}`, "Light tier agents");
+    // ── Reuse fast path ───────────────────────────────────────────────────────
+    // Only offered when OpenCode is already fully configured: the config parses,
+    // the ARCS agents are registered, and every tier resolved to a real model
+    // identifier. Any missing leg falls through to the prompt sequence below.
+    const reusableModelConfig: ModelTierConfig | null =
+      configDiagnosis.status === "ok" &&
+      opencodeHasAgent() &&
+      preFills.heavy &&
+      preFills.standard &&
+      preFills.light
+        ? { heavy: preFills.heavy, standard: preFills.standard, light: preFills.light }
+        : null;
 
     // T004 will wire modelConfig into agent registration calls below.
-    const modelConfig: ModelTierConfig = {
-      heavy: heavyModel as string,
-      standard: standardModel as string,
-      light: lightModel as string,
-    };
+    let modelConfig: ModelTierConfig | null = null;
 
-    // Step 3.5e — Optional per-agent customization
-    const customizeAgents = await p.confirm({
-      message: "Customize model for individual agents?",
-      initialValue: false,
-    });
+    if (reusableModelConfig) {
+      const reuseExisting = await p.confirm({
+        message:
+          "Reuse the existing OpenCode model config?\n" +
+          `  heavy: ${reusableModelConfig.heavy}\n` +
+          `  standard: ${reusableModelConfig.standard}\n` +
+          `  light: ${reusableModelConfig.light}`,
+        initialValue: true,
+      });
 
-    if (p.isCancel(customizeAgents)) {
-      p.cancel("Setup cancelled.");
-      process.exit(0);
+      // Deliberate exception to this file's convention: every other p.isCancel()
+      // here aborts the whole wizard with process.exit(0). Cancelling *this*
+      // prompt means "let me pick models again" — a normal outcome, not a signal
+      // to abort the entire `arcs init` run — so it falls through to the regular
+      // prompt sequence below. Do not "fix" this to match the surrounding pattern.
+      if (!p.isCancel(reuseExisting) && reuseExisting) {
+        modelConfig = reusableModelConfig;
+      }
     }
 
-    if (customizeAgents) {
-      const agentTiers = [
-        ...getActiveAgents()
-          .filter((agent) => agent.kind === "subagent" && agent.tier !== "standard")
-          .map((agent) => ({ name: agent.id, tier: agent.tier })),
-        ...HOST_AGENT_TIERS,
-      ];
+    if (!modelConfig) {
+      // Fetch available models from authenticated providers
+      const availableModels = await getAvailableModels(preFills.heavy);
 
-      p.note("Select a model for each agent, or keep the tier default.", "Per-Agent Customization");
+      const heavyModel = await selectModel(
+        "Heavy model (reasoning, synthesis)",
+        availableModels,
+        preFills.heavy,
+      );
 
-      const perAgent: Record<string, string> = {};
-
-      for (const agent of agentTiers) {
-        const tierModel = modelConfig[agent.tier];
-        const override = await selectModelForAgent(
-          `${agent.name} [${agent.tier}: ${tierModel}]`,
-          availableModels,
-          tierModel,
-        );
-
-        if (p.isCancel(override)) {
-          p.cancel("Setup cancelled.");
-          process.exit(0);
-        }
-
-        if (override && override !== tierModel) {
-          perAgent[agent.name] = override as string;
-        }
+      if (p.isCancel(heavyModel)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
       }
 
-      if (Object.keys(perAgent).length > 0) {
-        modelConfig.perAgent = perAgent;
+      p.note(`Used by: ${tierAgentNames("heavy")}`, "Heavy tier agents");
+
+      const standardModel = await selectModel(
+        "Standard model (general purpose)",
+        availableModels,
+        preFills.standard,
+      );
+
+      if (p.isCancel(standardModel)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
+      p.note(`Used by: ${tierAgentNames("standard")}`, "Standard tier agents");
+
+      const lightModel = await selectModel(
+        "Light/fast model (read-only, exploration)",
+        availableModels,
+        preFills.light,
+      );
+
+      if (p.isCancel(lightModel)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
+      p.note(`Used by: ${tierAgentNames("light")}`, "Light tier agents");
+
+      modelConfig = {
+        heavy: heavyModel as string,
+        standard: standardModel as string,
+        light: lightModel as string,
+      };
+
+      // Step 3.5e — Optional per-agent customization
+      const customizeAgents = await p.confirm({
+        message: "Customize model for individual agents?",
+        initialValue: false,
+      });
+
+      if (p.isCancel(customizeAgents)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
+      if (customizeAgents) {
+        const agentTiers = [
+          ...getActiveAgents()
+            .filter((agent) => agent.kind === "subagent" && agent.tier !== "standard")
+            .map((agent) => ({ name: agent.id, tier: agent.tier })),
+          ...HOST_AGENT_TIERS,
+        ];
+
+        p.note(
+          "Select a model for each agent, or keep the tier default.",
+          "Per-Agent Customization",
+        );
+
+        const perAgent: Record<string, string> = {};
+
+        for (const agent of agentTiers) {
+          const tierModel = modelConfig[agent.tier];
+          const override = await selectModelForAgent(
+            `${agent.name} [${agent.tier}: ${tierModel}]`,
+            availableModels,
+            tierModel,
+          );
+
+          if (p.isCancel(override)) {
+            p.cancel("Setup cancelled.");
+            process.exit(0);
+          }
+
+          if (override && override !== tierModel) {
+            perAgent[agent.name] = override as string;
+          }
+        }
+
+        if (Object.keys(perAgent).length > 0) {
+          modelConfig.perAgent = perAgent;
+        }
       }
     }
 
@@ -372,47 +413,88 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     }
 
     if (shouldDeployClaude) {
-      // ── Model selection for Claude Code ───────────────────────────────────
-      const currentClaudeModel = await readClaudeCodeCurrentModel();
-      const claudeAvailableModels = getClaudeCodeModels(currentClaudeModel);
+      // ── Reuse fast path ───────────────────────────────────────────────────
+      // Only offered when a previous deploy left a readable bundle manifest that
+      // recorded all three tiers. A missing/corrupt manifest — or a valid one
+      // whose tierModels is absent or incomplete — falls through to the tier
+      // prompt sequence below.
+      const claudeBundleDiagnosis = await diagnoseClaudeCodeBundle();
+      const reusableClaudeModels =
+        claudeBundleDiagnosis.status === "ok" && claudeBundleDiagnosis.tierModels
+          ? claudeBundleDiagnosis.tierModels
+          : null;
 
-      p.note(
-        "ARCS agents are grouped into three tiers.\n" +
-          `  Heavy  — reasoning & synthesis (${registryTierAgentNames("heavy")})\n` +
-          `  Standard — orchestration (${registryTierAgentNames("standard")})\n` +
-          `  Light  — read-only exploration (${registryTierAgentNames("light")})\n\n` +
-          'Use "inherit" to delegate model choice to Claude Code defaults.',
-        "Claude Code Model Tiers",
-      );
+      let claudeModelConfig: ModelTierConfig | null = null;
 
-      const claudeHeavyModel = await selectModel(
-        "Heavy model (reasoning, synthesis)",
-        claudeAvailableModels,
-        currentClaudeModel || "claude-opus-4-7",
-      );
-      if (p.isCancel(claudeHeavyModel)) {
-        p.cancel("Setup cancelled.");
-        process.exit(0);
+      if (reusableClaudeModels) {
+        const reuseExistingClaude = await p.confirm({
+          message:
+            "Reuse the existing Claude Code model config?\n" +
+            `  heavy: ${reusableClaudeModels.heavy}\n` +
+            `  standard: ${reusableClaudeModels.standard}\n` +
+            `  light: ${reusableClaudeModels.light}`,
+          initialValue: true,
+        });
+
+        // Deliberate exception to this file's convention: every other p.isCancel()
+        // here aborts the whole wizard with process.exit(0). Cancelling *this*
+        // prompt means "let me pick models again" — a normal outcome, not a signal
+        // to abort the entire `arcs init` run — so it falls through to the regular
+        // tier prompts below. Do not "fix" this to match the surrounding pattern.
+        if (!p.isCancel(reuseExistingClaude) && reuseExistingClaude) {
+          claudeModelConfig = { ...reusableClaudeModels };
+        }
       }
 
-      const claudeStandardModel = await selectModel(
-        "Standard model (orchestration)",
-        claudeAvailableModels,
-        currentClaudeModel || "claude-sonnet-4-6",
-      );
-      if (p.isCancel(claudeStandardModel)) {
-        p.cancel("Setup cancelled.");
-        process.exit(0);
-      }
+      if (!claudeModelConfig) {
+        // ── Model selection for Claude Code ─────────────────────────────────
+        const currentClaudeModel = await readClaudeCodeCurrentModel();
+        const claudeAvailableModels = getClaudeCodeModels(currentClaudeModel);
 
-      const claudeLightModel = await selectModel(
-        "Light/fast model (read-only, exploration)",
-        claudeAvailableModels,
-        currentClaudeModel || "claude-haiku-4-5",
-      );
-      if (p.isCancel(claudeLightModel)) {
-        p.cancel("Setup cancelled.");
-        process.exit(0);
+        p.note(
+          "ARCS agents are grouped into three tiers.\n" +
+            `  Heavy  — reasoning & synthesis (${registryTierAgentNames("heavy")})\n` +
+            `  Standard — orchestration (${registryTierAgentNames("standard")})\n` +
+            `  Light  — read-only exploration (${registryTierAgentNames("light")})\n\n` +
+            'Use "inherit" to delegate model choice to Claude Code defaults.',
+          "Claude Code Model Tiers",
+        );
+
+        const claudeHeavyModel = await selectModel(
+          "Heavy model (reasoning, synthesis)",
+          claudeAvailableModels,
+          currentClaudeModel || "claude-opus-4-7",
+        );
+        if (p.isCancel(claudeHeavyModel)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        const claudeStandardModel = await selectModel(
+          "Standard model (orchestration)",
+          claudeAvailableModels,
+          currentClaudeModel || "claude-sonnet-4-6",
+        );
+        if (p.isCancel(claudeStandardModel)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        const claudeLightModel = await selectModel(
+          "Light/fast model (read-only, exploration)",
+          claudeAvailableModels,
+          currentClaudeModel || "claude-haiku-4-5",
+        );
+        if (p.isCancel(claudeLightModel)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        claudeModelConfig = {
+          heavy: claudeHeavyModel as string,
+          standard: claudeStandardModel as string,
+          light: claudeLightModel as string,
+        };
       }
 
       const sClaude = p.spinner();
@@ -426,9 +508,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           env: {
             ...process.env,
             DEPLOY_DRY_RUN: "false",
-            DEPLOY_MODEL_HEAVY: claudeHeavyModel as string,
-            DEPLOY_MODEL_STANDARD: claudeStandardModel as string,
-            DEPLOY_MODEL_LIGHT: claudeLightModel as string,
+            DEPLOY_MODEL_HEAVY: claudeModelConfig.heavy,
+            DEPLOY_MODEL_STANDARD: claudeModelConfig.standard,
+            DEPLOY_MODEL_LIGHT: claudeModelConfig.light,
           },
           encoding: "utf-8",
         });

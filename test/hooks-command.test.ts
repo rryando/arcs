@@ -17,9 +17,10 @@ interface InstallData {
   events: string[];
   settingsSnippet: string;
   notes: string[];
+  settingsPath?: string;
 }
 
-function seedProject(dir: string, slug: string): string {
+function seedProject(dir: string, slug: string, workspacePath: string = process.cwd()): string {
   writeFileSync(
     resolve(dir, "meta.json"),
     JSON.stringify({
@@ -38,7 +39,7 @@ function seedProject(dir: string, slug: string): string {
       name: "Hook Test",
       description: "Test",
       createdAt: "2026-01-01T00:00:00.000Z",
-      workspacePaths: [process.cwd()],
+      workspacePaths: [workspacePath],
     }),
     "utf-8",
   );
@@ -131,6 +132,85 @@ describe("hooks install-claude-code", () => {
         settingsBefore,
       );
       expect(existsSync(resolve(projectDir, "hooks", "claude-code-token.json"))).toBe(true);
+    });
+  });
+
+  it("--write merges the hook into the workspace's settings.local.json", async () => {
+    await withTempDataDir(async (dir) => {
+      const workspace = resolve(dir, "workspace");
+      mkdirSync(workspace, { recursive: true });
+      seedProject(dir, "demo", workspace);
+
+      const result = await runCommand("hooks install-claude-code", ["demo", "--write"]);
+
+      expect(result.ok).toBe(true);
+      const data = (result as { ok: true; data: InstallData }).data;
+
+      const settingsPath = resolve(workspace, ".claude", "settings.local.json");
+      expect(data.settingsPath).toBe(settingsPath);
+      expect(data.events).toEqual(["SessionStart", "UserPromptSubmit", "SessionEnd"]);
+      expect(existsSync(settingsPath)).toBe(true);
+
+      // The written file must carry the same token the command reported, or the
+      // hook authenticates against a token nobody stored.
+      const written = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+        hooks: Record<string, [{ hooks: [{ type: string; command: string }] }]>;
+      };
+      expect(Object.keys(written.hooks)).toEqual(data.events);
+      for (const event of data.events) {
+        expect(written.hooks[event][0].hooks[0].command).toBe(
+          `ARCS_HOOK_TOKEN=${data.token} ARCS_HOOK_SLUG=demo ` +
+            `ARCS_HOOK_URL=${data.serverUrl} node ${data.hookScriptPath}`,
+        );
+      }
+      expect(await readHookToken(resolve(dir, "projects", "demo"))).toBe(data.token);
+    });
+  });
+
+  it("writes no settings file without --write", async () => {
+    await withTempDataDir(async (dir) => {
+      const workspace = resolve(dir, "workspace");
+      mkdirSync(workspace, { recursive: true });
+      seedProject(dir, "demo", workspace);
+      const settingsPath = resolve(workspace, ".claude", "settings.local.json");
+
+      for (const args of [["demo"], ["demo", "--write=false"]]) {
+        const result = await runCommand("hooks install-claude-code", args);
+
+        expect(result.ok).toBe(true);
+        const data = (result as { ok: true; data: InstallData }).data;
+        expect(data.settingsPath).toBeUndefined();
+        expect(data.settingsSnippet).toContain("ARCS_HOOK_SLUG=demo");
+        expect(data.notes.join(" ")).toMatch(/never edits those files/i);
+        // Default behaviour stays consent-only: nothing lands in the workspace.
+        expect(existsSync(settingsPath)).toBe(false);
+        expect(existsSync(resolve(workspace, ".claude"))).toBe(false);
+      }
+    });
+  });
+
+  it("--write aborts verbatim on a malformed existing settings file", async () => {
+    await withTempDataDir(async (dir) => {
+      const workspace = resolve(dir, "workspace");
+      mkdirSync(resolve(workspace, ".claude"), { recursive: true });
+      seedProject(dir, "demo", workspace);
+
+      const settingsPath = resolve(workspace, ".claude", "settings.local.json");
+      const malformed = '{ "permissions": { "allow": ["Bash"] },, }';
+      writeFileSync(settingsPath, malformed, "utf-8");
+
+      const result = await runCommand("hooks install-claude-code", ["demo", "--write"]);
+
+      expect(result.ok).toBe(false);
+      const err = result as { ok: false; code: string; message: string };
+      expect(err.code).toBe("hook_install_error");
+      // The installer's own wording, surfaced unedited — it names the file and
+      // the exact recovery step.
+      expect(err.message).toContain(`${settingsPath} exists but is not valid JSON`);
+      expect(err.message).toContain("Nothing was written.");
+
+      // A hand-edited file must survive the failed install untouched.
+      expect(readFileSync(settingsPath, "utf-8")).toBe(malformed);
     });
   });
 
