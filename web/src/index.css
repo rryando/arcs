@@ -171,7 +171,11 @@
     height: 100%;
   }
   .cm-host .cm-editor {
-    @apply border border-term-border bg-term-inset text-[13px] outline-none;
+    @apply border border-term-border text-[13px] outline-none;
+    /* CodeMirror mounts its style modules at head.firstChild, so this
+       equal-specificity app rule wins the cascade and keeps the editor
+       transparent over its parent panel no matter what a theme injects. */
+    background-color: transparent;
   }
   .cm-host .cm-scroller {
     font-family: var(--font-mono);

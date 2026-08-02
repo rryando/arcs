@@ -82,6 +82,11 @@ export function MarkdownEditor({
       <CodeMirror
         value={value}
         onChange={onChange}
+        // Without this the library falls back to its built-in "light" theme,
+        // which injects `.cm-editor { background-color: #fff }` ahead of (and
+        // therefore winning over) our own `termTheme`. "none" leaves styling
+        // entirely to `termTheme` so the editor inherits the dark panel.
+        theme="none"
         extensions={extensions}
         basicSetup={{
           lineNumbers: false,
