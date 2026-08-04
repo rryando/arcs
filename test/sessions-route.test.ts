@@ -7,11 +7,17 @@
  * `/doc` when the route was written.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  appendReferenceTurn,
+  mirrorSessionTranscript,
+  readSessionTurns,
+  sessionTranscriptPath,
+} from "../src/utils/claude-transcript.js";
 import {
   createSession,
   getSession,
@@ -231,6 +237,19 @@ async function createOpencode(base: string, body: unknown = {}) {
   };
   return { status: res.status, envelope };
 }
+
+/** A valid `reference` body for POST /message, per sendMessageSchema. */
+const REFERENCE = {
+  section: {
+    depth: 1,
+    text: "The session drains the queue at the next hook checkpoint.",
+    id: "sec_1",
+    startOffset: 120,
+    endOffset: 220,
+  },
+  text: "Queue drain happens at the next hook checkpoint.",
+  source: { kind: "knowledge", label: "session-bridge", doc: "docs/bridge.md", id: "k_1" },
+} as const;
 
 describe("POST /api/p/:slug/sessions/opencode/new", () => {
   it("creates a live opencode session in the project workspace and indexes it at once", async () => {
@@ -499,6 +518,341 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
       expect(status).toBe(404);
       expect(envelope.code).toBe("ITEM_NOT_FOUND");
       expect(opencode.requests).toHaveLength(0);
+    });
+  });
+
+  it("queues the message for claude-code, then appends the reference turn to the sidecar", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_1",
+      });
+
+      const { status, envelope } = await sendMessage(base, session.normalizedId, {
+        message: "queue me with a reference",
+        reference: REFERENCE,
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.messageQueue).toEqual(["queue me with a reference"]);
+
+      // The reference lands after the enqueue: it is the sidecar's sole record
+      // (id -1, the negative reference space), never clobbering the queue.
+      const turns = await readSessionTurns(projectDir, session.normalizedId);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({
+        type: "reference",
+        text: REFERENCE.text,
+        section: REFERENCE.section,
+        source: REFERENCE.source,
+      });
+      expect(turns[0].id).toBe(-1);
+      expect(typeof turns[0].ts).toBe("string");
+
+      // A second reference keeps the order: appends serialize after each
+      // delivery, so ids and the queue both grow in call order.
+      await sendMessage(base, session.normalizedId, {
+        message: "one more",
+        reference: { ...REFERENCE, text: "second reference" },
+      });
+      const after = await readSessionTurns(projectDir, session.normalizedId);
+      expect(after.map((t) => t.id)).toEqual([-1, -2]);
+      const stored = await getSession(projectDir, session.normalizedId);
+      expect(stored.messageQueue).toEqual(["queue me with a reference", "one more"]);
+    });
+  });
+
+  it("injects into the live opencode session, then appends the reference turn on success", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "opencode",
+        runtimeSessionId: "ses_ref_1",
+        metadata: { directory: "/work/demo" },
+      });
+
+      const { status, envelope } = await sendMessage(base, session.normalizedId, {
+        message: "carry on with the reference",
+        reference: REFERENCE,
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.lastMessageAt).toBeTruthy();
+      expect(opencode.requests).toHaveLength(1);
+      expect(opencode.requests[0].body).toEqual({
+        parts: [{ type: "text", text: "carry on with the reference" }],
+      });
+
+      const turns = await readSessionTurns(projectDir, session.normalizedId);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({
+        type: "reference",
+        text: REFERENCE.text,
+        section: REFERENCE.section,
+        source: REFERENCE.source,
+      });
+      expect(turns[0].id).toBeLessThan(0);
+    });
+  });
+
+  it("does not append a dangling reference when delivery fails", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "opencode",
+        runtimeSessionId: "ses_ref_fail",
+      });
+      opencode.status = 500;
+
+      const { status, envelope } = await sendMessage(base, session.normalizedId, {
+        message: "will fail",
+        reference: REFERENCE,
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("OPENCODE_REQUEST_FAILED");
+
+      // The failed send must not leave a dangling reference behind.
+      expect(await readSessionTurns(projectDir, session.normalizedId)).toEqual([]);
+      expect(existsSync(sessionTranscriptPath(projectDir, session.normalizedId))).toBe(false);
+      const stored = await getSession(projectDir, session.normalizedId);
+      expect(stored.lastMessageAt).toBeUndefined();
+    });
+  });
+
+  it("leaves no sidecar behind when a message is sent without a reference", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      const opencodeSession = await createSession(projectDir, {
+        runtimeType: "opencode",
+        runtimeSessionId: "ses_noref",
+      });
+      const ccSession = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_noref",
+      });
+
+      const sent = await sendMessage(base, opencodeSession.normalizedId, { message: "plain" });
+      expect(sent.status).toBe(200);
+      expect(sent.envelope.data?.lastMessageAt).toBeTruthy();
+      expect(opencode.requests).toHaveLength(1);
+
+      const queued = await sendMessage(base, ccSession.normalizedId, { message: "queued" });
+      expect(queued.status).toBe(200);
+      expect(queued.envelope.data?.messageQueue).toEqual(["queued"]);
+
+      expect(existsSync(sessionTranscriptPath(projectDir, opencodeSession.normalizedId))).toBe(
+        false,
+      );
+      expect(existsSync(sessionTranscriptPath(projectDir, ccSession.normalizedId))).toBe(false);
+      expect(await readSessionTurns(projectDir, opencodeSession.normalizedId)).toEqual([]);
+      expect(await readSessionTurns(projectDir, ccSession.normalizedId)).toEqual([]);
+    });
+  });
+});
+
+describe("GET /api/p/:slug/sessions/:id/transcript", () => {
+  it("404s for a session the project does not have", async () => {
+    await withRouteCtx(async ({ base }) => {
+      const res = await fetch(`${base}/api/p/demo/sessions/ses-missing/transcript`);
+      expect(res.status).toBe(404);
+      const envelope = (await res.json()) as { ok: boolean; code?: string };
+      expect(envelope.ok).toBe(false);
+      expect(envelope.code).toBe("ITEM_NOT_FOUND");
+    });
+  });
+
+  it("answers an empty transcript with mirroredAt null before any mirror exists", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_tr_empty",
+      });
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      expect(res.status).toBe(200);
+      const envelope = (await res.json()) as {
+        ok: boolean;
+        data?: { turns: unknown[]; mirroredAt: string | null };
+      };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data).toEqual({ turns: [], mirroredAt: null });
+    });
+  });
+
+  it("roundtrips mirrored and reference turns with the sidecar mtime", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_tr_rt",
+      });
+
+      // A Claude Code transcript source, then mirror + append a reference.
+      const sourcePath = resolve(projectDir, "sessions", "cc_tr_rt.source.jsonl");
+      writeFileSync(
+        sourcePath,
+        [
+          JSON.stringify({
+            type: "user",
+            message: { role: "user", content: "first question" },
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "first answer" }],
+            },
+            timestamp: "2026-01-01T00:00:01.000Z",
+          }),
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      await mirrorSessionTranscript(projectDir, session.normalizedId, sourcePath);
+      await appendReferenceTurn(projectDir, session.normalizedId, { text: "quoted reference" });
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      expect(res.status).toBe(200);
+      const envelope = (await res.json()) as {
+        ok: boolean;
+        data?: {
+          turns: Array<{ id: number; type: string; text: string; ts?: string }>;
+          mirroredAt: string | null;
+        };
+      };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.turns).toEqual([
+        {
+          id: 0,
+          type: "user",
+          text: "first question",
+          ts: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          id: 1,
+          type: "assistant",
+          text: "first answer",
+          ts: "2026-01-01T00:00:01.000Z",
+        },
+        expect.objectContaining({ id: -1, type: "reference", text: "quoted reference" }),
+      ]);
+      expect(typeof envelope.data?.mirroredAt).toBe("string");
+    });
+  });
+
+  it("returns a reference turn with section and source intact after POST /message", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_rt",
+      });
+
+      const sent = await sendMessage(base, session.normalizedId, {
+        message: "point me at the doc",
+        reference: REFERENCE,
+      });
+      expect(sent.status).toBe(200);
+      expect(sent.envelope.ok).toBe(true);
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      expect(res.status).toBe(200);
+      const envelope = (await res.json()) as {
+        ok: boolean;
+        data?: {
+          turns: Array<{
+            id: number;
+            type: string;
+            text: string;
+            ts?: string;
+            section?: unknown;
+            source?: unknown;
+          }>;
+          mirroredAt: string | null;
+        };
+      };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.turns).toEqual([
+        expect.objectContaining({
+          id: -1,
+          type: "reference",
+          text: REFERENCE.text,
+          section: REFERENCE.section,
+          source: REFERENCE.source,
+        }),
+      ]);
+    });
+  });
+});
+
+describe("DELETE /api/p/:slug/sessions/:id", () => {
+  it("removes the transcript sidecar when the session is deleted", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_del_1",
+      });
+      await appendReferenceTurn(projectDir, session.normalizedId, { text: "about to vanish" });
+      const sidecar = sessionTranscriptPath(projectDir, session.normalizedId);
+      expect(existsSync(sidecar)).toBe(true);
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      expect(res.status).toBe(200);
+      const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data).toEqual({ deleted: true });
+
+      expect(existsSync(sidecar)).toBe(false);
+      await expect(getSession(projectDir, session.normalizedId)).rejects.toThrow();
+    });
+  });
+
+  it("still deletes a session when no sidecar exists", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_del_2",
+      });
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      expect(res.status).toBe(200);
+      const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data).toEqual({ deleted: true });
+      await expect(getSession(projectDir, session.normalizedId)).rejects.toThrow();
+    });
+  });
+
+  it("removes the sidecar by normalizedId when the route id is not slugified", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      // "Delete Me 1" normalizes to "delete-me-1": the route id differs from
+      // the normalized sidecar filename key, so the unlink must key on
+      // session.normalizedId rather than the raw id.
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "Delete Me 1",
+      });
+      expect(session.normalizedId).toBe("delete-me-1");
+      await appendReferenceTurn(projectDir, session.normalizedId, { text: "about to vanish" });
+      const sidecar = sessionTranscriptPath(projectDir, session.normalizedId);
+      expect(existsSync(sidecar)).toBe(true);
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${encodeURIComponent("Delete Me 1")}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      expect(res.status).toBe(200);
+      const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data).toEqual({ deleted: true });
+
+      expect(existsSync(sidecar)).toBe(false);
+      await expect(getSession(projectDir, "Delete Me 1")).rejects.toThrow();
     });
   });
 });

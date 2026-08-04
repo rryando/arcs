@@ -16,7 +16,7 @@ interface StatusData {
   hookScriptPath: string;
 }
 
-const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd"] as const;
+const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"] as const;
 
 const HOOK_SCRIPT_PATH = resolve(PACKAGE_ROOT, "scripts", "claude-code-session-hook.mjs");
 
@@ -171,8 +171,25 @@ describe("hooks status", () => {
       const result = await runCommand("hooks status", ["demo"]);
       const data = (result as { ok: true; data: StatusData }).data;
 
-      // Registered for this project, but only on one of the three events — a
+      // Registered for this project, but only on one of the four events — a
       // half-wired bridge must not report as installed.
+      expect(data.installed).toBe(false);
+      expect(data.matchesCurrentSlug).toBe(true);
+      expect(data.matchedSlugs).toEqual(["demo"]);
+    });
+  });
+
+  it("treats a legacy 3-event install as not installed but still reports the slug", async () => {
+    await withTempDataDir(async (dir) => {
+      const { workspacePath } = seedProject(dir, "demo");
+      seedInstalledHook(workspacePath, "demo", ["SessionStart", "UserPromptSubmit", "SessionEnd"]);
+
+      const result = await runCommand("hooks status", ["demo"]);
+      const data = (result as { ok: true; data: StatusData }).data;
+
+      // A pre-Stop install lacks the Stop event — the bridge is incomplete and
+      // must be re-installed. matchedSlugs stays populated so the caller still
+      // sees which project the hook is wired to.
       expect(data.installed).toBe(false);
       expect(data.matchesCurrentSlug).toBe(true);
       expect(data.matchedSlugs).toEqual(["demo"]);

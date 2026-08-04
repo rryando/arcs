@@ -1,10 +1,15 @@
 /**
  * Project shell — header + tab bar + nested outlet.
+ *
+ * The session panel is mounted around the Outlet: `SessionPanelProvider` owns
+ * the panel state, and `SessionPanel` renders as a right sibling of the outlet
+ * (a split pane) only while open — hidden entirely below the lg breakpoint.
  */
 
 import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { useProject } from "../api/hooks";
 import { Badge, statusColor } from "../components/Badge";
+import { SessionPanel, SessionPanelProvider, useSessionPanel } from "../components/SessionPanel";
 import { cx, truncate } from "../lib/format";
 
 const TABS = [
@@ -19,7 +24,7 @@ const TABS = [
 
 export function ProjectShell() {
   const { slug } = useParams({ strict: false }) as { slug: string };
-  const { data: project, error } = useProject(slug);
+  const { error } = useProject(slug);
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
@@ -38,6 +43,16 @@ export function ProjectShell() {
     );
   }
 
+  return (
+    <SessionPanelProvider>
+      <ShellFrame slug={slug} pathname={pathname} />
+    </SessionPanelProvider>
+  );
+}
+
+function ShellFrame({ slug, pathname }: { slug: string; pathname: string }) {
+  const { open } = useSessionPanel();
+  const { data: project } = useProject(slug);
   const base = `/p/${slug}`;
 
   return (
@@ -54,6 +69,7 @@ export function ProjectShell() {
               {truncate(project.workspacePaths[0], 48)}
             </span>
           )}
+          <PanelToggle />
         </div>
         {project?.description && (
           <p className="mt-0.5 pl-5 text-[11px] text-term-dim">
@@ -91,9 +107,36 @@ export function ProjectShell() {
         </nav>
       </header>
 
+      {/* split pane: outlet + session panel (panel hidden below lg) */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        <Outlet />
+        <div className="flex h-full">
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <Outlet />
+          </div>
+          {open && <SessionPanel />}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** Shell-level toggle for the session panel — only meaningful at lg+. */
+function PanelToggle() {
+  const { open, toggle } = useSessionPanel();
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      aria-pressed={open}
+      title={open ? "close session panel" : "open session panel"}
+      className={cx(
+        "hidden items-center gap-1 border px-2 py-1 text-[12px] lg:inline-flex",
+        open
+          ? "border-term-green/60 bg-term-green font-bold text-term-bg"
+          : "border-term-border text-term-dim hover:text-term-fg",
+      )}
+    >
+      <span>{open ? "▮" : "▤"}</span> session panel
+    </button>
   );
 }

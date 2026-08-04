@@ -183,6 +183,7 @@ describe("claude-code-session-hook: wire format", () => {
       session_id: "cc-1",
       cwd: "/work/demo",
       source: "startup",
+      transcript_path: "/tmp/t.jsonl",
     });
   });
 
@@ -247,6 +248,48 @@ describe("claude-code-session-hook: wire format", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toBe("");
+  });
+
+  it("forwards a Stop event with its transcript_path and prints nothing", async () => {
+    stub = await startStub();
+    stub.queuedMessages = ["should not appear"];
+
+    const result = await runHook(
+      JSON.stringify({
+        session_id: "cc-1",
+        transcript_path: "/tmp/t.jsonl",
+        cwd: "/work/demo",
+        hook_event_name: "Stop",
+      }),
+      hookEnv(stub.baseUrl),
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0].body).toEqual({
+      hook_event_name: "Stop",
+      session_id: "cc-1",
+      cwd: "/work/demo",
+      transcript_path: "/tmp/t.jsonl",
+    });
+  });
+
+  it("omits transcript_path from a Stop event that lacks it", async () => {
+    stub = await startStub();
+
+    const result = await runHook(
+      JSON.stringify({ session_id: "cc-1", hook_event_name: "Stop" }),
+      hookEnv(stub.baseUrl),
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0].body).toEqual({
+      hook_event_name: "Stop",
+      session_id: "cc-1",
+    });
   });
 });
 

@@ -27,10 +27,10 @@ import { failure, success } from "../output-envelope.js";
 export const DEFAULT_SERVER_URL = "http://127.0.0.1:4173";
 
 /**
- * One script registered under three events; it dispatches internally on the
+ * One script registered under four events; it dispatches internally on the
  * `hook_event_name` field Claude Code puts on stdin.
  */
-export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd"] as const;
+export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"] as const;
 
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 

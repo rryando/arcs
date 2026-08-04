@@ -12,9 +12,15 @@
  * middleware — no per-route auth.
  */
 
+import { stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { z } from "zod";
+import {
+  appendReferenceTurn,
+  readSessionTurns,
+  sessionTranscriptPath,
+} from "../../utils/claude-transcript.js";
 import { DagError } from "../../utils/errors.js";
 import { readJsonSafe } from "../../utils/json.js";
 import {
@@ -62,6 +68,27 @@ const updateSessionSchema = z.object({
 
 const sendMessageSchema = z.object({
   message: z.string().min(1),
+  /** Optional document section the caller is pointing the session at. When
+   *  present, the delivery call is followed by an ARCS-authored reference turn
+   *  in the session's transcript sidecar (see appendReferenceTurn). */
+  reference: z
+    .object({
+      section: z.object({
+        depth: z.number(),
+        text: z.string(),
+        id: z.string(),
+        startOffset: z.number(),
+        endOffset: z.number(),
+      }),
+      text: z.string(),
+      source: z.object({
+        kind: z.enum(["overview", "knowledge", "plan"]),
+        label: z.string(),
+        doc: z.string().optional(),
+        id: z.string().optional(),
+      }),
+    })
+    .optional(),
 });
 
 const createOpencodeSessionSchema = z.object({
@@ -201,39 +228,92 @@ sessionsRoute.patch("/api/p/:slug/sessions/:id", async (c) =>
  * next hook checkpoint — Claude Code exposes no live channel to inject into).
  * Both answer with the updated session, so the caller can tell them apart by
  * `messageQueue` rather than by branching on `runtimeType` itself.
+ *
+ * A `reference` body field appends an ARCS-authored reference turn to the
+ * session's transcript sidecar, but only after delivery has succeeded — a
+ * failed send must never leave a dangling reference behind. The append is a
+ * swallowed no-op on failure (the message itself was already delivered).
  */
 sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
   respond(c, async () => {
     const projectDir = requireProjectDir(c.req.param("slug"));
-    const { message } = await parseBody(c, sendMessageSchema);
+    const { message, reference } = await parseBody(c, sendMessageSchema);
     const session = await getSession(projectDir, c.req.param("id"));
 
+    let updated: SessionMeta;
     if (session.runtimeType === "claude-code") {
       // Queued, not sent: `lastMessageAt` stays untouched until the session
       // actually drains this at a checkpoint.
-      return enqueueSessionMessage(projectDir, session.normalizedId, message);
+      updated = await enqueueSessionMessage(projectDir, session.normalizedId, message);
+    } else {
+      await sendOpencodeMessage(
+        requireOpencodeConfig(),
+        {
+          runtimeSessionId: session.runtimeSessionId,
+          ...(sessionDirectory(session) && { directory: sessionDirectory(session) }),
+        },
+        message,
+      );
+
+      updated = await updateSession(projectDir, {
+        id: session.normalizedId,
+        lastMessageAt: new Date().toISOString(),
+      });
     }
 
-    await sendOpencodeMessage(
-      requireOpencodeConfig(),
-      {
-        runtimeSessionId: session.runtimeSessionId,
-        ...(sessionDirectory(session) && { directory: sessionDirectory(session) }),
-      },
-      message,
-    );
+    // Delivery succeeded (or was accepted into the queue) — record the
+    // reference turn against the session's transcript sidecar, carrying the
+    // section/source payload verbatim so the web UI can render click-through.
+    if (reference !== undefined) {
+      await appendReferenceTurn(projectDir, session.normalizedId, {
+        text: reference.text,
+        ts: new Date().toISOString(),
+        section: reference.section,
+        source: reference.source,
+      });
+    }
 
-    return updateSession(projectDir, {
-      id: session.normalizedId,
-      lastMessageAt: new Date().toISOString(),
-    });
+    return updated;
   }),
 );
 
 sessionsRoute.delete("/api/p/:slug/sessions/:id", async (c) =>
   respond(c, async () => {
     const projectDir = requireProjectDir(c.req.param("slug"));
-    await deleteSession(projectDir, c.req.param("id"));
+    // Resolve through the index first: the sidecar filename keys on the
+    // session's canonical normalizedId, so a non-slugified route id must not
+    // re-derive the filename (deleteSession alone would orphan the sidecar).
+    const session = await getSession(projectDir, c.req.param("id"));
+    await deleteSession(projectDir, session.normalizedId);
+    try {
+      await unlink(sessionTranscriptPath(projectDir, session.normalizedId));
+    } catch {
+      // Sidecar may not exist — a failed unlink is a swallowed no-op.
+    }
     return { deleted: true };
+  }),
+);
+
+/**
+ * Reads the session's transcript sidecar (mirrored Claude Code lines plus
+ * ARCS-authored reference turns) into the read-model the web UI renders.
+ * An absent sidecar answers an empty transcript with `mirroredAt: null`; once
+ * the sidecar exists, `mirroredAt` is the file mtime so the UI can show how
+ * fresh the mirror is.
+ */
+sessionsRoute.get("/api/p/:slug/sessions/:id/transcript", async (c) =>
+  respond(c, async () => {
+    const projectDir = requireProjectDir(c.req.param("slug"));
+    const session = await getSession(projectDir, c.req.param("id"));
+
+    let mirroredAt: string | null = null;
+    try {
+      const info = await stat(sessionTranscriptPath(projectDir, session.normalizedId));
+      if (info.isFile()) mirroredAt = info.mtime.toISOString();
+    } catch {
+      // No sidecar yet — empty transcript, nothing mirrored.
+    }
+    if (mirroredAt === null) return { turns: [], mirroredAt: null };
+    return { turns: await readSessionTurns(projectDir, session.normalizedId), mirroredAt };
   }),
 );

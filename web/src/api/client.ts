@@ -126,6 +126,66 @@ export interface SessionUpdateInput {
   linkedNodeId?: string | null;
 }
 
+/** The MarkdownSection payload a caller sent to a session, preserved verbatim
+ *  on the sidecar reference record so the UI can render the section with
+ *  click-through back to its source document. Mirrors the server's
+ *  ReferenceSection. */
+export interface SessionTurnSection {
+  /** Heading depth of the referenced section (1-based). */
+  depth: number;
+  /** The section's rendered markdown, exactly as it was sent to the session. */
+  text: string;
+  /** Stable id of the section within its document. */
+  id: string;
+  /** Character offsets of the section within the full document text. */
+  startOffset: number;
+  endOffset: number;
+}
+
+/** Identity of the document a reference was quoted from. */
+export interface SessionTurnSource {
+  /** Which ARCS store the referenced document lives in. */
+  kind: "overview" | "knowledge" | "plan";
+  /** Human-readable name of the source document. */
+  label: string;
+  /** Optional doc identifier (e.g. knowledge entry id, plan id). */
+  doc?: string;
+  id?: string;
+}
+
+/** One normalized transcript turn (mirrored Claude Code lines plus
+ *  ARCS-authored reference turns). Mirrors the server's TranscriptTurn. */
+export interface SessionTurn {
+  /** Absolute 0-based transcript line index for mirrored turns; reference
+   *  turns carry a negative id in a disjoint space. */
+  id: number;
+  type: "user" | "assistant" | "reference";
+  text: string;
+  ts?: string;
+  tool?: { name: string };
+  /** Reference turns only. */
+  section?: SessionTurnSection;
+  /** Reference turns only. */
+  source?: SessionTurnSource;
+}
+
+/** Read-model for a session's transcript sidecar. */
+export interface SessionTranscript {
+  turns: SessionTurn[];
+  /** mtime of the sidecar file; `null` when nothing has been mirrored yet. */
+  mirroredAt: string | null;
+}
+
+/** Optional document-section reference carried with a send. When present the
+ *  server follows the delivery call with an ARCS-authored reference turn in
+ *  the session's transcript sidecar. Mirrors the server's
+ *  `sendMessageSchema.reference`. */
+export interface SessionMessageReference {
+  section: SessionTurnSection;
+  text: string;
+  source: SessionTurnSource;
+}
+
 export interface PlanMeta {
   id: string;
   normalizedId: string;
@@ -280,6 +340,10 @@ export const api = {
     );
   },
   session: (slug: string, id: string) => request<SessionMeta>(`/api/p/${slug}/sessions/${id}`),
+  /** Read-model of the session's transcript sidecar (mirrored Claude Code
+   *  lines plus ARCS-authored reference turns). */
+  sessionTranscript: (slug: string, id: string) =>
+    request<SessionTranscript>(`/api/p/${slug}/sessions/${id}/transcript`),
   createSession: (slug: string, input: Record<string, unknown>) =>
     request<SessionMeta>(`/api/p/${slug}/sessions`, {
       method: "POST",
@@ -299,11 +363,19 @@ export const api = {
     }),
   deleteSession: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/sessions/${id}`, { method: "DELETE" }),
-  /** Live-injects a prompt into the runtime behind the session (opencode only). */
-  sendSessionMessage: (slug: string, id: string, message: string) =>
+  /** Live-injects a prompt into the runtime behind the session (opencode only).
+   *  An optional `reference` (a document section the caller is pointing the
+   *  session at) is included in the body ONLY when present — absent, the body
+   *  stays byte-identical to `{ message }`. */
+  sendSessionMessage: (
+    slug: string,
+    id: string,
+    message: string,
+    reference?: SessionMessageReference,
+  ) =>
     request<SessionMeta>(`/api/p/${slug}/sessions/${id}/message`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(reference === undefined ? { message } : { message, reference }),
     }),
 
   plans: (slug: string) => request<{ plans: PlanMeta[] }>(`/api/p/${slug}/plans`),

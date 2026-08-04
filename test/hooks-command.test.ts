@@ -60,7 +60,7 @@ describe("hooks install-claude-code", () => {
       expect(data.token).toMatch(/^[0-9a-f-]{36}$/);
       expect(await readHookToken(projectDir)).toBe(data.token);
       expect(data.serverUrl).toBe("http://127.0.0.1:4173");
-      expect(data.events).toEqual(["SessionStart", "UserPromptSubmit", "SessionEnd"]);
+      expect(data.events).toEqual(["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"]);
 
       // The script must actually exist where the snippet points, or the pasted
       // config silently fails at the user's next prompt.
@@ -148,7 +148,7 @@ describe("hooks install-claude-code", () => {
 
       const settingsPath = resolve(workspace, ".claude", "settings.local.json");
       expect(data.settingsPath).toBe(settingsPath);
-      expect(data.events).toEqual(["SessionStart", "UserPromptSubmit", "SessionEnd"]);
+      expect(data.events).toEqual(["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"]);
       expect(existsSync(settingsPath)).toBe(true);
 
       // The written file must carry the same token the command reported, or the

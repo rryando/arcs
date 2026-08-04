@@ -9,19 +9,19 @@
  * DOM. The copy buttons run entirely client-side, so they need no `slug`.
  */
 
-import { type ReactNode, useMemo, useState } from "react";
+import { useLocation } from "@tanstack/react-router";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
-import type { SessionLinkedNodeType } from "../api/client";
 import { cx } from "../lib/format";
 import {
   createHeadingIdGenerator,
   extractHeadings,
   extractSections,
-  type MarkdownSection,
 } from "../lib/markdown-headings";
-import { SessionMessageForm } from "./SessionMessageForm";
+import type { ReferenceSource } from "../lib/reference-resolver";
+import { useSessionPanel } from "./SessionPanel";
 
 function textOfChildren(children: unknown): string {
   if (typeof children === "string") return children;
@@ -48,26 +48,38 @@ export function MarkdownViewer({
   className,
   showToc = true,
   slug,
-  linkedNodeType,
-  linkedNodeId,
+  referenceSource,
 }: {
   content: string;
   className?: string;
   showToc?: boolean;
   /** Enables the per-heading "send section to a session" affordance. */
   slug?: string;
-  /** Sorts the session picker (linked sessions first) — never filters it. */
-  linkedNodeType?: SessionLinkedNodeType;
-  linkedNodeId?: string;
+  /** Source identity for the ✉ affordance — the reference card's click-through
+   *  target. Required together with `slug`; the ✉ button renders only when both
+   *  are present. */
+  referenceSource?: ReferenceSource;
 }) {
+  const { openWithRef } = useSessionPanel();
+  const location = useLocation();
   const headings = useMemo(() => extractHeadings(content), [content]);
   const sections = useMemo(() => extractSections(content), [content]);
   const sectionById = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
-  const [sendTarget, setSendTarget] = useState<MarkdownSection | null>(null);
   // `${headingId}:text` | `${headingId}:link` — only the clicked button confirms.
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
   const nextHeadingId = createHeadingIdGenerator();
+
+  // Shared hash scroll — reference-card click-through (and any deep link) lands
+  // on the section: when a location hash names a rendered heading, bring it
+  // into view. Document changes are covered by remount (callers replace this
+  // viewer with a loading state while content refetches), so only the hash is a
+  // dependency.
+  useEffect(() => {
+    const id = location.hash.replace(/^#/, "");
+    if (!id) return;
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  }, [location.hash]);
 
   // `navigator.clipboard` needs a secure context and is absent in some embeds;
   // a copy that cannot happen is a silent no-op, never a thrown error.
@@ -91,11 +103,17 @@ export function MarkdownViewer({
     const body = (
       <>
         {children}
-        {slug && section && (
+        {slug && section && referenceSource && (
           <button
             type="button"
             title="send this section to a session"
-            onClick={() => setSendTarget(section)}
+            onClick={() =>
+              openWithRef({
+                section,
+                text: content.slice(section.startOffset, section.endOffset).trim(),
+                source: referenceSource,
+              })
+            }
             className="ml-2 align-middle text-[12px] font-normal text-term-dim opacity-0 group-hover:opacity-100 hover:text-term-green focus-visible:opacity-100"
           >
             ✉
@@ -189,16 +207,6 @@ export function MarkdownViewer({
             ))}
           </div>
         </nav>
-      )}
-
-      {slug && sendTarget && (
-        <SessionMessageForm
-          slug={slug}
-          initialText={content.slice(sendTarget.startOffset, sendTarget.endOffset).trim()}
-          linkedNodeType={linkedNodeType}
-          linkedNodeId={linkedNodeId}
-          onClose={() => setSendTarget(null)}
-        />
       )}
     </div>
   );

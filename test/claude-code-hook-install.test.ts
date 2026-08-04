@@ -20,7 +20,7 @@ interface SettingsFile {
   [key: string]: unknown;
 }
 
-const EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd"];
+const EVENTS = ["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"];
 
 async function withWorkspace(run: (workspace: string) => Promise<void>): Promise<void> {
   const workspace = mkdtempSync(resolve(tmpdir(), "arcs-ws-"));

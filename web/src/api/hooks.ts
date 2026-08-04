@@ -4,7 +4,12 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type SessionLinkedNodeType, type SessionUpdateInput } from "./client";
+import {
+  api,
+  type SessionLinkedNodeType,
+  type SessionMessageReference,
+  type SessionUpdateInput,
+} from "./client";
 
 export const qk = {
   projects: ["projects"] as const,
@@ -16,6 +21,7 @@ export const qk = {
   knowledgeEntry: (slug: string, id: string) => ["knowledge", slug, id] as const,
   tasks: (slug: string) => ["tasks", slug] as const,
   sessions: (slug: string) => ["sessions", slug] as const,
+  sessionTranscript: (slug: string, id: string) => ["sessions", slug, id, "transcript"] as const,
   plans: (slug: string) => ["plans", slug] as const,
   plan: (slug: string, id: string) => ["plan", slug, id] as const,
   graph: (slug: string) => ["graph", slug] as const,
@@ -86,6 +92,24 @@ export const useLinkedSessions = (slug: string, nodeType: SessionLinkedNodeType,
     queryFn: () => api.sessions(slug),
     select: (data) =>
       data.sessions.filter((s) => s.linkedNodeType === nodeType && s.linkedNodeId === nodeId),
+  });
+/**
+ * Transcript read-model for one session. The key nests under
+ * `qk.sessions(slug)` on purpose, so the existing "sessions" watcher
+ * invalidation (`keysForArea("sessions")` → `["sessions", slug]`)
+ * prefix-matches it and refetches it for free — no invalidation changes.
+ * `enabled` lets callers gate the fetch on panel open + a selected session;
+ * with no override it defaults to a non-null id.
+ */
+export const useSessionTranscript = (
+  slug: string,
+  id: string | null,
+  options?: { enabled?: boolean },
+) =>
+  useQuery({
+    queryKey: qk.sessionTranscript(slug, id ?? ""),
+    queryFn: () => api.sessionTranscript(slug, id ?? ""),
+    enabled: options?.enabled ?? id !== null,
   });
 export const usePlans = (slug: string) =>
   useQuery({ queryKey: qk.plans(slug), queryFn: () => api.plans(slug) });
@@ -207,8 +231,17 @@ export function useUpdateSession(slug: string) {
 export function useSendSessionMessage(slug: string) {
   const invalidate = useInvalidator();
   return useMutation({
-    mutationFn: ({ id, message }: { id: string; message: string }) =>
-      api.sendSessionMessage(slug, id, message),
+    mutationFn: ({
+      id,
+      message,
+      reference,
+    }: {
+      id: string;
+      message: string;
+      reference?: SessionMessageReference;
+    }) => api.sendSessionMessage(slug, id, message, reference),
+    // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a
+    // send that appended a reference turn refreshes open transcripts too.
     onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
   });
 }

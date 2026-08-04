@@ -18,6 +18,7 @@ import { useToaster } from "../components/Toaster";
 import { cx, relativeTime, truncate } from "../lib/format";
 import { SessionLinkModal } from "./SessionLinkModal";
 import { canSendMessage, SessionMessageForm } from "./SessionMessageForm";
+import { useSessionPanel } from "./SessionPanel";
 import { SESSION_STATUSES, SessionStatusBadge } from "./SessionStatusBadge";
 
 const RUNTIME_LABEL: Record<string, string> = {
@@ -38,6 +39,7 @@ export function SessionsView() {
   const deleteSession = useDeleteSession(slug);
   const updateSession = useUpdateSession(slug);
   const { push } = useToaster();
+  const { openSession } = useSessionPanel();
 
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
@@ -94,6 +96,17 @@ export function SessionsView() {
         render: (s) => (
           <span className="inline-flex items-center gap-1">
             <Badge color="blue">{RUNTIME_LABEL[s.runtimeType] ?? s.runtimeType}</Badge>
+            <button
+              type="button"
+              title="view conversation in the session panel"
+              onClick={(e) => {
+                e.stopPropagation();
+                openSession(s.normalizedId);
+              }}
+              className="text-term-dim hover:text-term-green"
+            >
+              ▤
+            </button>
             {canSendMessage(s) && (
               <button
                 type="button"
@@ -204,7 +217,7 @@ export function SessionsView() {
         ),
       },
     ],
-    [linkLabel, unlink],
+    [linkLabel, unlink, openSession],
   );
 
   return (
@@ -214,8 +227,8 @@ export function SessionsView() {
         hint={`${rows.length}/${sessions.length} · ${liveCount} live`}
         actions={
           <span className="text-[11px] text-term-dim">
-            opencode bridge · <span className="kbd">l</span> link · <span className="kbd">m</span>{" "}
-            message · <span className="kbd">x</span> forget
+            opencode bridge · <span className="kbd">l</span> link · <span className="kbd">v</span>{" "}
+            view · <span className="kbd">m</span> message · <span className="kbd">x</span> forget
           </span>
         }
       >
@@ -246,6 +259,12 @@ export function SessionsView() {
             onDelete={(s) => setDeleteTarget(s)}
             rowActions={[
               { keys: "l", description: "link session", run: (s) => setLinkTarget(s) },
+              {
+                keys: "v",
+                description: "view conversation",
+                // Every runtime has a conversation view — no canSendMessage gate.
+                run: (s) => openSession(s.normalizedId),
+              },
               {
                 keys: "m",
                 description: "send message",

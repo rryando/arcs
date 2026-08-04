@@ -277,7 +277,11 @@ export function KnowledgeDetail() {
                 ))}
               </div>
             )}
-            <MarkdownViewer content={data.body} slug={slug} />
+            <MarkdownViewer
+              content={data.body}
+              slug={slug}
+              referenceSource={{ kind: "knowledge", label: meta.title, id: meta.normalizedId }}
+            />
           </div>
         </div>
       )}

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
+import { resolveReference } from "../web/src/lib/reference-resolver.js";
 import { type Binding, eventToKey, matchBindings } from "../web/src/lib/shortcuts.js";
 
 function keyEvent(
@@ -115,6 +116,10 @@ describe("classifyChange", () => {
       slug: "arcs",
       area: "proposals",
     });
+    expect(classifyChange("projects/arcs/sessions/b993ef10.transcript.jsonl")).toEqual({
+      slug: "arcs",
+      area: "sessions",
+    });
   });
 
   it("classifies docs and meta", () => {
@@ -206,5 +211,35 @@ describe("markdown heading sections", () => {
 
   it("treats a document with no headings as having no sections", () => {
     expect(extractSections("just prose\n")).toEqual([]);
+  });
+});
+
+describe("resolveReference", () => {
+  it("resolves overview sources to the project doc tab with a section hash", () => {
+    expect(
+      resolveReference({
+        slug: "arcs",
+        kind: "overview",
+        doc: "tasks",
+        sectionId: "current-state",
+      }),
+    ).toEqual({ path: "/p/arcs?doc=tasks", hash: "#current-state" });
+  });
+
+  it("resolves knowledge sources to the entry detail with a section hash", () => {
+    expect(
+      resolveReference({
+        slug: "arcs",
+        kind: "knowledge",
+        id: "markdown-section-send",
+        sectionId: "implementation",
+      }),
+    ).toEqual({ path: "/p/arcs/knowledge/markdown-section-send", hash: "#implementation" });
+  });
+
+  it("resolves plan sources to the plan detail with a section hash", () => {
+    expect(
+      resolveReference({ slug: "arcs", kind: "plan", id: "my-plan", sectionId: "tasks" }),
+    ).toEqual({ path: "/p/arcs/plans/my-plan", hash: "#tasks" });
   });
 });

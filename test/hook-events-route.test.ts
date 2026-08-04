@@ -6,8 +6,8 @@
  * event, so the server contract is verified without a live Claude Code session.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { writeHookToken } from "../src/utils/hook-token-store.js";
 import {
@@ -284,6 +284,178 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
       });
 
       expect(status).toBe(200);
+    });
+  });
+
+  it("auto-registers an unknown session on Stop and answers an empty queue", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-stop-unknown",
+        cwd: "/work/demo",
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+
+      const session = await getSession(projectDir, "cc-stop-unknown");
+      expect(session.runtimeType).toBe("claude-code");
+      expect(session.status).toBe("active");
+    });
+  });
+
+  it("answers an empty queue on Stop without draining queued messages", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc-stop-queued",
+      });
+      await enqueueSessionMessage(
+        projectDir,
+        session.normalizedId,
+        "keep me until the next prompt",
+      );
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-stop-queued",
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+
+      // Stop never drains: the message survives for the next UserPromptSubmit.
+      const stored = await getSession(projectDir, session.normalizedId);
+      expect(stored.status).toBe("active");
+      expect(stored.messageQueue).toEqual(["keep me until the next prompt"]);
+    });
+  });
+
+  it("mirrors filtered turns from the transcript on Stop", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const transcriptPath = resolve(projectDir, "cc-stop-transcript.jsonl");
+      writeFileSync(
+        transcriptPath,
+        [
+          JSON.stringify({ type: "mode", message: { content: "thinking" } }),
+          JSON.stringify({
+            type: "user",
+            isMeta: true,
+            message: { content: "<local-command-caveat>wrapper</local-command-caveat>" },
+          }),
+          JSON.stringify({
+            type: "user",
+            message: { content: "mirror this prompt" },
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }),
+          JSON.stringify({
+            type: "user",
+            message: { content: [{ type: "tool_result", content: "echoed output" }] },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              content: [
+                { type: "text", text: "mirrored answer" },
+                { type: "thinking", thinking: "internal monologue" },
+              ],
+            },
+            timestamp: "2026-01-01T00:00:00.002Z",
+          }),
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-stop-mirror",
+        transcript_path: transcriptPath,
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+
+      const sidecarPath = join(projectDir, "sessions", "cc-stop-mirror.transcript.jsonl");
+      expect(existsSync(sidecarPath)).toBe(true);
+      const turns = readFileSync(sidecarPath, "utf-8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      // Noise lines (mode, isMeta, tool_result) are filtered out; the user
+      // prompt and the assistant text answer are mirrored with line offsets.
+      expect(turns).toEqual([
+        { id: 2, type: "user", text: "mirror this prompt", ts: "2026-01-01T00:00:00.000Z" },
+        { id: 4, type: "assistant", text: "mirrored answer", ts: "2026-01-01T00:00:00.002Z" },
+      ]);
+    });
+  });
+
+  it("answers 200 on Stop without a transcript_path and creates no sidecar", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-stop-plain",
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+      expect(existsSync(join(projectDir, "sessions", "cc-stop-plain.transcript.jsonl"))).toBe(
+        false,
+      );
+    });
+  });
+
+  it("mirrors the transcript on UserPromptSubmit before draining", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const transcriptPath = resolve(projectDir, "cc-prompt-transcript.jsonl");
+      writeFileSync(
+        transcriptPath,
+        [
+          JSON.stringify({
+            type: "user",
+            message: { content: "first prompt" },
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }),
+          JSON.stringify({
+            type: "user",
+            message: { content: "second prompt" },
+            timestamp: "2026-01-01T00:00:00.001Z",
+          }),
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-up-mirror",
+        transcript_path: transcriptPath,
+        prompt: "what now?",
+      });
+
+      expect(status).toBe(200);
+      const sidecarPath = join(projectDir, "sessions", "cc-up-mirror.transcript.jsonl");
+      const turns = readFileSync(sidecarPath, "utf-8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(turns).toEqual([
+        { id: 0, type: "user", text: "first prompt", ts: "2026-01-01T00:00:00.000Z" },
+        { id: 1, type: "user", text: "second prompt", ts: "2026-01-01T00:00:00.001Z" },
+      ]);
+    });
+  });
+
+  it("rejects a non-string transcript_path with a 400", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-bad-transcript",
+        transcript_path: 42,
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("INVALID_BODY");
+      expect(await listSessions(projectDir)).toHaveLength(0);
     });
   });
 });

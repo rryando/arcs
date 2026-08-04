@@ -3,8 +3,8 @@
  * update project metadata, and manage root DAG dependency edges.
  */
 
-import { useParams } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useLocation, useParams } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
 import { ApiError, type ProjectSummary } from "../api/client";
 import {
   useDoc,
@@ -31,9 +31,17 @@ const DOCUMENTS = [
 
 type DocType = (typeof DOCUMENTS)[number]["id"];
 
+/** `?doc=` from a reference-card click-through; unknown values fall back to the
+ *  default tab so a hand-edited URL degrades to "overview" instead of erroring. */
+function docFromSearch(search: string): DocType {
+  const fromSearch = new URLSearchParams(search).get("doc");
+  return DOCUMENTS.some((entry) => entry.id === fromSearch) ? (fromSearch as DocType) : "overview";
+}
+
 export function Overview() {
   const { slug } = useParams({ strict: false }) as { slug: string };
-  const [docType, setDocType] = useState<DocType>("overview");
+  const location = useLocation();
+  const [docType, setDocType] = useState<DocType>(() => docFromSearch(location.searchStr));
   const { data: doc, isLoading } = useDoc(slug, docType);
   const { data: project } = useProject(slug);
   const { data: projectsData } = useProjects();
@@ -55,6 +63,17 @@ export function Overview() {
     setDraft(null);
     setDocType(next);
   };
+
+  // `?doc=` from a reference-card click-through must switch the tab even when
+  // this route is already mounted — same-page navigation never remounts, so the
+  // initializer above cannot cover it. Manual tab clicks do not touch the URL,
+  // so this effect never overrides them (setting state to its current value
+  // bails out in React).
+  useEffect(() => {
+    setEditing(false);
+    setDraft(null);
+    setDocType(docFromSearch(location.searchStr));
+  }, [location.searchStr]);
 
   const startEdit = () => {
     setDraft(doc?.content ?? "");
@@ -205,7 +224,11 @@ export function Overview() {
               className="h-full min-h-96"
             />
           ) : doc?.exists ? (
-            <MarkdownViewer content={doc.content} slug={slug} />
+            <MarkdownViewer
+              content={doc.content}
+              slug={slug}
+              referenceSource={{ kind: "overview", label: selectedDoc.label, doc: docType }}
+            />
           ) : (
             <div className="text-term-dim">
               no {selectedDoc.label} yet — press <span className="kbd">e</span> to write one

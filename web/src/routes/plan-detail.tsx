@@ -268,8 +268,7 @@ export function PlanDetail() {
             <MarkdownViewer
               content={data.body}
               slug={slug}
-              linkedNodeType="plan"
-              linkedNodeId={meta.normalizedId}
+              referenceSource={{ kind: "plan", label: meta.title, id: meta.normalizedId }}
             />
           </div>
         </div>

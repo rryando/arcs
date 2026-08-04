@@ -11,18 +11,19 @@
  * it and get a session picker first.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import type { SessionLinkedNodeType, SessionMeta } from "../api/client";
-import { useCreateOpencodeSession, useSendSessionMessage, useSessions } from "../api/hooks";
+import { useCreateOpencodeSession, useSendSessionMessage } from "../api/hooks";
+import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
 import { cx, truncate } from "../lib/format";
 import { Dialog, inputClass } from "./Dialog";
 import { SessionStatusBadge } from "./SessionStatusBadge";
 import { useToaster } from "./Toaster";
 
 /** Past this the message is flagged as risky to deliver, but still sendable. */
-const WARN_LENGTH = 4000;
+export const WARN_LENGTH = 4000;
 /** Past this sending is blocked — no runtime takes a prompt this big usefully. */
-const MAX_LENGTH = 20000;
+export const MAX_LENGTH = 20000;
 
 export type MessageDelivery =
   /** The runtime accepts a prompt right now; the agent picks it up mid-run. */
@@ -44,12 +45,6 @@ export function messageDelivery(session: SessionMeta): MessageDelivery {
 
 export function canSendMessage(session: SessionMeta): boolean {
   return messageDelivery(session).kind !== "unsupported";
-}
-
-function sessionLabel(session: SessionMeta): string {
-  const title = session.metadata?.title;
-  if (typeof title === "string" && title) return truncate(title, 48);
-  return session.runtimeType;
 }
 
 export interface SessionMessageFormProps {
@@ -75,7 +70,6 @@ export function SessionMessageForm({
 }: SessionMessageFormProps) {
   const sendMessage = useSendSessionMessage(slug);
   const createSession = useCreateOpencodeSession(slug);
-  const { data: sessionsData } = useSessions(slug);
   const { push } = useToaster();
   const [picked, setPicked] = useState<SessionMeta | null>(null);
   const [filter, setFilter] = useState("");
@@ -85,22 +79,7 @@ export function SessionMessageForm({
   const focusOnMount = useCallback((node: HTMLTextAreaElement | null) => node?.focus(), []);
 
   const target = session ?? picked;
-  const candidates = useMemo<SessionMeta[]>(() => {
-    const all = sessionsData?.sessions ?? [];
-    const q = filter.trim().toLowerCase();
-    const matched = q
-      ? all.filter(
-          (s) =>
-            sessionLabel(s).toLowerCase().includes(q) ||
-            s.runtimeSessionId.toLowerCase().includes(q) ||
-            s.runtimeType.includes(q),
-        )
-      : all;
-    if (!linkedNodeType || !linkedNodeId) return matched;
-    const linked = (s: SessionMeta) =>
-      s.linkedNodeType === linkedNodeType && s.linkedNodeId === linkedNodeId ? 0 : 1;
-    return [...matched].sort((a, b) => linked(a) - linked(b));
-  }, [sessionsData, filter, linkedNodeType, linkedNodeId]);
+  const candidates = useSessionCandidates(slug, filter, linkedNodeType, linkedNodeId);
 
   const delivery = target ? messageDelivery(target) : null;
   const text = message.trim();

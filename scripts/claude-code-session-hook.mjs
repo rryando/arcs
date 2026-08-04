@@ -2,10 +2,10 @@
 /**
  * ARCS ↔ Claude Code session-bridge hook.
  *
- * Registered three times in settings.json (SessionStart, UserPromptSubmit,
- * SessionEnd) and dispatches internally on the `hook_event_name` field Claude
- * Code writes to stdin. Install with `arcs hooks install-claude-code <slug>`,
- * which generates the token and prints the snippet to paste.
+ * Registered four times in settings.json (SessionStart, UserPromptSubmit,
+ * SessionEnd, Stop) and dispatches internally on the `hook_event_name` field
+ * Claude Code writes to stdin. Install with `arcs hooks install-claude-code
+ * <slug>`, which generates the token and prints the snippet to paste.
  *
  * HARD RULE: this script never blocks the session. Any failure — ARCS not
  * running, token rejected, timeout, malformed JSON — is swallowed, nothing is
@@ -23,7 +23,7 @@
 const DEFAULT_URL = "http://127.0.0.1:4173";
 /** Short by design: a hung ARCS server must not stall prompt submission. */
 const TIMEOUT_MS = 1500;
-const EVENTS = new Set(["SessionStart", "UserPromptSubmit", "SessionEnd"]);
+const EVENTS = new Set(["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"]);
 
 /** Never rejects: an unreadable stdin yields "" and the run turns into a no-op. */
 function readStdin() {
@@ -83,6 +83,7 @@ async function main() {
       ...(typeof event.cwd === "string" && { cwd: event.cwd }),
       ...(typeof event.source === "string" && { source: event.source }),
       ...(typeof event.reason === "string" && { reason: event.reason }),
+      ...(typeof event.transcript_path === "string" && { transcript_path: event.transcript_path }),
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });

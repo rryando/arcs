@@ -4,7 +4,8 @@
  * Claude Code has no live-injection channel: hooks are stateless, fire per
  * event, and hold no persistent connection. So the session drives the bridge —
  * it announces itself at `SessionStart`, picks up whatever the web UI queued at
- * every `UserPromptSubmit` checkpoint, and closes out at `SessionEnd`.
+ * every `UserPromptSubmit` checkpoint, closes out at `SessionEnd`, and reports
+ * its transcript at `Stop` (the last checkpoint before teardown).
  *
  * The response stays ARCS-shaped (`{sessionId, queuedMessages}`); turning that
  * into Claude Code's `hookSpecificOutput` envelope is the hook script's job, so
@@ -16,6 +17,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { mirrorSessionTranscript } from "../../utils/claude-transcript.js";
 import {
   drainSessionMessageQueue,
   getSession,
@@ -33,12 +35,13 @@ export const hookEventsRoute = new Hono();
  * fields between releases and a hook must not start failing because of it.
  */
 const hookEventSchema = z.object({
-  hook_event_name: z.enum(["SessionStart", "UserPromptSubmit", "SessionEnd"]),
+  hook_event_name: z.enum(["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"]),
   session_id: z.string().min(1),
   cwd: z.string().optional(),
   source: z.string().optional(),
   prompt: z.string().optional(),
   reason: z.string().optional(),
+  transcript_path: z.string().optional(),
 });
 
 type HookEvent = z.infer<typeof hookEventSchema>;
@@ -97,8 +100,23 @@ async function handleHookEvent(projectDir: string, event: HookEvent): Promise<Ho
 
   if (event.hook_event_name === "UserPromptSubmit") {
     const session = await resolveCheckpointSession(projectDir, event);
+    if (event.transcript_path !== undefined) {
+      await mirrorSessionTranscript(projectDir, session.normalizedId, event.transcript_path);
+    }
     const queuedMessages = await drainSessionMessageQueue(projectDir, session.normalizedId);
     return { sessionId: session.normalizedId, queuedMessages };
+  }
+
+  if (event.hook_event_name === "Stop") {
+    // Stop is a checkpoint like UserPromptSubmit, so an unknown session is
+    // auto-registered — but the queue is deliberately NOT drained: a message
+    // queued for the session must survive to the next UserPromptSubmit, and
+    // Stop can arrive before that checkpoint if the turn ends without one.
+    const session = await resolveCheckpointSession(projectDir, event);
+    if (event.transcript_path !== undefined) {
+      await mirrorSessionTranscript(projectDir, session.normalizedId, event.transcript_path);
+    }
+    return { sessionId: session.normalizedId, queuedMessages: [] };
   }
 
   // SessionEnd. Every documented reason (clear|resume|logout|other) is an
@@ -107,6 +125,9 @@ async function handleHookEvent(projectDir: string, event: HookEvent): Promise<Ho
     id: event.session_id,
     status: "completed",
   });
+  if (event.transcript_path !== undefined) {
+    await mirrorSessionTranscript(projectDir, session.normalizedId, event.transcript_path);
+  }
   return { sessionId: session.normalizedId, queuedMessages: [] };
 }
 
