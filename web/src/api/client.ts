@@ -186,6 +186,28 @@ export interface SessionMessageReference {
   source: SessionTurnSource;
 }
 
+/** Payload for POST /sessions/:id/run — a headless `claude -p` targeting mode.
+ *  `threadId` is the stable-mode thread to reuse; when absent (and the
+ *  referenced session is not itself an ARCS-owned thread) one is minted
+ *  server-side. Mirrors the server's `runClaudeMessageSchema`. */
+export interface RunClaudeSessionInput {
+  mode: "resume" | "oneshot" | "stable";
+  message: string;
+  threadId?: string;
+  reference?: SessionMessageReference;
+}
+
+/** Acceptance of a headless run, returned as HTTP 202 — the run itself
+ *  proceeds out-of-band. Mirrors the server's run route response. */
+export interface RunResult {
+  session: SessionMeta;
+  run: {
+    accepted: boolean;
+    mode: string;
+    threadId?: string;
+  };
+}
+
 export interface PlanMeta {
   id: string;
   normalizedId: string;
@@ -376,6 +398,20 @@ export const api = {
     request<SessionMeta>(`/api/p/${slug}/sessions/${id}/message`, {
       method: "POST",
       body: JSON.stringify(reference === undefined ? { message } : { message, reference }),
+    }),
+  /** Starts a headless `claude -p` run against the session (claude-code only).
+   *  Optional keys are included in the body ONLY when present — absent, the
+   *  body stays `{ mode, message }`. Accepted as 202; the run settles
+   *  out-of-band and writes back on `session.metadata.run`. */
+  runClaudeSession: (slug: string, id: string, input: RunClaudeSessionInput) =>
+    request<RunResult>(`/api/p/${slug}/sessions/${id}/run`, {
+      method: "POST",
+      body: JSON.stringify({
+        mode: input.mode,
+        message: input.message,
+        ...(input.threadId && { threadId: input.threadId }),
+        ...(input.reference && { reference: input.reference }),
+      }),
     }),
 
   plans: (slug: string) => request<{ plans: PlanMeta[] }>(`/api/p/${slug}/plans`),

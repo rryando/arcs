@@ -42,6 +42,7 @@ const hookEventSchema = z.object({
   prompt: z.string().optional(),
   reason: z.string().optional(),
   transcript_path: z.string().optional(),
+  control: z.string().optional(),
 });
 
 type HookEvent = z.infer<typeof hookEventSchema>;
@@ -53,14 +54,20 @@ interface HookEventResult {
 }
 
 /**
- * Claude Code's `cwd` lands under the `directory` key: that is the metadata key
- * the sessions UI and the opencode bridge already read, so both runtimes render
- * their worktree the same way.
+ * Builds the metadata persisted on the session. Claude Code's `cwd` lands under
+ * the `directory` key: that is the metadata key the sessions UI and the opencode
+ * bridge already read, so both runtimes render their worktree the same way.
+ * `transcript_path` is persisted under `transcriptPath` (the sessions UI reads
+ * that key) so headless-run write-backs can resolve the transcript without the
+ * client resupplying it, and `control` is persisted verbatim — the "arcs-owned"
+ * marker that suppresses transcript mirroring for records ARCS wrote itself.
  */
 function sessionMetadata(event: HookEvent): Record<string, unknown> | undefined {
   const metadata: Record<string, unknown> = {
     ...(event.cwd && { directory: event.cwd }),
     ...(event.source && { source: event.source }),
+    ...(event.control !== undefined && { control: event.control }),
+    ...(event.transcript_path !== undefined && { transcriptPath: event.transcript_path }),
   };
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
@@ -73,6 +80,23 @@ function registerSession(projectDir: string, event: HookEvent): Promise<SessionM
     status: "active",
     ...(metadata && { metadata }),
   });
+}
+
+/**
+ * Merges checkpoint-derived fields (transcriptPath, control, directory…) into
+ * the session's metadata. A checkpoint usually arrives for a session registered
+ * at SessionStart, so `resolveCheckpointSession` returns it without persisting
+ * the checkpoint's own fields — without this merge the transcript path and the
+ * arcs-owned marker carried by the checkpoint would be dropped.
+ */
+async function persistCheckpointMetadata(
+  projectDir: string,
+  session: SessionMeta,
+  event: HookEvent,
+): Promise<SessionMeta> {
+  const metadata = sessionMetadata(event);
+  if (metadata === undefined) return session;
+  return updateSession(projectDir, { id: session.normalizedId, metadata });
 }
 
 /**
@@ -100,11 +124,12 @@ async function handleHookEvent(projectDir: string, event: HookEvent): Promise<Ho
 
   if (event.hook_event_name === "UserPromptSubmit") {
     const session = await resolveCheckpointSession(projectDir, event);
-    if (event.transcript_path !== undefined) {
-      await mirrorSessionTranscript(projectDir, session.normalizedId, event.transcript_path);
+    const checkpoint = await persistCheckpointMetadata(projectDir, session, event);
+    if (event.transcript_path !== undefined && checkpoint.metadata?.control !== "arcs-owned") {
+      await mirrorSessionTranscript(projectDir, checkpoint.normalizedId, event.transcript_path);
     }
-    const queuedMessages = await drainSessionMessageQueue(projectDir, session.normalizedId);
-    return { sessionId: session.normalizedId, queuedMessages };
+    const queuedMessages = await drainSessionMessageQueue(projectDir, checkpoint.normalizedId);
+    return { sessionId: checkpoint.normalizedId, queuedMessages };
   }
 
   if (event.hook_event_name === "Stop") {
@@ -113,19 +138,22 @@ async function handleHookEvent(projectDir: string, event: HookEvent): Promise<Ho
     // queued for the session must survive to the next UserPromptSubmit, and
     // Stop can arrive before that checkpoint if the turn ends without one.
     const session = await resolveCheckpointSession(projectDir, event);
-    if (event.transcript_path !== undefined) {
-      await mirrorSessionTranscript(projectDir, session.normalizedId, event.transcript_path);
+    const checkpoint = await persistCheckpointMetadata(projectDir, session, event);
+    if (event.transcript_path !== undefined && checkpoint.metadata?.control !== "arcs-owned") {
+      await mirrorSessionTranscript(projectDir, checkpoint.normalizedId, event.transcript_path);
     }
-    return { sessionId: session.normalizedId, queuedMessages: [] };
+    return { sessionId: checkpoint.normalizedId, queuedMessages: [] };
   }
 
   // SessionEnd. Every documented reason (clear|resume|logout|other) is an
   // ordinary teardown — none of them signals a crash, so none maps to "failed".
+  const metadata = sessionMetadata(event);
   const session = await updateSession(projectDir, {
     id: event.session_id,
     status: "completed",
+    ...(metadata !== undefined && { metadata }),
   });
-  if (event.transcript_path !== undefined) {
+  if (event.transcript_path !== undefined && session.metadata?.control !== "arcs-owned") {
     await mirrorSessionTranscript(projectDir, session.normalizedId, event.transcript_path);
   }
   return { sessionId: session.normalizedId, queuedMessages: [] };

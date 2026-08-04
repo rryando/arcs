@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   appendReferenceTurn,
+  appendSessionTurn,
   mirrorSessionTranscript,
   readSessionTurns,
   readTranscriptTurns,
@@ -282,6 +283,38 @@ describe("mirrorSessionTranscript shrink-guard", () => {
       expect(after[1]).toEqual({ id: 0, type: "user", text: "q1", ts: TS });
     });
   });
+
+  it("preserves ALL ARCS-authored turns (user AND reference) across compaction", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = await seedProjectDir(dir);
+      const transcriptPath = join(dir, "transcript.jsonl");
+      writeTranscript(transcriptPath, [
+        userLine("q1"),
+        assistantLine([{ type: "text", text: "a1" }]),
+      ]);
+      await mirrorSessionTranscript(projectDir, "abc", transcriptPath);
+      // ARCS-authored turns: reference + web-sent user/assistant, ids -1..-3.
+      await appendReferenceTurn(projectDir, "abc", { text: "## Section\nsent doc text" });
+      await appendSessionTurn(projectDir, "abc", { type: "user", text: "from web" });
+      await appendSessionTurn(projectDir, "abc", { type: "assistant", text: "web ack" });
+
+      const seeded = parseSidecar(readFileUtf8(sidecarPathOf(projectDir, "abc")));
+      expect(seeded.map((turn) => turn.id)).toEqual([0, 1, -1, -2, -3]);
+
+      // Compaction: transcript rewritten to a single user turn.
+      writeTranscript(transcriptPath, [userLine("q1")]);
+      await mirrorSessionTranscript(projectDir, "abc", transcriptPath);
+
+      const after = parseSidecar(readFileUtf8(sidecarPathOf(projectDir, "abc")));
+      // All three ARCS-authored turns survive (negative ids, ARCS-authored
+      // first) plus the re-mirrored turn — no duplicates, none dropped.
+      expect(after.map((turn) => turn.id)).toEqual([-1, -2, -3, 0]);
+      expect(after.map((turn) => turn.type)).toEqual(["reference", "user", "assistant", "user"]);
+      expect(after[1]).toMatchObject({ type: "user", text: "from web" });
+      expect(after[2]).toMatchObject({ type: "assistant", text: "web ack" });
+      expect(after[3]).toEqual({ id: 0, type: "user", text: "q1", ts: TS });
+    });
+  });
 });
 
 describe("mirrorSessionTranscript failure no-ops", () => {
@@ -381,6 +414,8 @@ describe("sidecar never touches index.json", () => {
       ]);
       await mirrorSessionTranscript(projectDir, "abc", transcriptPath);
       await appendReferenceTurn(projectDir, "abc", { text: "ref" });
+      await appendSessionTurn(projectDir, "abc", { type: "user", text: "from web" });
+      await appendSessionTurn(projectDir, "abc", { type: "assistant", text: "web ack" });
 
       expect(readFileUtf8(indexPath)).toBe(indexBytes);
     });
@@ -478,6 +513,85 @@ describe("appendReferenceTurn and readSessionTurns", () => {
       const turns = await readSessionTurns(projectDir, "abc");
       expect(turns).toHaveLength(1);
       expect(turns[0]).toMatchObject({ type: "reference", text: "ref one" });
+    });
+  });
+});
+
+describe("appendSessionTurn shared negative id space", () => {
+  it("mints monotonic negative ids across a user/assistant/reference interleave", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = await seedProjectDir(dir);
+      await appendSessionTurn(projectDir, "abc", { type: "user", text: "u1" });
+      await appendSessionTurn(projectDir, "abc", { type: "assistant", text: "a1" });
+      await appendReferenceTurn(projectDir, "abc", { text: "r1" });
+
+      const turns = await readSessionTurns(projectDir, "abc");
+      expect(turns.map((turn) => turn.id)).toEqual([-1, -2, -3]); // no -1 collision
+      expect(turns.map((turn) => turn.type)).toEqual(["user", "assistant", "reference"]);
+      // Unique ids — the panel renders <TurnRow key={t.id}>.
+      expect(new Set(turns.map((turn) => turn.id)).size).toBe(3);
+    });
+  });
+
+  it("a user turn minted after an existing reference continues the shared sequence", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = await seedProjectDir(dir);
+      await appendReferenceTurn(projectDir, "abc", { text: "r1" });
+      expect((await readSessionTurns(projectDir, "abc"))[0]?.id).toBe(-1);
+
+      await appendSessionTurn(projectDir, "abc", { type: "user", text: "u1" });
+      await appendSessionTurn(projectDir, "abc", { type: "assistant", text: "a1" });
+
+      const turns = await readSessionTurns(projectDir, "abc");
+      expect(turns.map((turn) => turn.id)).toEqual([-1, -2, -3]);
+      expect(turns.map((turn) => turn.type)).toEqual(["reference", "user", "assistant"]);
+    });
+  });
+
+  it("serializes concurrent appends under the sessions/.store lock", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = await seedProjectDir(dir);
+      // Interleave writers in flight: each append re-reads the sidecar under
+      // the same lock, so ids stay unique and contiguous.
+      await Promise.all([
+        appendSessionTurn(projectDir, "abc", { type: "user", text: "u1" }),
+        appendReferenceTurn(projectDir, "abc", { text: "r1" }),
+        appendSessionTurn(projectDir, "abc", { type: "assistant", text: "a1" }),
+        appendReferenceTurn(projectDir, "abc", { text: "r2" }),
+        appendSessionTurn(projectDir, "abc", { type: "user", text: "u2" }),
+        appendReferenceTurn(projectDir, "abc", { text: "r3" }),
+      ]);
+
+      const turns = await readSessionTurns(projectDir, "abc");
+      expect(turns).toHaveLength(6);
+      const ids = turns.map((turn) => turn.id).sort((a, b) => a - b);
+      expect(ids).toEqual([-6, -5, -4, -3, -2, -1]);
+    });
+  });
+
+  it("is a swallowed no-op when the sessions dir cannot be created", async () => {
+    await withTempDataDir(async (dir) => {
+      // A regular file where the projectDir's parent should be blocks mkdir.
+      writeFileSync(join(dir, "projects"), "i am a file", "utf-8");
+      const blockedDir = join(dir, "projects", "demo");
+
+      await expect(
+        appendSessionTurn(blockedDir, "abc", { type: "user", text: "u1" }),
+      ).resolves.toBeUndefined();
+      expect(await fileExists(join(blockedDir, "sessions"))).toBe(false);
+    });
+  });
+
+  it("is a swallowed no-op when the sidecar is unreadable/unwritable (a directory)", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = await seedProjectDir(dir);
+      // A directory occupying the sidecar path makes read+append fail.
+      mkdirSync(sidecarPathOf(projectDir, "abc"), { recursive: true });
+
+      await expect(
+        appendSessionTurn(projectDir, "abc", { type: "user", text: "u1" }),
+      ).resolves.toBeUndefined();
+      await expect(appendReferenceTurn(projectDir, "abc", { text: "r1" })).resolves.toBeUndefined();
     });
   });
 });

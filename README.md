@@ -317,6 +317,25 @@ ARCS builds a weighted relationship graph across every project entity:
 
 ---
 
+## Session Panel — Headless Claude Runs
+
+The web UI's session panel delivers a prompt through one of four modes (the "deliver via" selector):
+
+| Mode | Runtime target | Memory |
+|------|----------------|--------|
+| **native** | The live runtime behind the session — live inject for opencode, checkpoint-queued for Claude Code | The session's own history |
+| **headless resume** | The referenced Claude Code session's runtime thread, resumed headlessly (`--resume`) | The session's thread; **idle sessions only** |
+| **headless one-shot** | A fresh `claude -p` against an ARCS-owned `arcs-oneshot-<slug>` record | None — a fresh Claude every call |
+| **headless thread** | A persistent ARCS-owned thread (`arcs-thread-<slug>-<uuid4>`), minted once then reused | Accumulates in one sidecar |
+
+Headless runs are **asynchronous by contract**: `POST /sessions/:id/run` answers `202 { accepted: true }` immediately and the job runs out-of-band on the server. The reply is not streamed — it appears in the write-target session's transcript (`GET /sessions/:id/transcript`) when the job finishes, alongside `metadata.run` finalization (outcome, `endedAt`, `replyChars`). Resume additionally mirrors the resumed session's runtime transcript back into the sidecar after the child exits.
+
+Resume targets are **idle-only**: an active Claude Code session is refused with `409 CLAUDE_SESSION_ACTIVE` — ARCS never pushes into a live terminal session.
+
+The real-child end-to-end test is env-gated so CI never shells out to Claude: `test/claude-run-e2e.test.ts` self-skips via `it.skipIf` unless `ARCS_CLAUDE_E2E=1` is set, in which case it runs a real `claude` binary in a temp workspace (spawn → exit → write-back → transcript GET). Run it deliberately — it requires an authenticated `claude` on PATH and spends real tokens.
+
+---
+
 ## Data Model
 
 ```

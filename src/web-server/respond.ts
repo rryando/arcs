@@ -22,23 +22,35 @@ export function fail(code: string, message: string): Envelope {
   return { ok: false, code, message };
 }
 
-type Status = 200 | 201 | 400 | 404 | 500;
+type Status = 200 | 201 | 202 | 400 | 404 | 409 | 500;
+
+/**
+ * DagError codes whose semantics are a conflict with current state and must map
+ * to HTTP 409 rather than the generic 400. Explicit denylist: the codes are
+ * dispatch-mandated guard codes, and there is no shared substring convention to
+ * key on (unlike NOT_FOUND).
+ */
+const CONFLICT_CODES = new Set(["CLAUDE_SESSION_ACTIVE", "CLAUDE_RUN_IN_PROGRESS"]);
 
 /**
  * Runs a handler and maps the result to the envelope + HTTP status.
- * DagError codes containing NOT_FOUND map to 404, other DagErrors to 400,
- * unknown errors to 500.
+ * DagError codes containing NOT_FOUND map to 404, known conflict codes to 409,
+ * other DagErrors to 400, unknown errors to 500.
  */
 export async function respond(
   c: Context,
   fn: () => Promise<unknown>,
-  successStatus: 200 | 201 = 200,
+  successStatus: 200 | 201 | 202 = 200,
 ): Promise<Response> {
   try {
     return c.json(ok(await fn()), successStatus);
   } catch (err) {
     if (err instanceof DagError) {
-      const status: Status = err.code.includes("NOT_FOUND") ? 404 : 400;
+      const status: Status = err.code.includes("NOT_FOUND")
+        ? 404
+        : CONFLICT_CODES.has(err.code)
+          ? 409
+          : 400;
       return c.json(fail(err.code, err.message), status);
     }
     if (err instanceof ZodError) {

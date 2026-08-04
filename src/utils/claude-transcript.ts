@@ -6,7 +6,8 @@
  * truth) into a derived read-model for the web UI. The sidecar is append-only
  * and keyed by transcript line offsets so re-mirroring is idempotent; when the
  * transcript is compacted/rewritten below the mirrored offset, the sidecar is
- * rebuilt from line 0 while preserving ARCS-authored type=reference turns.
+ * rebuilt from line 0 while preserving ARCS-authored turns (any record with a
+ * negative id — references and web-sent user/assistant turns).
  *
  * Never throws: missing/unreadable/oversized/malformed inputs are silent
  * no-ops, and the sidecar never touches `sessions/index.json`.
@@ -47,8 +48,10 @@ export interface ReferenceSource {
 export interface TranscriptTurn {
   /**
    * Absolute 0-based line index in the source transcript for mirrored turns.
-   * Reference turns (type=reference) carry a negative id so they live in a
-   * disjoint space and can never collide with transcript line indices.
+   * ARCS-authored turns (references and web-sent user/assistant turns) carry a
+   * negative id drawn from one shared monotonic sequence, so they live in a
+   * disjoint space and can never collide with transcript line indices or with
+   * each other (the panel keys TurnRow on id).
    */
   id: number;
   type: "user" | "assistant" | "reference";
@@ -74,6 +77,13 @@ export interface ReferenceTurnInput {
   tool?: { name: string };
   section?: ReferenceSection;
   source?: ReferenceSource;
+}
+
+/** An ARCS-authored user/assistant turn sent to the session from the web UI. */
+export interface SessionTurnInput {
+  type: "user" | "assistant";
+  text: string;
+  ts?: string;
 }
 
 /** Single-read cap for transcript files; anything larger mirrors as a no-op. */
@@ -256,12 +266,13 @@ async function readSidecarRecords(filePath: string): Promise<TranscriptTurn[]> {
 }
 
 /**
- * Resume offset = the next unmirrored transcript line. Reference turns are
- * excluded (they are ARCS-authored, not transcript lines), and the id of the
- * last mirrored turn is the transcript line index it came from, so
+ * Resume offset = the next unmirrored transcript line. ARCS-authored turns are
+ * excluded (they are not transcript lines, and their negative ids never exceed
+ * the -1 sentinel, so they cannot push the offset), and the id of the last
+ * mirrored turn is the transcript line index it came from, so
  * `last id + 1` is the count of transcript lines consumed. Equivalent to the
  * sidecar line count in the noise-free case, and correct under interleaved
- * noise and reference turns where a raw line count would drift.
+ * noise and ARCS-authored turns where a raw line count would drift.
  */
 function mirrorOffset(records: TranscriptTurn[]): number {
   let lastMirroredId = -1;
@@ -282,6 +293,23 @@ function serializeRecords(records: TranscriptTurn[]): string {
   return `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
 }
 
+/**
+ * Next id in the shared ARCS-authored negative space: min(existing id < 0) − 1.
+ * All ARCS-authored records — session user/assistant turns and references —
+ * draw from this one monotonic sequence, so a user turn and a reference can
+ * never collide on the same id (the panel renders <TurnRow key={t.id}>).
+ * No negative ids yet: first id is −1 (0 − 1).
+ */
+function nextNegativeTurnId(records: TranscriptTurn[]): number {
+  let minNegative = 0;
+  for (const record of records) {
+    if (typeof record.id === "number" && record.id < 0 && record.id < minNegative) {
+      minNegative = record.id;
+    }
+  }
+  return minNegative - 1;
+}
+
 async function appendRecords(filePath: string, records: TranscriptTurn[]): Promise<void> {
   if (records.length === 0) return;
   await appendFile(filePath, serializeRecords(records), "utf-8");
@@ -295,7 +323,7 @@ async function appendRecords(filePath: string, records: TranscriptTurn[]): Promi
  * Mirrors the transcript into the per-session sidecar (append-only, offset
  * idempotent). When the transcript has fewer lines than the mirrored offset —
  * Claude Code compacts/rewrites its JSONL — the sidecar is rebuilt from line 0
- * with existing type=reference turns preserved.
+ * with existing ARCS-authored turns (id < 0) preserved.
  *
  * Never throws: missing/unreadable/oversized/malformed inputs are silent
  * no-ops and the sidecar stays untouched. Never writes sessions/index.json.
@@ -317,16 +345,20 @@ export async function mirrorSessionTranscript(
 
       const { turns, totalLines } = await readTranscriptTurns(transcriptPath, offset);
       if (totalLines < offset) {
-        // Compaction/rewrite: rebuild from line 0, preserving references.
+        // Compaction/rewrite: rebuild from line 0, preserving every
+        // ARCS-authored turn (id < 0) — references and web-sent user/assistant
+        // turns both live in the negative space.
         // SHORTCUT: compaction detection is line-count-only — a corrupted or
         // truncated transcript that happens to shrink below the mirrored
         // offset is treated as compaction and mirrored turns are dropped
-        // (references always survive). Upgrade when Claude Code's JSONL
-        // rewrite signals are identifiable, e.g. a marker record.
-        const references = existing.filter((record) => record.type === "reference");
+        // (ARCS-authored turns always survive). Upgrade when Claude Code's
+        // JSONL rewrite signals are identifiable, e.g. a marker record.
+        const arsAuthored = existing.filter(
+          (record) => typeof record.id === "number" && record.id < 0,
+        );
         const { turns: allTurns } = await readTranscriptTurns(transcriptPath, 0);
         await ensureDir(join(projectDir, "sessions"));
-        await writeTextAtomic(sidecarPath, serializeRecords([...references, ...allTurns]));
+        await writeTextAtomic(sidecarPath, serializeRecords([...arsAuthored, ...allTurns]));
         return;
       }
       if (turns.length === 0) return;
@@ -342,7 +374,9 @@ export async function mirrorSessionTranscript(
  * Appends an ARCS-authored reference turn (document section sent to the
  * session) to the sidecar under the same sessions/.store lock the session
  * store uses, so appends serialize with index mutations. A failed append is a
- * swallowed no-op — the caller has already delivered the message.
+ * swallowed no-op — the caller has already delivered the message. The id is
+ * minted from the shared ARCS-authored negative space so it can never collide
+ * with a web-sent user/assistant turn.
  */
 export async function appendReferenceTurn(
   projectDir: string,
@@ -354,15 +388,45 @@ export async function appendReferenceTurn(
     await withLock(sessionStoreLockPath(projectDir), async () => {
       const sidecarPath = sessionTranscriptPath(projectDir, normalizedId);
       const existing = await readSidecarRecords(sidecarPath);
-      const referenceCount = existing.filter((record) => record.type === "reference").length;
       const record: TranscriptTurn = {
-        id: -(referenceCount + 1),
+        id: nextNegativeTurnId(existing),
         type: "reference",
         text: turn.text ?? "",
         ts: turn.ts ?? nowISO(),
         ...(turn.tool !== undefined ? { tool: turn.tool } : {}),
         ...(turn.section !== undefined ? { section: turn.section } : {}),
         ...(turn.source !== undefined ? { source: turn.source } : {}),
+      };
+      await appendRecords(sidecarPath, [record]);
+    });
+  } catch {
+    // Failed append is a swallowed no-op.
+  }
+}
+
+/**
+ * Appends an ARCS-authored user/assistant turn (sent to the session from the
+ * web UI) to the sidecar under the same sessions/.store lock the session store
+ * and the other sidecar writers use, so appends serialize with index mutations
+ * and reference appends. A failed append is a swallowed no-op. The id is
+ * minted from the shared ARCS-authored negative space so it can never collide
+ * with a reference turn — both render through <TurnRow key={t.id}>.
+ */
+export async function appendSessionTurn(
+  projectDir: string,
+  normalizedId: string,
+  turn: SessionTurnInput,
+): Promise<void> {
+  try {
+    await ensureDir(join(projectDir, "sessions"));
+    await withLock(sessionStoreLockPath(projectDir), async () => {
+      const sidecarPath = sessionTranscriptPath(projectDir, normalizedId);
+      const existing = await readSidecarRecords(sidecarPath);
+      const record: TranscriptTurn = {
+        id: nextNegativeTurnId(existing),
+        type: turn.type,
+        text: turn.text,
+        ...(turn.ts !== undefined ? { ts: turn.ts } : {}),
       };
       await appendRecords(sidecarPath, [record]);
     });

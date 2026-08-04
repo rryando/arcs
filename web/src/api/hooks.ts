@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  type RunClaudeSessionInput,
   type SessionLinkedNodeType,
   type SessionMessageReference,
   type SessionUpdateInput,
@@ -242,6 +243,17 @@ export function useSendSessionMessage(slug: string) {
     }) => api.sendSessionMessage(slug, id, message, reference),
     // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a
     // send that appended a reference turn refreshes open transcripts too.
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
+  });
+}
+
+export function useRunClaudeSession(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: RunClaudeSessionInput }) =>
+      api.runClaudeSession(slug, id, input),
+    // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a run
+    // that appended user/reference turns refreshes open transcripts too.
     onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
   });
 }

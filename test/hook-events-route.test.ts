@@ -445,6 +445,121 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
     });
   });
 
+  it("persists transcript_path into metadata on UserPromptSubmit", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, { hook_event_name: "SessionStart", session_id: "cc-path-up" });
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-path-up",
+        transcript_path: "/tmp/cc-path-up.jsonl",
+      });
+
+      expect(status).toBe(200);
+      const session = await getSession(projectDir, "cc-path-up");
+      expect(session.metadata?.transcriptPath).toBe("/tmp/cc-path-up.jsonl");
+    });
+  });
+
+  it("persists transcript_path into metadata on Stop", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, { hook_event_name: "SessionStart", session_id: "cc-path-stop" });
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-path-stop",
+        transcript_path: "/tmp/cc-path-stop.jsonl",
+      });
+
+      expect(status).toBe(200);
+      const session = await getSession(projectDir, "cc-path-stop");
+      expect(session.metadata?.transcriptPath).toBe("/tmp/cc-path-stop.jsonl");
+    });
+  });
+
+  it("persists transcript_path into metadata on SessionEnd", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, { hook_event_name: "SessionStart", session_id: "cc-path-end" });
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "SessionEnd",
+        session_id: "cc-path-end",
+        reason: "logout",
+        transcript_path: "/tmp/cc-path-end.jsonl",
+      });
+
+      expect(status).toBe(200);
+      const session = await getSession(projectDir, "cc-path-end");
+      expect(session.status).toBe("completed");
+      expect(session.metadata?.transcriptPath).toBe("/tmp/cc-path-end.jsonl");
+    });
+  });
+
+  it("skips mirroring for an arcs-owned control value but still persists the path", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const transcriptPath = resolve(projectDir, "cc-owned-transcript.jsonl");
+      writeFileSync(
+        transcriptPath,
+        [
+          JSON.stringify({
+            type: "user",
+            message: { content: "headless prompt" },
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }),
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-owned",
+        control: "arcs-owned",
+        transcript_path: transcriptPath,
+      });
+
+      expect(status).toBe(200);
+      expect(envelope.data?.queuedMessages).toEqual([]);
+
+      // The arcs-owned marker suppresses transcript mirroring entirely…
+      expect(existsSync(join(projectDir, "sessions", "cc-owned.transcript.jsonl"))).toBe(false);
+      // …but the path itself is still recorded so later readers can resolve it.
+      const session = await getSession(projectDir, "cc-owned");
+      expect(session.metadata?.transcriptPath).toBe(transcriptPath);
+      expect(session.metadata?.control).toBe("arcs-owned");
+    });
+  });
+
+  it("mirrors exactly as before when no control value is present and persists the path", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const transcriptPath = resolve(projectDir, "cc-plain-transcript.jsonl");
+      writeFileSync(
+        transcriptPath,
+        [
+          JSON.stringify({
+            type: "user",
+            message: { content: "ordinary prompt" },
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }),
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-plain",
+        transcript_path: transcriptPath,
+      });
+
+      expect(status).toBe(200);
+      // No control → mirroring still runs, exactly like today…
+      expect(existsSync(join(projectDir, "sessions", "cc-plain.transcript.jsonl"))).toBe(true);
+      // …and the path is persisted alongside.
+      const session = await getSession(projectDir, "cc-plain");
+      expect(session.metadata?.transcriptPath).toBe(transcriptPath);
+      expect(session.metadata?.control).toBeUndefined();
+    });
+  });
+
   it("rejects a non-string transcript_path with a 400", async () => {
     await withHookCtx(async ({ base, projectDir }) => {
       const { status, envelope } = await postEvent(base, {

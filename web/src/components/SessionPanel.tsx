@@ -8,12 +8,18 @@
  * (and opencode has no mirror), while claude-code messages queue for the
  * session's next checkpoint and its transcript is checkpoint-mirrored, never
  * live.
+ *
+ * The composer can also dispatch a headless `claude -p` job instead of a
+ * native send (the "deliver via" selector): resume an existing claude-code
+ * session, run a fresh one-shot, or run against a persistent ARCS-owned
+ * thread. Those modes are asynchronous by contract — the panel says the reply
+ * appears when the job finishes, never "sent".
  */
 
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import type { SessionMessageReference, SessionTurn } from "../api/client";
-import { useSendSessionMessage, useSessionTranscript } from "../api/hooks";
+import { useRunClaudeSession, useSendSessionMessage, useSessionTranscript } from "../api/hooks";
 import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
 import { cx, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
@@ -84,12 +90,31 @@ export function useSessionPanel(): SessionPanelContextValue {
 // Panel
 // ---------------------------------------------------------------------------
 
+/** Composer delivery path: inject into the running session (native — today's
+ *  behavior) or dispatch a headless `claude -p` job (resume / one-shot /
+ *  thread). Headless modes are async by contract, so their copy never claims
+ *  instant delivery. */
+type DeliverVia = "native" | "resume" | "oneshot" | "stable";
+
+/** The option values the deliver-via <select> may emit — must stay exactly the
+ *  DeliverVia members (mirrors RunClaudeSessionInput.mode minus "native", which
+ *  is the inject path). Typed so a future member/value drift fails to compile. */
+const DELIVER_VIA_VALUES: readonly DeliverVia[] = ["native", "resume", "oneshot", "stable"];
+
+/** Sound narrowing for <select> onChange: unknown values fall back to "native"
+ *  instead of being cast through to the API (a stray value would otherwise 400
+ *  INVALID_BODY on the server's mode enum). */
+const isDeliverVia = (value: string): value is DeliverVia =>
+  (DELIVER_VIA_VALUES as readonly string[]).includes(value);
+
 export function SessionPanel() {
   const { slug } = useParams({ strict: false }) as { slug: string };
   const { open, selectedSessionId, pendingRef, openSession, clearRef, close } = useSessionPanel();
   const { push } = useToaster();
   const sendMessage = useSendSessionMessage(slug);
+  const runClaude = useRunClaudeSession(slug);
   const [message, setMessage] = useState("");
+  const [deliverVia, setDeliverVia] = useState<DeliverVia>("native");
 
   // Shared picker list — unfiltered, linked sessions sorted first. The panel
   // itself does not filter to linked sessions (see the "sort by linkage, never
@@ -109,36 +134,92 @@ export function SessionPanel() {
   const delivery = selectedSession ? messageDelivery(selectedSession) : null;
   const text = message.trim();
   const tooLong = text.length > MAX_LENGTH;
+  // A headless resume targets the SELECTED session's runtime thread, so it is
+  // only offered for a claude-code session that is not currently active — a
+  // live terminal session cannot be resumed headlessly.
+  const resumeEligible =
+    selectedSession?.runtimeType === "claude-code" && selectedSession.status !== "active";
+  const runPending = runClaude.isPending;
+  const busy = sendMessage.isPending || runPending;
   const disabled =
-    !selectedSession ||
-    !delivery ||
-    delivery.kind === "unsupported" ||
-    !text ||
-    tooLong ||
-    sendMessage.isPending;
+    !selectedSession || !delivery || delivery.kind === "unsupported" || !text || tooLong || busy;
+
+  // Resume is only meaningful against the session it was chosen for; switching
+  // sessions (or the session going active mid-flow) makes it stale, so drop
+  // back to native instead of letting a stale disabled option lie in the UI.
+  useEffect(() => {
+    if (deliverVia === "resume" && !resumeEligible) setDeliverVia("native");
+  }, [deliverVia, resumeEligible]);
+
+  const sendLabel = runPending
+    ? "job running…"
+    : sendMessage.isPending
+      ? "…"
+      : deliverVia === "native"
+        ? delivery?.kind === "queued"
+          ? "queue"
+          : "send"
+        : "run";
 
   const submit = () => {
     if (disabled || !selectedSession || !delivery) return;
-    sendMessage.mutate(
+    if (deliverVia === "resume" && !resumeEligible) return;
+
+    if (deliverVia === "native") {
+      sendMessage.mutate(
+        {
+          id: selectedSession.normalizedId,
+          message: text,
+          // Attach the pending reference only when present — otherwise the body
+          // stays byte-identical to `{ message }`.
+          reference: pendingRef ?? undefined,
+        },
+        {
+          onSuccess: () => {
+            // Distinct copy per delivery mode: "sent" would be a lie for a queued
+            // message that the session has not collected yet.
+            push(
+              "success",
+              delivery.kind === "queued"
+                ? "message queued — delivered at the session's next checkpoint"
+                : "message sent to session",
+            );
+            setMessage("");
+            if (pendingRef) clearRef(); // the reference was consumed by this send
+          },
+          onError: (err) => push("error", err instanceof Error ? err.message : String(err)),
+        },
+      );
+      return;
+    }
+
+    // Headless modes — accepted as HTTP 202; the job runs out-of-band and the
+    // reply lands in the write-target's transcript when it finishes.
+    runClaude.mutate(
       {
         id: selectedSession.normalizedId,
-        message: text,
-        // Attach the pending reference only when present — otherwise the body
-        // stays byte-identical to `{ message }`.
-        reference: pendingRef ?? undefined,
+        input: {
+          mode: deliverVia,
+          message: text,
+          // Sidecar-only: the server stores the reference on the appended turn,
+          // never feeds it into the headless prompt.
+          reference: pendingRef ?? undefined,
+        },
       },
       {
-        onSuccess: () => {
-          // Distinct copy per delivery mode: "sent" would be a lie for a queued
-          // message that the session has not collected yet.
+        onSuccess: (result) => {
+          // Modes 2/3 write to an ARCS-owned record — switch the panel to its
+          // transcript so the prompt (and the eventual reply) are visible. The
+          // transcript render gate (`runtimeType === "claude-code"`) already
+          // passes for these records. Resume targets the selected session
+          // itself, so no switch is needed there.
+          if (deliverVia !== "resume") openSession(result.session.normalizedId);
           push(
             "success",
-            delivery.kind === "queued"
-              ? "message queued — delivered at the session's next checkpoint"
-              : "message sent to session",
+            "headless claude job accepted — the reply appears in the transcript when the job finishes",
           );
           setMessage("");
-          if (pendingRef) clearRef(); // the reference was consumed by this send
+          if (pendingRef) clearRef(); // the reference was consumed by this run
         },
         onError: (err) => push("error", err instanceof Error ? err.message : String(err)),
       },
@@ -245,17 +326,64 @@ export function SessionPanel() {
           </div>
         )}
 
+        {selectedSession && (
+          <div className="mb-1 flex items-center gap-2 text-[11px]">
+            <label
+              htmlFor="deliver-via"
+              className="text-[10px] tracking-wide text-term-dim uppercase"
+            >
+              deliver via
+            </label>
+            <select
+              id="deliver-via"
+              value={deliverVia}
+              onChange={(e) =>
+                setDeliverVia(isDeliverVia(e.target.value) ? e.target.value : "native")
+              }
+              disabled={runPending}
+              title="how this message reaches the agent"
+              className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
+            >
+              <option value="native">
+                native — {delivery?.kind === "live" ? "live inject" : "queued at checkpoint"}
+              </option>
+              <option
+                value="resume"
+                disabled={!resumeEligible}
+                title={
+                  resumeEligible
+                    ? "headless resume of the selected claude-code session"
+                    : "resume needs a claude-code session that is not active — a live terminal session cannot be resumed headlessly"
+                }
+              >
+                resume — headless resume of this session
+              </option>
+              <option value="oneshot">one-shot — fresh headless claude, no memory</option>
+              <option value="stable">thread — coherent headless thread</option>
+            </select>
+          </div>
+        )}
+
         {selectedSession && delivery && (
           <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
-            <span
-              className={cx(
-                "font-bold",
-                delivery.kind === "live" ? "text-term-green" : "text-term-amber",
-              )}
-            >
-              {delivery.kind}
-            </span>
-            <span>{delivery.hint}</span>
+            {deliverVia === "native" ? (
+              <>
+                <span
+                  className={cx(
+                    "font-bold",
+                    delivery.kind === "live" ? "text-term-green" : "text-term-amber",
+                  )}
+                >
+                  {delivery.kind}
+                </span>
+                <span>{delivery.hint}</span>
+              </>
+            ) : (
+              <span className="text-term-amber">
+                runs a headless claude job in the workspace; the reply appears in the transcript
+                when the job finishes — not live
+              </span>
+            )}
           </div>
         )}
 
@@ -268,7 +396,7 @@ export function SessionPanel() {
               submit();
             }
           }}
-          disabled={!selectedSession}
+          disabled={!selectedSession || runPending}
           placeholder={
             selectedSession ? "message for the agent…" : "pick a session first — no target yet"
           }
@@ -292,7 +420,7 @@ export function SessionPanel() {
             onClick={submit}
             className="border border-term-green/60 px-2 py-0.5 font-bold text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
           >
-            {sendMessage.isPending ? "…" : delivery?.kind === "queued" ? "queue" : "send"}
+            {sendLabel}
           </button>
           <span className="flex-1" />
           {selectedSession && (
