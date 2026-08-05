@@ -16,17 +16,35 @@
 
 ---
 
-Your AI coding agent is stateless. Every session, it scans the codebase from scratch, forgets what failed last time, and has no idea which task is safe to start. **ARCS is the durable memory that fixes that.**
-
-It's a CLI-native tool that gives agents a persistent, queryable project **DAG** — with real dependency semantics. An agent calls `arcs brief` and gets back an *operating brief*: what to work on, what's blocked, what was decided, and what already broke — in a single ~1 KB JSON envelope, with zero source files read. Work happens, results flow back into the graph, and the next session starts from context instead of a blank slate.
+Your AI coding agent is stateless. Every session it re-scans the codebase, forgets what failed last week, and has no idea which task is safe to start. **ARCS is the durable memory that fixes that.**
 
 > **arcs** `/ɑːrks/` — directed edges in graph theory. Also: **A**gent **R**outing & **C**ontext **S**ystem.
 
 ---
 
-## Before / After
+## A graph, not another notes file
 
-A normal session vs. a session with ARCS:
+Most "agent memory" is a markdown file the agent skims once and then drifts away from. ARCS is a **directed acyclic graph** on disk — real work items joined by real dependency edges — queried and mutated through a CLI.
+
+| Surface | Storage | What it holds |
+|---------|---------|---------------|
+| **Queue** | `tasks/index.json` (rendered to `tasks.md`) | Immediate work items, ordered by `dependsOn` edges |
+| **Plan** | `plans/*.md` + `.diagram.mmd` | Durable multi-step change records with Mermaid execution maps |
+| **Memory** | `knowledge/*.md` | Reusable discoveries: gotchas, lessons, patterns, architecture, decisions |
+
+Because the edges are real, the graph answers questions a notes file cannot: *what is safe to start right now*, *what does finishing this unblock*, *what did we already learn about this file*. An agent asks with `arcs brief` and gets an **operating brief** back — roughly 1 KB of JSON, zero source files read.
+
+---
+
+## Why a DAG, and not a scratchpad
+
+Three failure modes show up the moment work outlives a single session:
+
+- **The agent forgets.** Last week's gotcha is gone, so it re-derives — or re-breaks — the same thing.
+- **The context window dies mid-task.** Whatever was "in its head" was never written anywhere durable.
+- **Parallel agents collide.** Two sub-agents grab work that shares an unfinished dependency and stomp each other.
+
+Real dependency semantics answer all three, because *"what's ready?"* becomes a topological question instead of a judgement call. `arcs next` returns the first task whose dependencies are **all** satisfied; priority is only a tiebreaker *within* a topological level, never the primary sort.
 
 | | Without ARCS | With ARCS |
 |---|---|---|
@@ -35,164 +53,184 @@ A normal session vs. a session with ARCS:
 | **Prior knowledge** | Re-discover the same gotcha you hit last week | Related knowledge surfaces alongside the task |
 | **Finishing** | Result evaporates when the session ends | `arcs done` unblocks dependents; `arcs remember` captures the lesson |
 
-The DAG is the shared, durable memory *between* otherwise-disconnected agent sessions. The knowledge base only compounds — instead of re-deriving — when entries are substantive **and** read before work. ARCS enforces both (see [Knowledge Depth](#knowledge-depth)).
+The graph is the shared, durable memory *between* otherwise-disconnected agent sessions. It only compounds when entries are substantive **and** read before work — ARCS enforces both (see [Knowledge Depth](#knowledge-depth)).
 
 ---
 
-## Three Surfaces
+## Who it's for, and when it pays off
 
-ARCS persists everything onto three surfaces, plus a dependency graph and auto-generated Mermaid diagrams that tie them together.
+For anyone driving an AI coding agent — **Claude Code** or **OpenCode** — against a project bigger than one sitting.
 
-| Surface | Storage | What it holds |
-|---------|---------|---------------|
-| **Queue** | `tasks/index.json` (rendered to `tasks.md`) | Immediate work items, ordered by `dependsOn` edges |
-| **Plan** | `plans/*.md` + `.diagram.mmd` | Durable multi-step change records with Mermaid execution maps |
-| **Memory** | `knowledge/*.md` | Reusable discoveries: gotchas, lessons, patterns, architecture, decisions |
+It earns its keep when:
 
-Dependency-aware selection runs across all three: `arcs next` returns the next unblocked task, and `arcs diagram ready` returns the unblocked nodes of a plan's execution map.
+- **A feature spans days.** Session four needs to know what sessions one through three decided, and why.
+- **You fan work out to sub-agents.** The ready-set tells you which slices are genuinely independent *right now*.
+- **Knowledge has to outlive the session.** Gotchas, decisions, and architecture notes belong in a queryable store, not a scrollback buffer.
+
+It is overkill for a throwaway script you will finish in ten minutes.
 
 ---
 
-## Quick Start
+## Where it lives
 
-**1. Install**
+Local-first: plain files under `~/.arcs`. No server, no database, no account.
+
+```
+~/.arcs/
+├── meta.json                         # Global registry
+└── projects/{slug}/
+    ├── meta.json                     # Project metadata + workspace paths
+    ├── overview.md                   # Summary + goals
+    ├── tasks.md                      # Rendered task queue (human-readable)
+    ├── tasks/index.json              # Structured tasks + dependsOn edges
+    ├── plans/
+    │   ├── {id}.meta.json            # Plan status + keywords
+    │   ├── {id}.md                   # Plan body (plans/*.md)
+    │   └── {id}.diagram.mmd          # Mermaid execution map
+    └── knowledge/
+        ├── index.json                # Knowledge index
+        ├── {id}.meta.json            # Metadata (kind, audience, sourceFiles)
+        └── {id}.md                   # Entry body (knowledge/*.md)
+```
+
+ARCS itself is **CLI-only** — pure TypeScript, no MCP server, no preview server. It reaches your agent through a bundle of orchestrators, sub-agents, and skills that `arcs init` deploys into your host's config directory.
+
+| Tool | Required | Notes |
+|------|----------|-------|
+| [Node.js](https://nodejs.org/) 20+ | Yes | Runtime |
+| [OpenCode](https://opencode.ai/) | Recommended | Agent host — orchestrators + sub-agents |
+| [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host; `arcs init` deploys the same bundle with full model-tier selection |
+| [codegraph](https://github.com/colbymchenry/codegraph) | Optional | Per-project code-intelligence index, queried via MCP; degrades gracefully when absent |
+| [rtk](https://github.com/rtk-ai/rtk) | Optional | Token-optimized command proxy; auto-wired into both hosts when present |
+
+---
+
+## How it works
+
+### 1 — Install and onboard
 
 ```bash
 npm install -g @rryando/arcs
 arcs init
 ```
 
-`arcs init` runs an interactive setup wizard that:
-- Detects **OpenCode** and/or **Claude Code** on your PATH
-- Lets you pick which platform(s) to configure
-- Selects heavy / standard / light model tiers from your authenticated providers
-- Deploys the ARCS agent + skill bundle to the right config directories
+`arcs init` runs an interactive wizard that detects **OpenCode** and/or **Claude Code** on your PATH, lets you pick which platform(s) to configure, selects heavy / standard / light model tiers from your authenticated providers, and deploys the ARCS agent + skill bundle to the right config directories.
 
-**2. Onboard a project**
-
-```bash
-cd your-project
-```
-
-Open OpenCode (or Claude Code), select the **ARCS Orchestrator** agent, and ask it to initialize. It scans the repo and populates the DAG — overview, tasks, plans, and an initial pass of structural knowledge.
+Then, from your project root, open the host, select an ARCS orchestrator, and ask it to initialize. It scans the repo and populates the graph — overview, tasks, plans, and a first pass of structural knowledge.
 
 <img width="948" height="499" alt="ARCS Orchestrator init" src="https://github.com/user-attachments/assets/2795bd80-f1bb-4c34-9a60-9b6ef9d81d04" />
 
-**3. Use it — by hand or via the orchestrator**
+### 2 — Give the work real edges
 
 ```bash
-arcs brief              # What should I work on? (operating brief)
-arcs next               # Next dependency-safe task + related knowledge
-arcs done <taskId>      # Mark complete, unblock dependents
-arcs remember "..."     # Capture what you learned
+arcs task create myapp "Define quota schema"
+arcs task create myapp "Token-bucket store"    --dependsOn=define-quota-schema
+arcs task create myapp "Config + env plumbing" --dependsOn=define-quota-schema
+arcs task create myapp "Rate-limit middleware" --dependsOn=token-bucket-store,config-env-plumbing
+arcs task create myapp "Load-test the limiter" --dependsOn=rate-limit-middleware
+arcs task create myapp "Refresh the API docs"  --dependsOn=rate-limit-middleware,config-env-plumbing
 ```
 
-Or hand the loop to the **ARCS Orchestrator** for full automation.
+Task IDs are slugified titles, so edges read like prose. Cycles are rejected at write time.
 
----
+### 3 — Ask what is ready *now*
 
-## Prerequisites
-
-| Tool | Required | Notes |
-|------|----------|-------|
-| [Node.js](https://nodejs.org/) 20+ | Yes | Runtime |
-| [OpenCode](https://opencode.ai/) | Recommended | Agent host — orchestrator + sub-agents |
-| [Claude Code](https://claude.ai/code) | Recommended | Alternative agent host; `arcs init` deploys the sub-agents with full model-tier selection |
-| [codegraph](https://github.com/colbymchenry/codegraph) | Optional | Per-project code-intelligence index, queried via MCP; degrades gracefully when absent |
-| [rtk](https://github.com/rtk-ai/rtk) | Optional | Token-optimized command proxy; auto-wired into both hosts when present |
-
-ARCS itself is **CLI-only** — pure TypeScript, no MCP server, no preview server. The optional tools above are about the agent *host*, not ARCS.
-
----
-
-## How It Works
-
-### The core loop
-
-```
-arcs next  →  [agent works]  →  arcs done <id>  →  arcs remember "..."
-     │                              │                      │
-     │ first task whose             │ completes task,      │ captures durable
-     │ dependencies are             │ unblocks dependents  │ knowledge for
-     │ ALL satisfied                │                      │ future sessions
-     ▼                              ▼                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    ~/.arcs/projects/{slug}/                      │
-│                                                                  │
-│  tasks/index.json ──dependsOn──→ topological sort → next task   │
-│  knowledge/       ──BM25+graph──→ related context               │
-│  plans/           ──diagram.mmd──→ execution map                │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Task dependencies — the actual DAG
-
-Tasks declare dependencies. ARCS enforces acyclicity and uses topological sort to decide execution order:
-
-```bash
-arcs task create myapp "Design database schema" --priority=high
-arcs task create myapp "Build REST API" --dependsOn=design-database-schema
-arcs task create myapp "Write integration tests" --dependsOn=build-rest-api
-arcs task create myapp "Deploy to staging" --dependsOn=build-rest-api,write-integration-tests
-```
+Finish the root (`arcs done myapp define-quota-schema`) and the graph partitions itself:
 
 ```mermaid
 flowchart TD
-    T001["Design database schema"]:::done
-    T002["Build REST API"]:::inProgress
-    T003["Write integration tests"]:::backlog
-    T004["Deploy to staging"]:::blocked
+    schema["Define quota schema"]:::done
+    store["Token-bucket store"]:::ready
+    config["Config + env plumbing"]:::ready
+    middleware["Rate-limit middleware"]:::blocked
+    loadtest["Load-test the limiter"]:::blocked
+    docs["Refresh the API docs"]:::blocked
 
-    T001 --> T002
-    T002 --> T003
-    T002 --> T004
-    T003 --> T004
+    schema --> store
+    schema --> config
+    store --> middleware
+    config --> middleware
+    config --> docs
+    middleware --> loadtest
+    middleware --> docs
 
-    classDef done fill:#22c55e,color:#fff
-    classDef inProgress fill:#f59e0b,color:#fff
-    classDef backlog fill:#94a3b8,color:#fff
-    classDef blocked fill:#ef4444,color:#fff
+    classDef done fill:#22c55e,stroke:#15803d,color:#fff
+    classDef ready fill:#3b82f6,stroke:#1d4ed8,color:#fff
+    classDef blocked fill:#64748b,stroke:#475569,color:#fff
 ```
 
-`arcs next` returns **"Write integration tests"** — the first task whose dependencies are all done. "Deploy to staging" stays blocked until it is. Priority is only a tiebreaker *within* the same topological level, never the primary sort.
-
-### The operating brief (`arcs brief`)
+**Green** = done · **blue** = ready (every incoming edge satisfied) · **grey** = blocked by at least one unmet edge. Two nodes are ready at once, so two agents can run in parallel without touching each other's dependencies — while `Rate-limit middleware` waits on *both* parents and `Refresh the API docs` waits on `Rate-limit middleware` **and** `Config + env plumbing`. None of that ordering is a guess:
 
 ```bash
-$ arcs brief --lean --json
+$ arcs next myapp --lean --json
 ```
 
 ```json
 {
-  "slug": "my-project",
-  "name": "My Project",
-  "operatingBrief": {
-    "currentFocus": "Build REST API",
-    "recommendedSurface": "QUEUE",
-    "why": "Task in progress: Build REST API",
-    "nextAction": "Continue task build-rest-api"
-  },
-  "openTasksCount": 3,
-  "topOpenTasks": [
-    { "id": "build-rest-api", "title": "Build REST API", "status": "in_progress" },
-    { "id": "write-integration-tests", "title": "Write integration tests", "status": "backlog" }
-  ]
+  "ok": true,
+  "data": {
+    "task": { "id": "token-bucket-store", "title": "Token-bucket store", "status": "backlog", "priority": "medium" },
+    "context": "Backlog task ready: Token-bucket store",
+    "command": "arcs done myapp token-bucket-store"
+  }
 }
 ```
 
-~1 KB, no source files read. `recommendedSurface` (QUEUE / PLAN / MEMORY) tells the agent which workflow branch to take. `brief` also reports a `knowledgeHealth` line (`{ total, thin, stale }`) so an under-maintained knowledge base is visible right at orientation.
+Plans get the same treatment on their Mermaid execution maps: `arcs diagram ready <slug> <planId>` partitions every node into `ready` / `blocked` / `inProgress` / `done`, where `ready` means *backlog **and** every incoming dependency is done*.
+
+### 4 — Work, then write back
+
+```bash
+arcs done myapp token-bucket-store           # complete it, unblock dependents
+arcs remember myapp "Redis EXPIRE is per-key, not per-hash-field"
+arcs knowledge search myapp "rate limit"     # find it again next session
+arcs validate myapp --checks=all             # health-check the graph
+```
+
+### The operating brief
+
+```bash
+$ arcs brief myapp --lean --json
+```
+
+```json
+{
+  "slug": "myapp",
+  "name": "MyApp",
+  "operatingBrief": {
+    "currentFocus": "Token-bucket store",
+    "recommendedSurface": "QUEUE",
+    "why": "Backlog task ready: Token-bucket store",
+    "nextAction": "Start task token-bucket-store"
+  },
+  "activePlansCount": 0,
+  "openTasksCount": 5,
+  "topOpenTasks": [{ "id": "token-bucket-store", "title": "Token-bucket store", "status": "backlog" }],
+  "knowledgeHealth": { "total": 12, "thin": 1, "stale": 0 }
+}
+```
+
+~1 KB, no source files read. `recommendedSurface` (QUEUE / PLAN / MEMORY) tells the agent which workflow branch to take, and `knowledgeHealth` makes an under-maintained knowledge base visible right at orientation.
 
 ---
 
 ## The Agent Bundle
 
-ARCS ships an OpenCode / Claude Code bundle: a **delegation-first orchestrator**, **six typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
+ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **six typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
 
-### The orchestrator
+### Orchestrators
 
-It never reads code, runs tests, or explores directly — it routes. It resolves facts from the DAG first, falls back to `graph-explorer` for repository evidence, and sends implementation, design, review, verification, and documentation work to typed agents. It does not dispatch on guesses.
+All three share the same authority, safety invariants, and tool access — they differ only in control flow and narration. `arcs init` installs them side by side; Tab between them in OpenCode.
 
-A **read-first knowledge protocol** runs throughout: prior knowledge is read before every non-mechanical dispatch, workers return idempotent `arcs knowledge upsert` proposals, and the orchestrator persists them only after their owning phase passes — so the DAG compounds instead of duplicating.
+| Agent | Pick it when |
+|-------|--------------|
+| **ARCS Orchestrator** (`arcs-orchestrate`) | Default. The central coordinator for plan execution, agent dispatch, and DAG writes, with uniform gating |
+| **ARCS Flash** (`arcs-flash`) | Speed matters. Sources context from `arcs knowledge` first, fans read-only work out with no round cap, and grades gates Tier 0–3 instead of gating everything identically |
+| **ARCS Caveman** (`arcs-orchestrate-caveman`) | You want the same engine with terse narration — a chat-facing overlay that adds zero workflow authority |
+
+None of them read code, run tests, or explore directly — they route. Facts resolve from the DAG first, fall back to `graph-explorer` for repository evidence, and implementation, design, review, verification, and documentation work goes to typed agents. They do not dispatch on guesses.
+
+A **read-first knowledge protocol** runs throughout: prior knowledge is read before every non-mechanical dispatch, workers return idempotent `arcs knowledge upsert` proposals, and the orchestrator persists them only after their owning phase passes — so the graph compounds instead of duplicating.
 
 ### Sub-agents
 
@@ -263,7 +301,7 @@ All commands take `--json` for structured output (`{ok, data}` on success, `{ok,
 | `arcs task update <slug> <id>` | Update a task (incl. `--dependsOn`) |
 | `arcs task transition <slug> <id> <status>` | Move a task through its lifecycle |
 | `arcs plan create <slug> <title>` | Create a durable plan record |
-| `arcs diagram ready <slug> <planId>` | Get unblocked diagram nodes |
+| `arcs diagram ready <slug> <planId>` | Partition diagram nodes into ready / blocked / inProgress / done |
 
 ### Knowledge
 
@@ -273,6 +311,7 @@ All commands take `--json` for structured output (`{ok, data}` on success, `{ok,
 | `arcs knowledge upsert <slug> <title> --kind=<kind>` | Idempotent create-or-update by title — **recommended for agents** |
 | `arcs knowledge create <slug> <title> --kind=<kind>` | Create a new entry |
 | `arcs knowledge search <slug> "<query>"` | Search the knowledge base |
+| `arcs knowledge get <slug> <id>` | Read a single entry |
 | `arcs knowledge list <slug>` | List entries |
 
 The 8 knowledge kinds: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, `feature`, `reference`, `decision`. `create` / `upsert` accept `--summary`, `--keywords`, `--body` / `--body-file`, `--source-files`, and `--audience`.
@@ -302,7 +341,7 @@ The 8 knowledge kinds: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, 
 
 ## Graph & Retrieval
 
-ARCS builds a weighted relationship graph across every project entity:
+Beyond `dependsOn`, ARCS builds a weighted relationship graph across every project entity:
 
 | Edge type | Weight | Connects |
 |-----------|--------|----------|
@@ -313,7 +352,7 @@ ARCS builds a weighted relationship graph across every project entity:
 | `plan_contains_task` | 0.8 | Plan → Task |
 | `shares_keywords` | 0.5 | Knowledge → Knowledge |
 
-`arcs search` combines BM25 text scoring with weighted-BFS graph traversal; `arcs next` enriches its result with related knowledge pulled from the graph.
+`arcs search` combines BM25 text scoring with weighted-BFS graph traversal; `arcs next` enriches its result with related knowledge pulled from the same graph.
 
 ---
 
@@ -336,28 +375,6 @@ The real-child end-to-end test is env-gated so CI never shells out to Claude: `t
 
 ---
 
-## Data Model
-
-```
-~/.arcs/
-├── meta.json                         # Global registry
-└── projects/{slug}/
-    ├── meta.json                     # Project metadata + workspace paths
-    ├── overview.md                   # Summary + goals
-    ├── tasks.md                      # Rendered task queue (human-readable)
-    ├── tasks/index.json              # Structured tasks + dependsOn edges
-    ├── plans/
-    │   ├── {id}.meta.json            # Plan status + keywords
-    │   ├── {id}.md                   # Plan body (plans/*.md)
-    │   └── {id}.diagram.mmd          # Mermaid execution map
-    └── knowledge/
-        ├── index.json                # Knowledge index
-        ├── {id}.meta.json            # Metadata (kind, audience, sourceFiles)
-        └── {id}.md                   # Entry body (knowledge/*.md)
-```
-
----
-
 ## Codegraph (optional)
 
 When [codegraph](https://github.com/colbymchenry/codegraph) is on PATH, ARCS builds a per-project index during onboarding and sync, and auto-extracts structural knowledge proposals (god nodes, module clusters, cross-module couplings). The `graph-explorer` sub-agent queries codegraph's MCP tools to answer structural questions — call chains, blast radius, symbol neighborhoods — with near-zero raw file reads. Every codegraph feature degrades gracefully when the binary is absent.
@@ -374,7 +391,7 @@ cd arcs && npm install && npm run build
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm test` | Run the Vitest suite (900+ tests across 82 files) |
+| `npm test` | Run the Vitest suite |
 | `npm run typecheck` | Type-check without emit (`tsc --noEmit`) |
 | `npm run lint` | Biome lint + format check (`src/`, `test/`) |
 | `npm run format` | Rewrite files with Biome formatting |

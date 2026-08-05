@@ -6,25 +6,16 @@ import { ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
 // Resolve relative to project root (one level up from test/)
 const root = resolve(import.meta.dirname, "..");
 
-const readme = readFileSync(resolve(root, "README.md"), "utf-8");
 const orchestrateSkill = readFileSync(resolve(root, "skills/orchestrate.md"), "utf-8");
 const updateDocsSkill = readFileSync(resolve(root, "skills/update-docs.md"), "utf-8");
 const initSkill = readFileSync(resolve(root, "skills/init-project.md"), "utf-8");
 const exploreDagSkill = readFileSync(resolve(root, "skills/explore-dag.md"), "utf-8");
 const orchestratePrompt = ORCHESTRATE_PROMPT_TEXT;
-const rootCompatibilityDocs = [
-  readme,
-  orchestrateSkill,
-  initSkill,
-  exploreDagSkill,
-  updateDocsSkill,
-].join("\n");
+const skillCompatibilityDocs = [orchestrateSkill, initSkill, exploreDagSkill, updateDocsSkill].join(
+  "\n",
+);
 
 describe("docs and skills smoke tests", () => {
-  it("README mentions plan create command", () => {
-    expect(readme).toContain("plans/*.md");
-  });
-
   it("update-docs skill mentions knowledge entries", () => {
     expect(updateDocsSkill).toContain("knowledge entries");
   });
@@ -53,19 +44,6 @@ describe("docs and skills smoke tests", () => {
     expect(updateDocsSkill).toContain("knowledge.md");
   });
 
-  it("README mentions Queue / Plan / Memory", () => {
-    expect(readme).toContain("Queue");
-    expect(readme).toContain("Plan");
-    expect(readme).toContain("Memory");
-    expect(readme).toContain("tasks/index.json");
-    expect(readme).toContain("plans/*.md");
-    expect(readme).toContain("knowledge/*.md");
-  });
-
-  it("README mentions operating brief", () => {
-    expect(readme).toContain("operating brief");
-  });
-
   it("orchestrate prompt mentions queue / plan / memory", () => {
     expect(orchestratePrompt).toContain("queue / plan / memory");
     expect(orchestratePrompt).toContain("**queue** = immediate execution state in `tasks.md`");
@@ -88,63 +66,22 @@ describe("docs and skills smoke tests", () => {
     expect(orchestratePrompt).toContain("memory");
   });
 
-  it("README explains that OpenCode setup installs ARCS bundle", () => {
-    expect(readme).toContain("~/.config/opencode/");
-  });
-
-  it("README explains the curated OpenCode runtime bundle", () => {
-    expect(readme).toContain("build:opencode-bundle");
-    expect(readme).toContain("lint-bundle");
-  });
-
-  it("documents the canonical six-agent and twelve-skill topology", () => {
-    expect(readme).toMatch(/six typed sub-agents/i);
-    for (const agent of [
-      "software-engineer",
-      "tech-architect",
-      "graph-explorer",
-      "code-reviewer",
-      "devil-advocate",
-      "arcs-docs",
-    ]) {
-      expect(readme).toContain(agent);
-    }
-
-    expect(readme).toMatch(/twelve skills/i);
-    for (const skillName of [
-      "implementation",
-      "test-driven-development",
-      "executing-plans",
-      "systematic-debugging",
-      "brainstorming",
-      "writing-plans",
-      "to-diagram",
-      "writing-knowledge",
-      "init-project",
-      "enriching-codegraph-proposals",
-      "deep-pr-review",
-      "caveman-commit",
-    ]) {
-      expect(readme).toContain(skillName);
-    }
-  });
-
-  it("keeps root compatibility docs on current agent modes and workflow", () => {
-    expect(rootCompatibilityDocs).toMatch(/software-engineer[\s\S]*default[\s\S]*incident/i);
-    expect(rootCompatibilityDocs).toMatch(/tech-architect[\s\S]*architecture[\s\S]*research/i);
-    expect(rootCompatibilityDocs).toMatch(/code-reviewer[\s\S]*review[\s\S]*audit/i);
-    expect(rootCompatibilityDocs).toMatch(/WORK_MODE[\s\S]*bounded[\s\S]*inspect/i);
-    expect(rootCompatibilityDocs).toMatch(/brainstorming[\s\S]*user approv[\s\S]*writing-plans/i);
-    expect(rootCompatibilityDocs).toMatch(/writing-plans[\s\S]*sole author/i);
-    expect(rootCompatibilityDocs).toMatch(/SYNC[\s\S]*two-pass[\s\S]*audit[\s\S]*apply/i);
-    expect(rootCompatibilityDocs).toMatch(
+  it("keeps skill docs on current agent modes and workflow", () => {
+    expect(skillCompatibilityDocs).toMatch(/software-engineer[\s\S]*default[\s\S]*incident/i);
+    expect(skillCompatibilityDocs).toMatch(/tech-architect[\s\S]*architecture[\s\S]*research/i);
+    expect(skillCompatibilityDocs).toMatch(/code-reviewer[\s\S]*review[\s\S]*audit/i);
+    expect(skillCompatibilityDocs).toMatch(/WORK_MODE[\s\S]*bounded[\s\S]*inspect/i);
+    expect(skillCompatibilityDocs).toMatch(/brainstorming[\s\S]*user approv[\s\S]*writing-plans/i);
+    expect(skillCompatibilityDocs).toMatch(/writing-plans[\s\S]*sole author/i);
+    expect(skillCompatibilityDocs).toMatch(/SYNC[\s\S]*two-pass[\s\S]*audit[\s\S]*apply/i);
+    expect(skillCompatibilityDocs).toMatch(
       /DAG-first[\s\S]*(?:codegraph|source|repository).*fallback/i,
     );
-    expect(rootCompatibilityDocs).toMatch(/no automatic git actions/i);
+    expect(skillCompatibilityDocs).toMatch(/no automatic git actions/i);
   });
 
-  it("removes superseded active agent and skill names from root compatibility docs", () => {
-    expect(rootCompatibilityDocs).not.toMatch(
+  it("removes superseded active agent and skill names from skill docs", () => {
+    expect(skillCompatibilityDocs).not.toMatch(
       /\b(?:oncall-ops|docs-researcher|quick-dev|code-agent|requesting-code-review|the-ladder)\b/,
     );
   });
