@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FLASH_PROMPT_TEXT } from "../src/cli/arcs-flash.js";
 import { ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
 import {
   CAVEMAN_PREAMBLE,
@@ -10,7 +11,7 @@ import { writeOpencodeAgent } from "../src/cli/instructions.js";
 import { withTempHomeDir } from "./helpers/temp-home-dir.js";
 
 describe("writeOpencodeAgent — agent key order", () => {
-  it("places ARCS Orchestrator first and ARCS Caveman second in a fresh config", async () => {
+  it("places ARCS Orchestrator, ARCS Flash, then ARCS Caveman in a fresh config", async () => {
     await withTempHomeDir(async (homeDir) => {
       writeOpencodeAgent();
 
@@ -20,11 +21,12 @@ describe("writeOpencodeAgent — agent key order", () => {
       const agentKeys = Object.keys(config.agent as object);
 
       expect(agentKeys[0]).toBe("ARCS Orchestrator");
-      expect(agentKeys[1]).toBe("ARCS Caveman");
+      expect(agentKeys[1]).toBe("ARCS Flash");
+      expect(agentKeys[2]).toBe("ARCS Caveman");
     });
   });
 
-  it("places ARCS agents first and build third when existing config has build and plan", async () => {
+  it("places ARCS agents first and build fourth when existing config has build and plan", async () => {
     await withTempHomeDir(async (homeDir) => {
       const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
       const existing = {
@@ -44,8 +46,9 @@ describe("writeOpencodeAgent — agent key order", () => {
       const agentKeys = Object.keys(config.agent as object);
 
       expect(agentKeys[0]).toBe("ARCS Orchestrator");
-      expect(agentKeys[1]).toBe("ARCS Caveman");
-      expect(agentKeys[2]).toBe("build");
+      expect(agentKeys[1]).toBe("ARCS Flash");
+      expect(agentKeys[2]).toBe("ARCS Caveman");
+      expect(agentKeys[3]).toBe("build");
     });
   });
 
@@ -69,6 +72,7 @@ describe("writeOpencodeAgent — agent key order", () => {
       expect((agents.build as any).model).toBe("sonnet");
       expect((agents.plan as any).model).toBe("opus");
       expect(agents["ARCS Orchestrator"]).toBeDefined();
+      expect(agents["ARCS Flash"]).toBeDefined();
       expect(agents["ARCS Caveman"]).toBeDefined();
     });
   });
@@ -84,11 +88,14 @@ describe("writeOpencodeAgent — agent key order", () => {
       const agentKeys = Object.keys(config.agent as object);
 
       const orchestratorCount = agentKeys.filter((k) => k === "ARCS Orchestrator").length;
+      const flashCount = agentKeys.filter((k) => k === "ARCS Flash").length;
       const cavemanCount = agentKeys.filter((k) => k === "ARCS Caveman").length;
       expect(orchestratorCount).toBe(1);
+      expect(flashCount).toBe(1);
       expect(cavemanCount).toBe(1);
       expect(agentKeys[0]).toBe("ARCS Orchestrator");
-      expect(agentKeys[1]).toBe("ARCS Caveman");
+      expect(agentKeys[1]).toBe("ARCS Flash");
+      expect(agentKeys[2]).toBe("ARCS Caveman");
     });
   });
 
@@ -104,7 +111,22 @@ describe("writeOpencodeAgent — agent key order", () => {
     });
   });
 
-  it("writes both orchestrator prompt files to disk", async () => {
+  it("registers ARCS Flash as a primary agent pointing at its prompt file", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      writeOpencodeAgent();
+
+      const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+      const raw = readFileSync(configFile, "utf-8");
+      const config = JSON.parse(raw) as Record<string, unknown>;
+      const agents = config.agent as Record<string, any>;
+
+      expect(agents["ARCS Flash"].mode).toBe("primary");
+      expect(agents["ARCS Flash"].prompt).toBe("{file:./prompts/arcs-flash.txt}");
+      expect(agents["ARCS Flash"].description).toContain("speed-optimized orchestrator");
+    });
+  });
+
+  it("writes all three orchestrator prompt files to disk", async () => {
     await withTempHomeDir(async (homeDir) => {
       writeOpencodeAgent();
 
@@ -115,6 +137,7 @@ describe("writeOpencodeAgent — agent key order", () => {
         "prompts",
         "arcs-orchestrate.txt",
       );
+      const flashPrompt = resolve(homeDir, ".config", "opencode", "prompts", "arcs-flash.txt");
       const cavemanPrompt = resolve(
         homeDir,
         ".config",
@@ -124,9 +147,11 @@ describe("writeOpencodeAgent — agent key order", () => {
       );
 
       const orchestratorContent = readFileSync(orchestratorPrompt, "utf-8");
+      const flashContent = readFileSync(flashPrompt, "utf-8");
       const cavemanContent = readFileSync(cavemanPrompt, "utf-8");
 
       expect(orchestratorContent).toBe(`${ORCHESTRATE_PROMPT_TEXT}\n`);
+      expect(flashContent).toBe(`${FLASH_PROMPT_TEXT}\n`);
       expect(cavemanContent).toBe(`${ORCHESTRATE_CAVEMAN_PROMPT_TEXT}\n`);
     });
   });

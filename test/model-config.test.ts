@@ -23,7 +23,7 @@ describe("agent registry", () => {
     const registry = readAgentRegistry();
     const activeAgents = getActiveAgents(registry);
 
-    expect(activeAgents).toHaveLength(8);
+    expect(activeAgents).toHaveLength(9);
     expect(activeAgents.every((agent) => agent.status === "active")).toBe(true);
     expect(
       activeAgents.filter((agent) => agent.kind === "subagent").map((agent) => agent.id),
@@ -59,6 +59,7 @@ describe("agent registry", () => {
       "devil-advocate": "standard",
       "graph-explorer": "light",
       "arcs-orchestrate": "standard",
+      "arcs-flash": "standard",
     });
   });
 
@@ -597,6 +598,7 @@ describe("writeOpencodeAgent with modelConfig", () => {
 
     const result = JSON.parse(await readFile(configFile, "utf-8"));
     expect(result.agent["ARCS Orchestrator"].model).toBe("mid/m");
+    expect(result.agent["ARCS Flash"].model).toBe("mid/m");
     expect(result.agent["ARCS Caveman"].model).toBe("mid/m");
   });
 

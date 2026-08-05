@@ -41,11 +41,12 @@ function pruneUndeclaredFiles(rootPath, allowedFiles) {
 let defaultOutputRootCurrent = defaultOutputRoot;
 
 /**
- * Generates the ARCS Orchestrator and ARCS Caveman prompt .txt files into
- * <outputRoot>/prompts/. The TypeScript modules src/cli/arcs-orchestrate.ts
- * and src/cli/arcs-orchestrate-caveman.ts remain the canonical source; these
- * .txt files are committed mirrors so the bundle is self-describing alongside
- * the static sub-agent prompts.
+ * Generates the ARCS Orchestrator, ARCS Caveman, and ARCS Flash prompt .txt
+ * files into <outputRoot>/prompts/. The TypeScript modules
+ * src/cli/arcs-orchestrate.ts, src/cli/arcs-orchestrate-caveman.ts, and
+ * src/cli/arcs-flash.ts remain the canonical source; these .txt files are
+ * committed mirrors so the bundle is self-describing alongside the static
+ * sub-agent prompts.
  *
  * Requires `tsc` to have run first (dist/cli/arcs-orchestrate.js must exist).
  * package.json's build:opencode-bundle chains `tsc` before this script.
@@ -53,19 +54,28 @@ let defaultOutputRootCurrent = defaultOutputRoot;
 async function generateOrchestratorPrompts(outputRoot) {
   const orchestrateModulePath = resolve(repoRoot, "dist/cli/arcs-orchestrate.js");
   const cavemanModulePath = resolve(repoRoot, "dist/cli/arcs-orchestrate-caveman.js");
+  const flashModulePath = resolve(repoRoot, "dist/cli/arcs-flash.js");
 
-  if (!existsSync(orchestrateModulePath) || !existsSync(cavemanModulePath)) {
+  if (
+    !existsSync(orchestrateModulePath) ||
+    !existsSync(cavemanModulePath) ||
+    !existsSync(flashModulePath)
+  ) {
     throw new Error(
       `Compiled orchestrator modules missing. Run \`npm run build\` before bundle build.\n` +
         `  Expected: ${orchestrateModulePath}\n` +
-        `  Expected: ${cavemanModulePath}`,    );
+        `  Expected: ${cavemanModulePath}\n` +
+        `  Expected: ${flashModulePath}`,
+    );
   }
 
   const orchestrateModule = await import(pathToFileURL(orchestrateModulePath).href);
   const cavemanModule = await import(pathToFileURL(cavemanModulePath).href);
+  const flashModule = await import(pathToFileURL(flashModulePath).href);
 
   const orchestrateText = orchestrateModule.ORCHESTRATE_PROMPT_TEXT;
   const cavemanText = cavemanModule.ORCHESTRATE_CAVEMAN_PROMPT_TEXT;
+  const flashText = flashModule.FLASH_PROMPT_TEXT;
 
   if (typeof orchestrateText !== "string" || orchestrateText.length === 0) {
     throw new Error("ORCHESTRATE_PROMPT_TEXT not exported as non-empty string");
@@ -73,12 +83,16 @@ async function generateOrchestratorPrompts(outputRoot) {
   if (typeof cavemanText !== "string" || cavemanText.length === 0) {
     throw new Error("ORCHESTRATE_CAVEMAN_PROMPT_TEXT not exported as non-empty string");
   }
+  if (typeof flashText !== "string" || flashText.length === 0) {
+    throw new Error("FLASH_PROMPT_TEXT not exported as non-empty string");
+  }
 
   const promptsDir = resolve(outputRoot, "prompts");
   mkdirSync(promptsDir, { recursive: true });
 
   const orchestratePath = resolve(promptsDir, "arcs-orchestrate.txt");
   const cavemanPath = resolve(promptsDir, "arcs-orchestrate-caveman.txt");
+  const flashPath = resolve(promptsDir, "arcs-flash.txt");
 
   // Banner prepended to every generated prompt file. Uses HTML comment syntax
   // so it's invisible when rendered as markdown but obvious to anyone opening
@@ -102,6 +116,7 @@ async function generateOrchestratorPrompts(outputRoot) {
     `${banner("src/cli/arcs-orchestrate-caveman.ts")}${cavemanText}\n`,
     "utf-8",
   );
+  writeFileSync(flashPath, `${banner("src/cli/arcs-flash.ts")}${flashText}\n`, "utf-8");
 }
 
 async function main() {

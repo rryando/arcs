@@ -127,6 +127,33 @@ function mutateRegistry(
   writeFileSync(manifestPath, JSON.stringify(manifest));
 }
 
+function addPrimaryAgents(bundleRoot: string, ids: string[]) {
+  for (const id of ids) {
+    writeFile(bundleRoot, `prompts/${id}.txt`, `${id} prompt body`);
+  }
+  mutateRegistry(bundleRoot, (agents) => {
+    for (const id of ids) {
+      agents.push({
+        id,
+        status: "active",
+        kind: "primary",
+        tier: "standard",
+        modes: ["opencode", "claudecode"],
+        source: `prompts/${id}.txt`,
+        destination: `prompts/${id}.txt`,
+        description: `Alternate primary orchestrator (${id}).`,
+        permissions: {
+          edit: "allow",
+          bash: "allow",
+          webfetch: "allow",
+          mcp: "allow",
+          task: "allow",
+        },
+      });
+    }
+  });
+}
+
 describe("deploy-claudecode-bundle", () => {
   it("defaults to dry-run and reports files to add", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-dry-"));
@@ -373,6 +400,74 @@ describe("deploy-claudecode-bundle", () => {
 
       const created = JSON.parse(readFileSync(resolve(configRoot, "settings.json"), "utf-8"));
       expect(created.agent).toBe("arcs-orchestrate");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("selects the default agent by explicit precedence, never by manifest array order", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-default-precedence-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      // arcs-flash sits AHEAD of arcs-orchestrate-caveman in the registry array,
+      // so an array-order fallback would elect it. Precedence must not.
+      addPrimaryAgents(bundleRoot, ["arcs-flash", "arcs-orchestrate-caveman"]);
+
+      const withOrchestrate = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(withOrchestrate.status).toBe(0);
+      const elected = JSON.parse(readFileSync(resolve(configRoot, "settings.json"), "utf-8"));
+      expect(elected.agent).toBe("arcs-orchestrate");
+
+      // arcs-orchestrate inactive for claudecode: the next listed primary takes
+      // over deterministically — arcs-flash is never silently promoted.
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[2].modes = ["opencode"];
+      });
+
+      const withoutOrchestrate = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(withoutOrchestrate.status).toBe(0);
+      expect((JSON.parse(withoutOrchestrate.stdout) as DeployResult).filesChanged).toContain(
+        "settings.json",
+      );
+      const fallback = JSON.parse(readFileSync(resolve(configRoot, "settings.json"), "utf-8"));
+      expect(fallback.agent).toBe("arcs-orchestrate-caveman");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to promote an unlisted active primary to default agent", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-default-unlisted-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      addPrimaryAgents(bundleRoot, ["arcs-experimental"]);
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[2].modes = ["opencode"];
+      });
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toContain("No active Claude Code primary agent in default precedence");
+      expect(existsSync(resolve(configRoot, "settings.json"))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

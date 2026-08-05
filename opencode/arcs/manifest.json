@@ -179,6 +179,23 @@
         "mcp": "allow",
         "task": "allow"
       }
+    },
+    {
+      "id": "arcs-flash",
+      "status": "active",
+      "kind": "primary",
+      "tier": "standard",
+      "modes": ["opencode", "claudecode"],
+      "source": "prompts/arcs-flash.txt",
+      "destination": "prompts/arcs-flash.txt",
+      "description": "A speed-optimized orchestrator that sources context from arcs knowledge first and maximizes parallel sub-agent dispatch under tiered gates.",
+      "permissions": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "mcp": "allow",
+        "task": "allow"
+      }
     }
   ],
   "ownedPaths": ["skills/arcs", "plugins/arcs.js"],

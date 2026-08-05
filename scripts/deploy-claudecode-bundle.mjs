@@ -9,7 +9,8 @@
 //   2. Skills tree       → <destination>/skills/arcs-<name>/...
 //      (Claude Code skills must be flat under skills/; we use the `arcs-`
 //       prefix as a namespace so orphan pruning never touches user skills.)
-//   3. Default agent     → settings.json `agent` field set to "arcs-orchestrate"
+//   3. Default agent     → settings.json `agent` field, resolved through the
+//      explicit DEFAULT_AGENT_PRECEDENCE list (default: "arcs-orchestrate")
 //
 // Env vars:
 //   DEPLOY_BUNDLE_ROOT   — override bundle root (default: opencode/arcs)
@@ -288,19 +289,28 @@ function buildSkillSources() {
 // 3. settings.json merge — set default agent
 // ---------------------------------------------------------------------------
 
+// Which primary becomes the deployed default is an explicit, ordered policy —
+// never "whichever active primary happens to come first in manifest.json".
+// Registry array order must not be able to promote an agent: a new primary
+// (e.g. the speed-optimized arcs-flash) becomes eligible only by being listed
+// here, and only at the rank it is listed at. Earlier entries always win, so a
+// lower-ranked primary is a fallback, never a silent replacement.
+const DEFAULT_AGENT_PRECEDENCE = ["arcs-orchestrate", "arcs-orchestrate-caveman", "arcs-flash"];
+
+function selectDefaultAgent(registry) {
+  for (const id of DEFAULT_AGENT_PRECEDENCE) {
+    const agent = registry.find((record) => record.id === id);
+    if (agent && agent.kind === "primary" && isActiveAgentForMode(agent, "claudecode")) {
+      return agent;
+    }
+  }
+  throw new Error(
+    `No active Claude Code primary agent in default precedence: ${DEFAULT_AGENT_PRECEDENCE.join(", ")}`,
+  );
+}
+
 function planSettingsUpdate() {
-  const registry = readAgentRegistry();
-  const defaultAgent =
-    registry.find(
-      (agent) =>
-        agent.id === "arcs-orchestrate" &&
-        isActiveAgentForMode(agent, "claudecode"),
-    ) ??
-    registry.find(
-      (agent) =>
-        agent.kind === "primary" && isActiveAgentForMode(agent, "claudecode"),
-    );
-  if (!defaultAgent) throw new Error("No active Claude Code primary agent is registered");
+  const defaultAgent = selectDefaultAgent(readAgentRegistry());
 
   const settingsConfigRelative = configRelativePath("settings.json");
   const settingsAbsolute = resolve(destination, settingsConfigRelative);

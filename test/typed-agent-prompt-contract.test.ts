@@ -21,7 +21,12 @@ describe("typed-agent prompt contract", () => {
     expect(typedAgentPrompts).toHaveLength(6);
     expect([...typedAgentPrompts]).toEqual(
       readdirSync(promptsDir)
-        .filter((name) => name.endsWith(".txt") && !name.startsWith("arcs-orchestrate"))
+        .filter(
+          (name) =>
+            name.endsWith(".txt") &&
+            !name.startsWith("arcs-orchestrate") &&
+            !name.startsWith("arcs-flash"),
+        )
         .sort(),
     );
     expect(typedAgentPrompts).not.toContain("arcs-orchestrate.txt");

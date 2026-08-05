@@ -95,7 +95,10 @@ describe("opencode ARCS bundle bundle", () => {
     expect(
       activeAgents
         .filter(
-          (agent) => agent.id !== "arcs-orchestrate" && agent.id !== "arcs-orchestrate-caveman",
+          (agent) =>
+            agent.id !== "arcs-orchestrate" &&
+            agent.id !== "arcs-orchestrate-caveman" &&
+            agent.id !== "arcs-flash",
         )
         .map((agent) => agent.id),
     ).toEqual([

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { readJsonSafeSync } from "../utils/json.js";
 import { type AgentTier, getActiveAgent, getAgentTierMap } from "./agent-registry.js";
+import { FLASH_PROMPT_TEXT } from "./arcs-flash.js";
 import { ORCHESTRATE_PROMPT_TEXT } from "./arcs-orchestrate.js";
 import { ORCHESTRATE_CAVEMAN_PROMPT_TEXT } from "./arcs-orchestrate-caveman.js";
 import type { ModelTierConfig } from "./config.js";
@@ -68,6 +69,7 @@ const AGENT_TIER_MAP: Record<string, AgentTier> = {
   ...registryAgentTiers,
   ...HOST_AGENT_TIER_MAP,
   "ARCS Orchestrator": registryAgentTiers["arcs-orchestrate"],
+  "ARCS Flash": registryAgentTiers["arcs-flash"],
   "ARCS Caveman": registryAgentTiers["arcs-orchestrate-caveman"],
 };
 
@@ -114,12 +116,18 @@ function opencodePromptPath(): string {
   return resolve(opencodeConfigDir(), getActiveAgent("arcs-orchestrate").destination);
 }
 
+/** Path to the ARCS Flash orchestrator prompt file. */
+function opencodeFlashPromptPath(): string {
+  return resolve(opencodeConfigDir(), getActiveAgent("arcs-flash").destination);
+}
+
 /** Path to the ARCS Caveman orchestrator prompt file. */
 function opencodeCavemanPromptPath(): string {
   return resolve(opencodeConfigDir(), getActiveAgent("arcs-orchestrate-caveman").destination);
 }
 
 const orchestratorAgent = getActiveAgent("arcs-orchestrate");
+const flashAgent = getActiveAgent("arcs-flash");
 const cavemanAgent = getActiveAgent("arcs-orchestrate-caveman");
 
 /**
@@ -130,6 +138,18 @@ export const ARCS_AGENT_ENTRY = {
   mode: orchestratorAgent.kind,
   prompt: `{file:./${orchestratorAgent.destination}}`,
   color: "#00bcd4",
+};
+
+/**
+ * The OpenCode agent entry for ARCS Flash — same authority and safety
+ * invariants as ARCS Orchestrator, with a knowledge-first, parallel-first
+ * control flow under tiered gates.
+ */
+export const ARCS_FLASH_AGENT_ENTRY = {
+  description: flashAgent.description,
+  mode: flashAgent.kind,
+  prompt: `{file:./${flashAgent.destination}}`,
+  color: "#ffc107",
 };
 
 /**
@@ -146,6 +166,9 @@ export const ARCS_CAVEMAN_AGENT_ENTRY = {
 /** The key used for the ARCS agent entry in opencode.json → agent.<key>. */
 const ARCS_AGENT_KEY = "ARCS Orchestrator";
 
+/** The key used for the ARCS Flash agent entry. */
+const ARCS_FLASH_AGENT_KEY = "ARCS Flash";
+
 /** The key used for the ARCS Caveman agent entry. */
 const ARCS_CAVEMAN_AGENT_KEY = "ARCS Caveman";
 
@@ -159,8 +182,8 @@ export function opencodeHasAgent(): boolean {
     const config = readJsonSafeSync<Record<string, unknown>>(configFile) ?? {};
     const agents = config.agent as Record<string, unknown> | undefined;
     // Presence gate: if the orchestrator is registered, ARCS is "configured".
-    // writeOpencodeAgent() always installs both the orchestrator and Caveman,
-    // so existing installs auto-upgrade to gain Caveman on re-run.
+    // writeOpencodeAgent() always installs the orchestrator, Flash, and Caveman,
+    // so existing installs auto-upgrade to gain Flash and Caveman on re-run.
     return agents != null && ARCS_AGENT_KEY in agents;
   } catch {
     return false;
@@ -170,36 +193,41 @@ export function opencodeHasAgent(): boolean {
 export interface AgentWriteResult {
   configPath: string;
   promptPath: string;
+  flashPromptPath: string;
   cavemanPromptPath: string;
   action: "created" | "updated";
   alreadyConfigured: boolean;
 }
 
 /**
- * Registers the ARCS orchestrator agents (standard + Caveman) as primary
- * agents in opencode.json. Also writes both prompt text files to
+ * Registers the ARCS orchestrator agents (standard + Flash + Caveman) as
+ * primary agents in opencode.json. Also writes all three prompt text files to
  * ~/.config/opencode/prompts/.
  *
- * Both agents share full ARCS tool access and workflow rules; ARCS Caveman
- * layers caveman-speak on top for token-efficient chat output.
+ * All three agents share full ARCS tool access and workflow rules; ARCS Flash
+ * runs a knowledge-first, parallel-first control flow, and ARCS Caveman layers
+ * caveman-speak on top for token-efficient chat output.
  */
 export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteResult {
   const alreadyConfigured = opencodeHasAgent();
   const configFile = resolve(opencodeConfigDir(), "opencode.json");
   const promptFile = opencodePromptPath();
+  const flashPromptFile = opencodeFlashPromptPath();
   const cavemanPromptFile = opencodeCavemanPromptPath();
   const existed = existsSync(configFile);
 
-  // Write both prompt text files
+  // Write all three prompt text files
   mkdirSync(opencodePromptsDir(), { recursive: true });
   writeFileSync(promptFile, `${ORCHESTRATE_PROMPT_TEXT}\n`, "utf-8");
+  writeFileSync(flashPromptFile, `${FLASH_PROMPT_TEXT}\n`, "utf-8");
   writeFileSync(cavemanPromptFile, `${ORCHESTRATE_CAVEMAN_PROMPT_TEXT}\n`, "utf-8");
 
   // Merge agent entries into opencode.json with controlled key order:
   // 1. ARCS Orchestrator (always first — controls Tab-cycle position in OpenCode)
-  // 2. ARCS Caveman (second — Tab once to reach token-efficient mode)
-  // 3. build (third, if already present in config)
-  // 4. all other existing agents in their original order
+  // 2. ARCS Flash (second — Tab once to reach the speed-optimized orchestrator)
+  // 3. ARCS Caveman (third — Tab twice to reach token-efficient mode)
+  // 4. build (fourth, if already present in config)
+  // 5. all other existing agents in their original order
   const existing = readJsonFile(configFile);
   const existingAgents = (existing.agent ?? {}) as Record<string, unknown>;
 
@@ -210,6 +238,15 @@ export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteRes
     orchestratorEntry.model = resolveAgentModel(
       ARCS_AGENT_KEY,
       AGENT_TIER_MAP[ARCS_AGENT_KEY] ?? "standard",
+      modelConfig,
+    );
+  }
+
+  const flashEntry: Record<string, unknown> = { ...ARCS_FLASH_AGENT_ENTRY };
+  if (modelConfig) {
+    flashEntry.model = resolveAgentModel(
+      ARCS_FLASH_AGENT_KEY,
+      AGENT_TIER_MAP[ARCS_FLASH_AGENT_KEY] ?? "standard",
       modelConfig,
     );
   }
@@ -225,19 +262,20 @@ export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteRes
 
   const orderedAgents: Record<string, unknown> = {
     [ARCS_AGENT_KEY]: orchestratorEntry,
+    [ARCS_FLASH_AGENT_KEY]: flashEntry,
     [ARCS_CAVEMAN_AGENT_KEY]: cavemanEntry,
   };
   if ("build" in existingAgents) {
     orderedAgents.build = existingAgents.build;
   }
   for (const [key, value] of Object.entries(existingAgents)) {
-    if (key !== ARCS_AGENT_KEY && key !== ARCS_CAVEMAN_AGENT_KEY && key !== "build") {
+    if (!Object.hasOwn(orderedAgents, key) && key !== "build") {
       orderedAgents[key] = value;
     }
   }
 
   existing.agent = orderedAgents;
-  // Set ARCS Orchestrator as the startup default agent (Caveman is opt-in via Tab)
+  // Set ARCS Orchestrator as the startup default agent (Flash and Caveman are opt-in via Tab)
   existing.default_agent = ARCS_AGENT_KEY;
   // Inject the codegraph MCP server so graph-explorer can call mcp__codegraph__*
   ensureCodegraphMcpEntry(existing);
@@ -246,6 +284,7 @@ export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteRes
   return {
     configPath: configFile,
     promptPath: promptFile,
+    flashPromptPath: flashPromptFile,
     cavemanPromptPath: cavemanPromptFile,
     action: existed ? "updated" : "created",
     alreadyConfigured,

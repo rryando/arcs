@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FLASH_PROMPT_TEXT } from "../src/cli/arcs-flash.js";
 import { ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
 import { ORCHESTRATE_CAVEMAN_PROMPT_TEXT } from "../src/cli/arcs-orchestrate-caveman.js";
 
@@ -29,5 +30,11 @@ describe("prompt parity — .txt mirrors TypeScript source", () => {
     const txtContent = readFileSync(resolve(promptsDir, "arcs-orchestrate-caveman.txt"), "utf-8");
     const body = stripBanner(txtContent);
     expect(body, STALE_MSG).toBe(`${ORCHESTRATE_CAVEMAN_PROMPT_TEXT}\n`);
+  });
+
+  it("arcs-flash.txt matches FLASH_PROMPT_TEXT", () => {
+    const txtContent = readFileSync(resolve(promptsDir, "arcs-flash.txt"), "utf-8");
+    const body = stripBanner(txtContent);
+    expect(body, STALE_MSG).toBe(`${FLASH_PROMPT_TEXT}\n`);
   });
 });
