@@ -156,7 +156,7 @@ describe("opencode ARCS bundle bundle", () => {
           path: ["agent", "code-reviewer"],
           value: expect.objectContaining({
             mode: "subagent",
-            model: "github-copilot/claude-haiku-4.5",
+            model: "github-copilot/claude-sonnet-4.6",
           }),
           mode: "merge",
         },
@@ -164,7 +164,7 @@ describe("opencode ARCS bundle bundle", () => {
           path: ["agent", "tech-architect"],
           value: expect.objectContaining({
             mode: "subagent",
-            model: "github-copilot/claude-sonnet-4.6",
+            model: "github-copilot/claude-opus-4.6",
           }),
           mode: "merge",
         },

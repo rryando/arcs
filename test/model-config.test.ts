@@ -55,8 +55,8 @@ describe("agent registry", () => {
   it("derives ARCS tier assignments from manifest records", () => {
     expect(getAgentTierMap()).toMatchObject({
       "software-engineer": "heavy",
-      "tech-architect": "standard",
-      "devil-advocate": "standard",
+      "tech-architect": "heavy",
+      "devil-advocate": "heavy",
       "graph-explorer": "light",
       "arcs-orchestrate": "standard",
       "arcs-flash": "standard",
