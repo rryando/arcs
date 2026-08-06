@@ -22,7 +22,7 @@ import {
   STDOUT_CAP,
   withStreamJsonArgv,
 } from "../src/web-server/claude-runner.js";
-import { runEventLogPath } from "../src/web-server/run-event-log.js";
+import { RUN_EVENT_LOG_MAX_BYTES, runEventLogPath } from "../src/web-server/run-event-log.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 /** Minimal child that mirrors the ChildProcess surface the runner touches. */
@@ -408,7 +408,66 @@ describe("runClaudeJob — per-run event log", () => {
 
     expect(record.outcome).toBe("success");
     expect(record.eventLogLines).toBeUndefined();
+    expect(record.eventLogTruncated).toBeUndefined();
     expect(record.eventLogError).toBeUndefined();
+  });
+
+  it("a capped log says so on the record — eventLogLines: 0 alone cannot", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      // A runaway child whose FIRST chunk already crosses the cap: nothing at
+      // all reaches the log, so the count it reports is the same 0 a child that
+      // never spoke reports.
+      const capped = runClaudeJob(
+        { argv: ["-p", "x"], writeTargetKey: "w", eventLog: target(projectDir) },
+        { spawnImpl },
+      );
+      children[0].emitStdout("x".repeat(RUN_EVENT_LOG_MAX_BYTES));
+      children[0].finish(0, null);
+      const cappedRecord = await capped;
+
+      const silent = runClaudeJob(
+        {
+          argv: ["-p", "x"],
+          writeTargetKey: "w",
+          eventLog: { projectDir, sessionId: SESSION_ID, runId: "quiet-run" },
+        },
+        { spawnImpl },
+      );
+      children[1].finish(0, null);
+      const silentRecord = await silent;
+
+      expect(readFileSync(logPath, "utf-8")).toBe("");
+      expect([cappedRecord.eventLogLines, silentRecord.eventLogLines]).toEqual([0, 0]);
+      // The one field that separates "the log is missing everything the child
+      // said" from "the child said nothing" — and it is omitted, not `false`,
+      // when the log is whole.
+      expect(cappedRecord.eventLogTruncated).toBe(true);
+      expect(silentRecord.eventLogTruncated).toBeUndefined();
+      // Neither run failed on account of its log.
+      expect([cappedRecord.outcome, silentRecord.outcome]).toEqual(["success", "success"]);
+      expect(cappedRecord.eventLogError).toBeUndefined();
+    });
+  });
+
+  it("keeps logging after an over-cap chunk — one huge line is not the end of the run", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        { argv: ["-p", "x"], writeTargetKey: "w", eventLog: target(projectDir) },
+        { spawnImpl },
+      );
+      // The oversized chunk ends its record, so the stream resumes on a line
+      // boundary and everything after it still fits.
+      children[0].emitStdout(`${"x".repeat(RUN_EVENT_LOG_MAX_BYTES)}\n`);
+      children[0].finish(0, null, { stdout: `${JSON.stringify(resultEvent("still here"))}\n` });
+      const record = await run;
+
+      expect(readFileSync(logPath, "utf-8")).toBe(`${JSON.stringify(resultEvent("still here"))}\n`);
+      expect(record.eventLogLines).toBe(1);
+      expect(record.eventLogTruncated).toBe(true);
+      expect(record.replyText).toBe("still here");
+    });
   });
 });
 

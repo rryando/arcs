@@ -55,6 +55,17 @@ export interface ClaudeRunRecord {
    */
   eventLogLines?: number;
   /**
+   * The event log is INCOMPLETE — it hit RUN_EVENT_LOG_MAX_BYTES or lost bytes
+   * to a short write, so what is on disk is no longer the whole stream. Omitted
+   * (never `false`) when the log is complete.
+   *
+   * This has to travel with `eventLogLines` or the count lies by omission: a
+   * capped log whose very first chunk was refused reports `eventLogLines: 0`,
+   * which is exactly what a child that said nothing reports. Anything that
+   * tails the file by offset must read this first.
+   */
+  eventLogTruncated?: boolean;
+  /**
    * Why the event log could not be written, when it failed. REPORTED, never
    * thrown: a run whose log is unwritable still runs, still settles and still
    * returns its reply — losing the audit trail is not a reason to lose the run.
@@ -304,6 +315,9 @@ export async function runClaudeJob(
     if (settled.firstTokenAt !== undefined) record.firstTokenAt = settled.firstTokenAt;
     if (settled.skippedLines !== undefined) record.skippedLines = settled.skippedLines;
     if (settled.eventLogLines !== undefined) record.eventLogLines = settled.eventLogLines;
+    if (settled.eventLogTruncated !== undefined) {
+      record.eventLogTruncated = settled.eventLogTruncated;
+    }
     if (settled.eventLogError !== undefined) record.eventLogError = settled.eventLogError;
   } catch (err) {
     // Never throw on child-side failures — every path resolves to a record.
@@ -353,6 +367,7 @@ interface SettleResult {
   firstTokenAt?: number;
   skippedLines?: number;
   eventLogLines?: number;
+  eventLogTruncated?: boolean;
   eventLogError?: string;
 }
 
@@ -394,6 +409,11 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
         ...(seen.firstTokenAt !== undefined && { firstTokenAt: seen.firstTokenAt }),
         ...(seen.skippedLines > 0 && { skippedLines: seen.skippedLines }),
         ...(ctx.eventLog !== undefined && { eventLogLines: log.lines }),
+        // Only when it engaged. A log that hit its cap and one from a silent
+        // child both report zero lines, so the count alone cannot tell them
+        // apart — this flag is the difference, and dropping it here is what
+        // made the cap invisible to every consumer of the record.
+        ...(log.truncated && { eventLogTruncated: true }),
         ...(log.error !== undefined && { eventLogError: log.error }),
       });
     };

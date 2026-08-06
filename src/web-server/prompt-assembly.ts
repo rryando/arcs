@@ -36,6 +36,12 @@
  * `stripStageDelimiters` so a document cannot close its own wrapper and
  * escalate into the controller's voice.
  *
+ * Budgets are spent on a body's CONTENT, never on the wrapped string: clipping
+ * a rendered wrapper keeps its opener and severs its closer, which puts every
+ * later ARCS-authored block inside an unterminated untrusted region. Both
+ * products obey this — `renderBlock` for the staged tier, and the reference
+ * renderers by clipping before they call `untrustedDoc`.
+ *
  * Read-only. This module reads ARCS data through the existing store readers and
  * the existing knowledge-selection helper; it never writes. It RETURNS a
  * `StageRecord` for the caller (the run route) to persist at `metadata.stage`.
@@ -102,10 +108,18 @@ export const STAGE_MANUAL_CHECKS = [
 /**
  * Degradation starts above this.
  *
- * MEASURED, against the live ARCS project (130 tasks, 18 plans), with the
- * budgets below: the widest real block is 5812 chars task-linked and 5011
- * plan-linked, and the ladder fires for 0 of 130 nodes. It is HEADROOM, not a
- * live path — a test reaches it only by passing `softCap`.
+ * MEASURED, against the live ARCS project, with the budgets below. It is
+ * HEADROOM, not a live path — a test reaches it only by passing `softCap`.
+ *
+ *   130 tasks / 18 plans: widest 5812 task-linked, 5011 plan-linked, ladder
+ *                         fires for 0 of 130.
+ *   133 tasks / 18 plans: widest 5807 task-linked, 5006 plan-linked, ladder
+ *                         fires for 0 of 133. Re-taken when `renderBlock`
+ *                         moved the budget clip onto a body's CONTENT; both
+ *                         maxima are UNCHANGED by that move (a clipped block is
+ *                         still bounded by the same budget — the wrapper's tags
+ *                         are paid out of it, not added to it), and the drift
+ *                         from 5812/5011 is the DAG's, not the clip's.
  *
  * That is a measurement, not a property, and it is the number to re-take when a
  * budget or a block's content changes. It has already caught one: staging the
@@ -178,6 +192,12 @@ export const STAGE_BLOCK_ORDER: readonly StageBlockId[] = [
  * the widest real node is 5812 and the ladder fires for none, so both blocks
  * survive. Measured across the whole live DAG at 1800/1500/1400/1300/1200:
  * 62/34/14/0/0 nodes degraded.
+ *
+ * A budget bounds the block AS RENDERED, wrapper tags included: `renderBlock`
+ * pays the open/close tags out of the budget and spends what is left on the
+ * body's content. So a number here is not "chars of document" — a wide `source`
+ * buys less document, and a budget below the tag cost drops the body for a
+ * one-line pointer rather than emitting an opener it cannot close.
  */
 export const STAGE_BLOCK_BUDGETS: Record<StageBudgetedBlockId, number> = {
   "dag-position": 1200,
@@ -449,7 +469,12 @@ const CLIP_SUFFIX = " chars truncated]";
 /**
  * Head truncation: keeps the head, drops the tail, and says how much it dropped.
  * The marker is sized from an upper bound of the dropped count so the result is
- * always <= `max`.
+ * always <= `max` (for any `max` wide enough to hold the marker itself; a
+ * caller passing less must handle the overflow, and `renderBlock` does).
+ *
+ * NEVER apply this to text that already contains a wrapper: it keeps the open
+ * tag and drops the closer. Clip the CONTENT and wrap what survives — see
+ * `renderBlock`.
  */
 function clip(text: string, max: number): { text: string; dropped: number } {
   if (text.length <= max) return { text, dropped: 0 };
@@ -477,6 +502,15 @@ function body(raw: string): string {
 
 function untrustedDoc(name: string, source: string, content: string): string {
   return [docOpen(name, source), content, DOC_CLOSE].join("\n");
+}
+
+/**
+ * ARCS-authored stand-in for a body that is not rendered. Shared with the
+ * ladder's node-body rung so an operator reads ONE string whether the body was
+ * dropped by the soft cap or by a budget too narrow to close its own wrapper.
+ */
+function omittedBody(source: string): string {
+  return `Omitted for length. Source: ${attr(source, DOC_ATTR_WIDTH)}.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -782,12 +816,39 @@ function renderDagPosition(dag: DagPosition, d: Degradation): string {
   return lines.join("\n");
 }
 
-function renderKnowledge(entries: KnowledgeMeta[], max: number): string {
+/**
+ * A block DESCRIBED rather than pre-rendered: its ARCS-authored lead lines plus
+ * at most one untrusted body, still unwrapped.
+ *
+ * That distinction is the whole point. A per-block budget spent on the RENDERED
+ * string head-truncates a block that already carries a wrapper, keeping the open
+ * tag and cutting the closer — after which every later block sits inside an
+ * unterminated untrusted region, including LIMITS, the one asserting that ARCS
+ * owns the tool and permission scope. The controller's own voice then reads as
+ * quoted reference data: the boundary the wrapper exists to draw is inverted.
+ *
+ * Measured on the live DAG before the fix: a stranded open on 133/133
+ * task-linked and 18/18 plan-linked builds, i.e. essentially every build ARCS
+ * produced. Handing `renderBlock` the parts lets the budget be spent on the
+ * body's CONTENT, so the closer is never inside the clipped region. (The
+ * reference renderers at the bottom of this module already clip content before
+ * wrapping; this makes the staged tier follow the same rule structurally.)
+ */
+interface BlockParts {
+  /** ARCS-authored lines, rendered before the body. */
+  lead: string[];
+  /** The one untrusted body this block quotes, if it has one. */
+  doc?: { name: string; source: string; content: string };
+}
+
+function renderKnowledge(entries: KnowledgeMeta[], max: number): BlockParts {
   if (max === 0 || entries.length === 0) {
-    return (
-      "None staged (omitted for length or none recorded). Search with " +
-      '`arcs knowledge search <slug> "<keywords>" --lean --json`.'
-    );
+    return {
+      lead: [
+        "None staged (omitted for length or none recorded). Search with " +
+          '`arcs knowledge search <slug> "<keywords>" --lean --json`.',
+      ],
+    };
   }
   const items = entries
     .slice(0, max)
@@ -796,35 +857,77 @@ function renderKnowledge(entries: KnowledgeMeta[], max: number): string {
         `- ${field(e.id, FIELD_WIDTHS.slug)} — ${field(e.title, FIELD_WIDTHS.nodeTitle)}: ${field(e.summary ?? "", FIELD_WIDTHS.knowledgeSummary)}`,
     )
     .join("\n");
-  return [
-    "Lean index only — id, title and clipped summary. Bodies are NEVER staged; read one " +
-      "with `arcs knowledge get <slug> <id> --body --lean --json`.",
-    untrustedDoc("knowledge-digest", "knowledge/index.json", items),
-  ].join("\n");
+  return {
+    lead: [
+      "Lean index only — id, title and clipped summary. Bodies are NEVER staged; read one " +
+        "with `arcs knowledge get <slug> <id> --body --lean --json`.",
+    ],
+    doc: { name: "knowledge-digest", source: "knowledge/index.json", content: items },
+  };
 }
 
-function renderBrief(brief: StageSources["brief"], d: Degradation): string {
-  const parts = [brief.lines.join("\n")];
-  if (d.includeBriefSummary && brief.summary) {
-    parts.push(untrustedDoc("project-overview", "overview.md", brief.summary));
-  }
-  return parts.join("\n");
+function renderBrief(brief: StageSources["brief"], d: Degradation): BlockParts {
+  return {
+    lead: brief.lines,
+    ...(d.includeBriefSummary &&
+      brief.summary && {
+        doc: { name: "project-overview", source: "overview.md", content: brief.summary },
+      }),
+  };
 }
 
-function renderNodeBody(nodeBody: StageSources["nodeBody"], d: Degradation): string {
+function renderNodeBody(nodeBody: StageSources["nodeBody"], d: Degradation): BlockParts {
   if (!nodeBody) {
     // One line, not a paragraph: the old text spent ~170 chars explaining an
     // ARCS storage detail to a consumer that can do nothing with it.
-    return "No document staged for this node.";
+    return { lead: ["No document staged for this node."] };
   }
   if (!d.includeNodeBody) {
     // Not an attribute, but the same untrusted value in an ARCS-AUTHORED line —
     // and this rung is reached only under budget pressure, so it is exactly the
     // slot a happy-path check never sees. Escaped identically, so the operator
     // reads the same string here as in the wrapper this replaces.
-    return `Omitted for length. Source: ${attr(nodeBody.source, DOC_ATTR_WIDTH)}.`;
+    return { lead: [omittedBody(nodeBody.source)] };
   }
-  return untrustedDoc(nodeBody.name, nodeBody.source, nodeBody.content);
+  return { lead: [], doc: nodeBody };
+}
+
+/**
+ * Renders one block, within `max` when the block carries a budget.
+ *
+ * Wrapper-free text is head-truncated directly — there is no closer to sever.
+ * A block WITH a body spends its budget on the body's CONTENT: `room` is what
+ * the budget leaves once the lead and the wrapper's own tags are paid for, and
+ * the clip runs on the content BEFORE `untrustedDoc` wraps what survives. The
+ * rendered block is therefore still bounded by `max`, and the closer cannot be
+ * in the clipped region because the clip never sees it.
+ *
+ * When `room` cannot carry any clipped content — a budget narrowed, or a
+ * pathologically wide `source` inflating the open tag — the wrapper is dropped
+ * WHOLE for the ARCS-authored omission line: a block that cannot afford a closer
+ * must not emit an opener. Unreachable at today's budgets (the narrowest margin
+ * is `brief`, which leaves ~40 chars of room against a maximal lead), which is
+ * exactly why it is structural rather than a comment.
+ *
+ * `dropped` counts characters of BODY content lost, not characters cut off the
+ * rendered string — the block's own tags are overhead, never truncation.
+ */
+function renderBlock(parts: BlockParts, max?: number): { text: string; dropped: number } {
+  const join = (...rest: string[]): string => [...parts.lead, ...rest].join("\n");
+  if (!parts.doc) {
+    return max === undefined ? { text: join(), dropped: 0 } : clip(join(), max);
+  }
+
+  const { name, source, content } = parts.doc;
+  if (max === undefined) return { text: join(untrustedDoc(name, source, content)), dropped: 0 };
+
+  const room = max - join(untrustedDoc(name, source, "")).length;
+  const clipped = room > 0 ? clip(content, room) : undefined;
+  if (clipped && clipped.text.length <= room) {
+    return { text: join(untrustedDoc(name, source, clipped.text)), dropped: clipped.dropped };
+  }
+  const fallback = clip(join(omittedBody(source)), max);
+  return { text: fallback.text, dropped: content.length + fallback.dropped };
 }
 
 const BLOCK_HEADINGS: Record<StageBlockId, string> = {
@@ -849,32 +952,30 @@ function assemble(
   sources: StageSources,
   d: Degradation,
 ): { text: string; budgetTruncations: StageTruncation[] } {
-  const raw: Record<StageBlockId, string> = {
-    identity: sources.identity,
-    workspace: sources.workspace,
-    "dag-position": renderDagPosition(sources.dag, d),
+  const raw: Record<StageBlockId, BlockParts> = {
+    identity: { lead: [sources.identity] },
+    workspace: { lead: [sources.workspace] },
+    "dag-position": { lead: [renderDagPosition(sources.dag, d)] },
     "node-body": renderNodeBody(sources.nodeBody, d),
     brief: renderBrief(sources.brief, d),
     knowledge: renderKnowledge(sources.knowledge, d.knowledgeMax),
-    limits: LIMITS_BLOCK,
+    limits: { lead: [LIMITS_BLOCK] },
   };
 
   const budgetTruncations: StageTruncation[] = [];
   const sections: string[] = [ENVELOPE_OPEN, ENVELOPE_PREAMBLE];
   for (const id of STAGE_BLOCK_ORDER) {
-    let content = raw[id];
-    if (isBudgeted(id)) {
-      const clipped = clip(content, STAGE_BLOCK_BUDGETS[id]);
-      if (clipped.dropped > 0) {
-        budgetTruncations.push({
-          block: id,
-          reason: "block-budget",
-          droppedChars: clipped.dropped,
-        });
-      }
-      content = clipped.text;
+    // An un-budgeted block passes no `max` at all, rather than a sentinel: the
+    // budget record's key set is the only thing that decides who can be clipped.
+    const rendered = renderBlock(raw[id], isBudgeted(id) ? STAGE_BLOCK_BUDGETS[id] : undefined);
+    if (isBudgeted(id) && rendered.dropped > 0) {
+      budgetTruncations.push({
+        block: id,
+        reason: "block-budget",
+        droppedChars: rendered.dropped,
+      });
     }
-    sections.push(`${BLOCK_HEADINGS[id]}\n${content}`);
+    sections.push(`${BLOCK_HEADINGS[id]}\n${rendered.text}`);
   }
   sections.push(ENVELOPE_CLOSE);
   return { text: sections.join("\n\n"), budgetTruncations };

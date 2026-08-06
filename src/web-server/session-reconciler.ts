@@ -16,9 +16,10 @@
  * Two shapes of work, deliberately separated:
  *
  *  - `settleOrphanedRuns` WRITES: a claim whose process is gone settles as
- *    outcome `interrupted` and the claim is cleared. Runs once at startup (see
- *    app.ts), because a claim persisted by a previous process can never be live
- *    in this one unless its child outlived the restart.
+ *    outcome `interrupted`, the claim is cleared and the session's run event
+ *    logs are pruned. Runs once at startup (see app.ts), because a claim
+ *    persisted by a previous process can never be live in this one unless its
+ *    child outlived the restart.
  *  - `reconcileSessionPhases` READS: it returns demoted phases and never writes.
  *    On-demand only — there is no timer here, and no poller.
  *
@@ -43,6 +44,7 @@ import {
   settleSessionRun,
 } from "../utils/session-store.js";
 import { normalizeIdentifier } from "../utils/slug.js";
+import { pruneRunEventLogs } from "./run-event-log.js";
 
 // ---------------------------------------------------------------------------
 // `claude agents --json`
@@ -355,6 +357,11 @@ function orphanError(pid: number | undefined): string {
  * whatever `metadata.run` already held and gains `outcome: "interrupted"`,
  * which no live run can ever produce.
  *
+ * A settle here also prunes the session's run event logs, exactly as the route's
+ * own write-back does — this is the ONLY settle an interrupted run ever gets, so
+ * it is the only place that can bound the logs of a session whose runs never
+ * settle normally.
+ *
  * Never throws: a project whose index cannot be read is skipped, and a record
  * deleted mid-sweep is simply not settled.
  */
@@ -385,6 +392,14 @@ export async function settleOrphanedRuns(
         endedAt: options.now,
       });
       settled.push({ sessionId: session.normalizedId, runId, ...(pid !== undefined && { pid }) });
+      // Retention belongs to every settle, and this is the one settle path that
+      // is not a run's own write-back. A server that dies mid-run never reaches
+      // `writeBackRun`'s prune, so a session whose runs are always interrupted
+      // would otherwise accumulate one RUN_EVENT_LOG_MAX_BYTES log per run
+      // forever — this sweep is the only thing that ever visits those runs
+      // again. Never throws and its failure is not the sweep's business: the
+      // claim is already released above whatever retention manages to delete.
+      await pruneRunEventLogs(projectDir, session.normalizedId);
     } catch {
       // Record vanished between the read and the settle — nothing to settle.
     }

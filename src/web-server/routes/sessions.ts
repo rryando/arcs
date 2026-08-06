@@ -519,6 +519,13 @@ async function writeBackRun(
       ...(record.firstTokenAt !== undefined && { firstTokenAt: record.firstTokenAt }),
       ...(record.skippedLines !== undefined && { skippedLines: record.skippedLines }),
       ...(record.eventLogLines !== undefined && { eventLogLines: record.eventLogLines }),
+      // Whether the log is the WHOLE stream. `eventLogLines` alone cannot say:
+      // a log capped on its first chunk reports zero lines, the same number a
+      // child that never spoke reports. Anything that later tails this file by
+      // offset reads this before it treats the file as complete.
+      ...(record.eventLogTruncated !== undefined && {
+        eventLogTruncated: record.eventLogTruncated,
+      }),
       // A log that could not be written is REPORTED here, never thrown: the run
       // itself already succeeded or failed on its own merits.
       ...(record.eventLogError !== undefined && { eventLogError: record.eventLogError }),

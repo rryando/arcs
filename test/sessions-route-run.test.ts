@@ -1813,6 +1813,46 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
     });
   });
 
+  it("carries eventLogTruncated onto metadata.run so a capped log is not read as complete", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      // What the runner reports for a child whose first chunk crossed the cap:
+      // zero lines on disk — the same count a child that never spoke produces.
+      runStdout = "";
+      runRecord = { ...RUN_RECORD, eventLogLines: 0, eventLogTruncated: true };
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_truncated",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      await settledRunId(projectDir, ONESHOT);
+
+      const run = (await getSession(projectDir, ONESHOT)).metadata?.run as Record<string, unknown>;
+      expect(run.eventLogLines).toBe(0);
+      // Without this the record says "0 lines" and nothing else, and a later
+      // offset-based tail would read a capped log as the whole stream.
+      expect(run.eventLogTruncated).toBe(true);
+    });
+  });
+
+  it("omits eventLogTruncated entirely when the log is whole", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(assistantEvent(textBlock("all of it")));
+      runRecord = { ...RUN_RECORD, eventLogLines: 1 };
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_whole",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      await settledRunId(projectDir, ONESHOT);
+
+      const run = (await getSession(projectDir, ONESHOT)).metadata?.run as Record<string, unknown>;
+      expect(run.eventLogLines).toBe(1);
+      expect("eventLogTruncated" in run).toBe(false);
+    });
+  });
+
   it("DELETE takes the session's event logs with its sidecar", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("bye")));

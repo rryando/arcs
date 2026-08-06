@@ -22,6 +22,10 @@
  * Total by construction, like the reader it feeds: nothing here throws. A log
  * that cannot be opened or written reports itself through `RunEventLogStats`
  * and the run proceeds untouched — a logging failure must never fail a run.
+ * Reporting is the whole point: a log that hit its size cap or lost bytes to a
+ * short write says so on `truncated`, which rides all the way out to
+ * `metadata.run.eventLogTruncated`. A silent fallback here would make an empty
+ * log and a capped one look identical to every consumer downstream.
  *
  * At settle the log folds down into the transcript sidecar (assistant text plus
  * one turn per `tool_use`) through `appendSessionTurn`, and older logs for the
@@ -35,9 +39,19 @@ import { appendSessionTurn, readSessionTurns } from "../utils/claude-transcript.
 import { normalizeIdentifier } from "../utils/slug.js";
 
 /**
- * Ceiling on one run's log. Past it the writer stops appending (and says so) —
- * a runaway child cannot fill the disk, and the file always ends on a line
- * boundary so an offset-based tail never reads half a record.
+ * Ceiling on one run's log — a runaway child cannot fill the disk.
+ *
+ * The finished file is never LARGER than this, terminator included: the writer
+ * refuses a chunk that would take it TO the cap (`>=`, not `>`), leaving the one
+ * byte `flush()` may still need. The off-by-one that leaves matters because
+ * `foldRunEventLog` refuses to read anything past this size — a writer allowed
+ * to land on exactly the cap and then add a terminator produces a file its own
+ * fold silently discards.
+ *
+ * Reaching it does not close the log: only the crossing chunk is refused, later
+ * chunks that still fit are still written, and `RunEventLogStats.truncated`
+ * reports that bytes are missing. The file always ends on a line boundary, so an
+ * offset-based tail never reads half a record.
  */
 export const RUN_EVENT_LOG_MAX_BYTES = 32 * 1024 * 1024;
 
@@ -51,6 +65,8 @@ export const RUN_EVENT_LOG_RETENTION = 5;
 
 const LOG_SUFFIX = ".events.jsonl";
 const NEWLINE = 0x0a;
+/** The only byte the log ever adds of its own: a line terminator. */
+const TERMINATOR = Buffer.from("\n", "utf-8");
 
 /** Which run's stdout a log belongs to. */
 export interface RunEventLogTarget {
@@ -66,9 +82,25 @@ export interface RunEventLogTarget {
 export interface RunEventLogStats {
   /** Complete lines appended (the terminator added at flush counts its line). */
   lines: number;
-  /** Bytes appended. */
+  /** Bytes appended — always exactly the size of the file on disk. */
   bytes: number;
-  /** The log stopped at RUN_EVENT_LOG_MAX_BYTES; later stdout was not kept. */
+  /**
+   * The file is INCOMPLETE: bytes the child wrote are not in it, because a chunk
+   * crossed RUN_EVENT_LOG_MAX_BYTES or a write landed short. What IS there is
+   * still whole lines in stream order — but this file is no longer the whole
+   * stream, so nothing may read it (or tail it by offset) as if it were.
+   *
+   * Surfaced all the way to `metadata.run.eventLogTruncated`: without it a
+   * capped log reports `eventLogLines: 0` and is indistinguishable from a child
+   * that said nothing at all.
+   *
+   * `truncated: false` is the strong claim and holds even when `error` is set:
+   * every byte the child wrote is in the file AND the file ends on a line
+   * boundary. An error beside it belongs to a failure that cost no bytes — the
+   * log never opened (`bytes: 0`, nothing was ever written) or the fd failed to
+   * close after everything had landed. Anything that loses bytes or leaves the
+   * last line open, a failed terminator write included, sets `truncated`.
+   */
   truncated: boolean;
   /** First open/write failure, reported rather than thrown. */
   error?: string;
@@ -134,6 +166,13 @@ export function openRunEventLog(target: RunEventLogTarget | undefined): RunEvent
   let truncated = false;
   let closed = false;
   let endsWithNewline = true;
+  /**
+   * Bytes were dropped part-way through a record, so the stream now continues
+   * INSIDE a line this file does not have. Appending those bytes would splice
+   * the tail of a record the log never took onto whatever precedes it and emit
+   * a line the child never wrote, so they are dropped until the next newline.
+   */
+  let resyncing = false;
   let error: string | undefined;
 
   const note = (err: unknown): void => {
@@ -156,46 +195,132 @@ export function openRunEventLog(target: RunEventLogTarget | undefined): RunEvent
     ...(error !== undefined && { error }),
   });
 
+  /**
+   * Appends `buf` whole, returning how many of its bytes actually landed.
+   *
+   * `writeSync` may return SHORT — a signal interrupting the syscall (EINTR), a
+   * filesystem that ran out of room mid-buffer (ENOSPC) — and its return value
+   * is the only place that ever shows. Discarding it emits half a record while
+   * counting a whole one, which breaks "always ends on a line boundary" exactly
+   * when the disk is full. So the loop keeps writing while the fd makes
+   * progress, and reports precisely how far it got. `n <= 0` ends the loop
+   * rather than spinning on an fd that has stopped accepting bytes.
+   */
+  const writeAll = (handle: number, buf: Buffer): number => {
+    let written = 0;
+    while (written < buf.length) {
+      let n: number;
+      try {
+        n = writeSync(handle, buf, written, buf.length - written);
+      } catch (err) {
+        note(err);
+        break;
+      }
+      if (n <= 0) break;
+      written += n;
+    }
+    return written;
+  };
+
+  /** Counts what landed: bytes, whole lines, and where the file now ends. */
+  const account = (buf: Buffer): void => {
+    if (buf.length === 0) return;
+    bytes += buf.length;
+    // Native indexOf rather than a per-byte loop: a megabyte chunk must not
+    // cost a million iterations on the event loop.
+    for (let at = buf.indexOf(NEWLINE); at !== -1; at = buf.indexOf(NEWLINE, at + 1)) {
+      lines += 1;
+    }
+    endsWithNewline = buf[buf.length - 1] === NEWLINE;
+  };
+
+  /**
+   * Closes a line the child left open. The only byte the log adds of its own,
+   * and only when the file would otherwise not end on a line boundary — an
+   * offset-based tail would mis-frame the last record without it.
+   *
+   * Runs at flush() AND the instant a chunk is refused or lands short, not just
+   * at close: after a gap in the stream the next accepted chunk must start its
+   * own line rather than extend the fragment before the gap.
+   *
+   * The terminator write can itself fail, and failing SILENTLY is how a
+   * fabricated line survives every other guard here: the file is left
+   * un-line-closed with `resyncing` unset, so an fd that recovers splices the
+   * next chunk onto the open fragment. A terminator that does not land therefore
+   * sets BOTH flags — `truncated` because the file is no longer line-framed, and
+   * `resyncing` because nothing may extend that fragment ever again.
+   */
+  const terminate = (handle: number): void => {
+    if (endsWithNewline || bytes === 0) return;
+    if (writeAll(handle, TERMINATOR) !== TERMINATOR.length) {
+      truncated = true;
+      resyncing = true;
+      return;
+    }
+    account(TERMINATOR);
+  };
+
   return {
     path,
     push(chunk: Buffer | string): void {
-      if (fd === null || closed || truncated) return;
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf-8");
+      if (fd === null || closed) return;
+      let buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf-8");
       if (buf.length === 0) return;
-      if (bytes + buf.length > RUN_EVENT_LOG_MAX_BYTES) {
-        // Stop at the cap rather than writing a partial record — flush() below
-        // terminates whatever line was open so the file stays line-addressable.
+
+      if (resyncing) {
+        const at = buf.indexOf(NEWLINE);
+        // Still inside the record whose bytes were dropped — all of it belongs
+        // to that record, none of it is a line this file may claim to hold.
+        if (at === -1) return;
+        buf = buf.subarray(at + 1);
+        resyncing = false;
+        // The stream is back at a record start, but the FILE may not be: a
+        // terminator that failed AT the gap left an open fragment behind, and
+        // knowing where the stream resumed does nothing about it. Close it here,
+        // before any of these bytes can land on it — the two questions are
+        // different and only this one keeps the next whole record off the
+        // fragment. A no-op whenever the file already ends on a boundary.
+        terminate(fd);
+        // Still open: the fd will not take even one byte, so stay resynced (a
+        // failed terminate re-arms it) and drop this record too. A fabricated
+        // line is not detectable downstream; a missing one is.
+        if (resyncing) return;
+        if (buf.length === 0) return;
+      }
+
+      if (bytes + buf.length >= RUN_EVENT_LOG_MAX_BYTES) {
+        // The CROSSING chunk is refused whole — never half a record — but the
+        // log stays open. Returning early here for the rest of the run turned
+        // one oversized chunk into a 0-byte file; now every later chunk that
+        // still fits is still kept, and `truncated` is what says the file is no
+        // longer the whole stream. `>=` reserves the byte terminate() may add,
+        // so the finished file never exceeds the size the fold agrees to read.
         truncated = true;
+        // The dropped bytes end mid-record unless the chunk's own last byte was
+        // a terminator; only then does the next chunk start a fresh line.
+        resyncing = buf[buf.length - 1] !== NEWLINE;
+        terminate(fd);
         return;
       }
-      try {
-        writeSync(fd, buf);
-      } catch (err) {
-        note(err);
-        return;
-      }
-      bytes += buf.length;
-      // Native indexOf rather than a per-byte loop: a megabyte chunk must not
-      // cost a million iterations on the event loop.
-      for (let at = buf.indexOf(NEWLINE); at !== -1; at = buf.indexOf(NEWLINE, at + 1)) {
-        lines += 1;
-      }
-      endsWithNewline = buf[buf.length - 1] === NEWLINE;
+
+      const written = writeAll(fd, buf);
+      account(buf.subarray(0, written));
+      if (written === buf.length) return;
+      // A short write: this record is on disk in part only and the stream
+      // continues from bytes that are gone. Same treatment as the cap — say the
+      // file is incomplete, close the half-written line, and skip to the next
+      // boundary instead of splicing the next chunk onto a fragment.
+      truncated = true;
+      // The lost bytes are `buf[written..]`, so the stream stands exactly where
+      // it does after a refusal: at `buf`'s last byte. Same rule as the cap,
+      // deliberately — hardcoding a resync here is safe in direction but throws
+      // away a whole record that begins at a record boundary, for nothing.
+      resyncing = buf[buf.length - 1] !== NEWLINE;
+      terminate(fd);
     },
     flush(): void {
-      if (fd === null || closed || endsWithNewline || bytes === 0) return;
-      // The one byte the log ever adds, and only for a final line the child
-      // never terminated: without it the file would not end on a line boundary
-      // and an offset-based tail would mis-frame the last record.
-      try {
-        writeSync(fd, "\n");
-      } catch (err) {
-        note(err);
-        return;
-      }
-      bytes += 1;
-      lines += 1;
-      endsWithNewline = true;
+      if (fd === null || closed) return;
+      terminate(fd);
     },
     close(): RunEventLogStats {
       if (fd !== null && !closed) {
@@ -368,10 +493,13 @@ export async function foldRunEventLog(
 /**
  * Keeps the newest `keep` event logs for one session and deletes the rest.
  *
- * Called at settle (after the fold), so the log that just settled is always
- * among the survivors and the sessions dir is bounded at `keep` logs per
- * session no matter how many runs a session accumulates. `keep: 0` drops them
- * all — what session deletion uses.
+ * Called at EVERY settle (after the fold), so the log that just settled is
+ * always among the survivors and the sessions dir is bounded at `keep` logs per
+ * session no matter how many runs a session accumulates. "Every settle" means
+ * the startup orphan sweep too (`settleOrphanedRuns`): a server that dies
+ * mid-run never reaches the route's write-back, so without that call site a
+ * session whose runs are always interrupted grows one capped log per run
+ * forever. `keep: 0` drops them all — what session deletion uses.
  *
  * Never throws; returns how many files it removed.
  */

@@ -3,7 +3,7 @@
 // demotion, and the startup sweep that settles runs orphaned by a restart.
 // ---------------------------------------------------------------------------
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   getSession,
   updateSession,
 } from "../src/utils/session-store.js";
+import { RUN_EVENT_LOG_RETENTION, runEventLogPath } from "../src/web-server/run-event-log.js";
 import {
   type AgentsProbe,
   isProcessAlive,
@@ -434,6 +435,71 @@ describe("session-reconciler: settleOrphanedRuns", () => {
 
     expect(await settleOrphanedRuns(dir)).toEqual([]);
     expect(await getSession(dir, "cc-plain")).toEqual(before);
+  });
+
+  it("prunes the settled session's event logs — the crash path is the only settle they get", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-oneshot-demo",
+      origin: "arcs",
+    });
+    // One log per run of a session whose server kept dying mid-run: nothing
+    // ever reached the route's write-back, so nothing ever pruned them.
+    mkdirSync(resolve(dir, "sessions"), { recursive: true });
+    const runs = RUN_EVENT_LOG_RETENTION + 4;
+    for (let i = 0; i < runs; i += 1) {
+      writeFileSync(
+        runEventLogPath(dir, "arcs-oneshot-demo", `run-${String(i).padStart(3, "0")}`),
+        `{"n":${i}}\n`,
+        "utf-8",
+      );
+    }
+    await beginSessionRun(dir, "arcs-oneshot-demo", { runId: "run-gone", pid: DEAD_PID });
+
+    const settled = await settleOrphanedRuns(dir);
+
+    expect(settled).toHaveLength(1);
+    const left = readdirSync(resolve(dir, "sessions")).filter((name) =>
+      name.endsWith(".events.jsonl"),
+    );
+    expect(left).toHaveLength(RUN_EVENT_LOG_RETENTION);
+    // The settle itself is unaffected by retention — the claim is released
+    // whatever the prune manages to delete.
+    expect((await getSession(dir, "arcs-oneshot-demo")).currentRunId).toBeUndefined();
+  });
+
+  it("leaves another session's logs alone while pruning the one it settled", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-oneshot-demo",
+      origin: "arcs",
+    });
+    mkdirSync(resolve(dir, "sessions"), { recursive: true });
+    for (let i = 0; i < RUN_EVENT_LOG_RETENTION + 2; i += 1) {
+      writeFileSync(
+        runEventLogPath(dir, "arcs-oneshot-demo", `run-${String(i).padStart(3, "0")}`),
+        "{}\n",
+        "utf-8",
+      );
+      writeFileSync(
+        runEventLogPath(dir, "arcs-thread-other", `run-${String(i).padStart(3, "0")}`),
+        "{}\n",
+        "utf-8",
+      );
+    }
+    await beginSessionRun(dir, "arcs-oneshot-demo", { runId: "run-gone", pid: DEAD_PID });
+
+    await settleOrphanedRuns(dir);
+
+    const names = readdirSync(resolve(dir, "sessions"));
+    expect(names.filter((name) => name.startsWith("arcs-oneshot-demo.run-"))).toHaveLength(
+      RUN_EVENT_LOG_RETENTION,
+    );
+    expect(names.filter((name) => name.startsWith("arcs-thread-other.run-"))).toHaveLength(
+      RUN_EVENT_LOG_RETENTION + 2,
+    );
   });
 
   it("never throws for a project that has no sessions at all", async () => {
