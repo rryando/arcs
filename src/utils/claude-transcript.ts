@@ -45,6 +45,71 @@ export interface ReferenceSource {
   id?: string;
 }
 
+/**
+ * A markdown document section — the ONLY reference shape that existed before
+ * the union, and therefore the shape every reference turn already on disk
+ * carries. Its `section`/`source` fields are frozen: a sidecar written by an
+ * older ARCS must keep parsing, and a doc reference written today must stay
+ * byte-identical to one written then. The tag is filled in at the schema
+ * boundary (`sessionReferenceSchema`) rather than required on the wire, because
+ * legacy bodies carry no tag at all.
+ */
+export interface DocReference {
+  type: "doc";
+  text: string;
+  section: ReferenceSection;
+  source: ReferenceSource;
+}
+
+/**
+ * A line range in a workspace file, sent as a POINTER rather than as content:
+ * `excerpt` is a short human anchor, never the authoritative text — the agent
+ * reads the live file. `headRev` is the revision the slice was taken at, so a
+ * later diff can tell whether the file moved under the agent.
+ */
+export interface FileReference {
+  type: "file";
+  /** Workspace-relative path, as the caller sent it. */
+  path: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  excerpt?: string;
+  headRev?: string;
+}
+
+/** A DAG entity. Carries no text slice — ARCS is the source of truth for it. */
+export interface NodeReference {
+  type: "node";
+  kind: "task" | "plan" | "knowledge";
+  id: string;
+}
+
+/** Everything a caller can point a session at, discriminated on `type`. */
+export type SessionReference = DocReference | FileReference | NodeReference;
+
+/** The pointer kinds, which have no historical fields of their own and so ride
+ *  a reference turn whole (see `TranscriptTurn.ref`). */
+export type PointerReference = FileReference | NodeReference;
+
+/**
+ * The `text` a reference TURN records — the sidecar's own label, which is what
+ * the transcript panel shows. NOT prompt text: rendering a reference for a
+ * model is `web-server/prompt-assembly.ts`'s exclusive job. Doc references keep
+ * the caller's quoted text verbatim (unchanged from before the union); the
+ * pointer kinds have no text of their own, so the turn carries their identity.
+ */
+export function referenceTurnText(reference: SessionReference): string {
+  switch (reference.type) {
+    case "file":
+      return `${reference.path}:${reference.startLine}-${reference.endLine}`;
+    case "node":
+      return `${reference.kind} ${reference.id}`;
+    default:
+      return reference.text;
+  }
+}
+
 export interface TranscriptTurn {
   /**
    * Absolute 0-based line index in the source transcript for mirrored turns.
@@ -63,6 +128,21 @@ export interface TranscriptTurn {
   section?: ReferenceSection;
   /** Reference turns only: identity of the source document. */
   source?: ReferenceSource;
+  /**
+   * Reference turns only, POINTER kinds only: the file-slice or DAG-node
+   * payload the caller sent, preserved whole. Doc references deliberately do
+   * NOT land here — they keep their historical `section`/`source` fields, so a
+   * record written today is byte-identical to one written before the union
+   * existed and an older sidecar still reads.
+   */
+  ref?: PointerReference;
+  /**
+   * Run this turn was folded down from (see web-server/run-event-log.ts). Set
+   * only on ARCS-authored turns written at a run's settle, where it doubles as
+   * the fold's idempotence marker: a run whose id already appears here has
+   * been folded and is never folded again.
+   */
+  run?: string;
 }
 
 export interface ReadTranscriptResult {
@@ -77,6 +157,8 @@ export interface ReferenceTurnInput {
   tool?: { name: string };
   section?: ReferenceSection;
   source?: ReferenceSource;
+  /** Pointer kinds only — see `TranscriptTurn.ref`. */
+  ref?: PointerReference;
 }
 
 /** An ARCS-authored user/assistant turn sent to the session from the web UI. */
@@ -84,6 +166,11 @@ export interface SessionTurnInput {
   type: "user" | "assistant";
   text: string;
   ts?: string;
+  /** Tool this turn stands for — a `tool_use` folded down from a run's event
+   *  log, rendered dimmed exactly like a mirrored tool turn. */
+  tool?: { name: string };
+  /** Run this turn was folded down from; also the fold's idempotence marker. */
+  run?: string;
 }
 
 /** Single-read cap for transcript files; anything larger mirrors as a no-op. */
@@ -371,8 +458,9 @@ export async function mirrorSessionTranscript(
 }
 
 /**
- * Appends an ARCS-authored reference turn (document section sent to the
- * session) to the sidecar under the same sessions/.store lock the session
+ * Appends an ARCS-authored reference turn (a document section, file slice or
+ * DAG node the caller pointed the session at) to the sidecar under the same
+ * sessions/.store lock the session
  * store uses, so appends serialize with index mutations. A failed append is a
  * swallowed no-op — the caller has already delivered the message. The id is
  * minted from the shared ARCS-authored negative space so it can never collide
@@ -396,6 +484,13 @@ export async function appendReferenceTurn(
         ...(turn.tool !== undefined ? { tool: turn.tool } : {}),
         ...(turn.section !== undefined ? { section: turn.section } : {}),
         ...(turn.source !== undefined ? { source: turn.source } : {}),
+        // LAST for the POINTER records' sake. It buys the doc record nothing: a
+        // doc turn has `ref === undefined`, so this spread contributes no key
+        // wherever it sits, and the pre-union key order survives by that absence
+        // rather than by this position. What the position DOES fix is the pointer
+        // records' own layout — `ref` always trails `section`/`source`, so every
+        // file/node turn serializes its keys in one stable order.
+        ...(turn.ref !== undefined ? { ref: turn.ref } : {}),
       };
       await appendRecords(sidecarPath, [record]);
     });
@@ -411,6 +506,10 @@ export async function appendReferenceTurn(
  * and reference appends. A failed append is a swallowed no-op. The id is
  * minted from the shared ARCS-authored negative space so it can never collide
  * with a reference turn — both render through <TurnRow key={t.id}>.
+ *
+ * `tool` and `run` ride through verbatim: they are what a run's event-log
+ * fold-down writes (one turn per `tool_use`, every turn tagged with the run
+ * whose log produced it — see web-server/run-event-log.ts).
  */
 export async function appendSessionTurn(
   projectDir: string,
@@ -427,6 +526,8 @@ export async function appendSessionTurn(
         type: turn.type,
         text: turn.text,
         ...(turn.ts !== undefined ? { ts: turn.ts } : {}),
+        ...(turn.tool !== undefined ? { tool: turn.tool } : {}),
+        ...(turn.run !== undefined ? { run: turn.run } : {}),
       };
       await appendRecords(sidecarPath, [record]);
     });

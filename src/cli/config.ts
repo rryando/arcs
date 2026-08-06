@@ -215,32 +215,24 @@ export interface ProviderModels {
 // ---------------------------------------------------------------------------
 
 /**
- * Curated list of Claude models supported by Claude Code, grouped by family.
- * Derived from the Claude Code binary (latest-first within each family).
- * Aliases (opus/sonnet/haiku) are listed first as shortcuts.
+ * Curated list of Claude models supported by Claude Code.
+ *
+ * Aliases only — pinned version identifiers (`claude-opus-4-7`, …) are
+ * deliberately absent so a deployed bundle tracks whatever the alias resolves
+ * to instead of freezing on a snapshot that ages out. `fable` is a heavy-class
+ * model offered in the list but not wired as any tier default.
+ *
+ * `inherit` is not a model but the pseudo-value Claude Code agent frontmatter
+ * accepts to defer to the host session's model — the same value
+ * scripts/deploy-claudecode-bundle.mjs falls back to when a tier is unset. It is
+ * listed explicitly because the tier note already tells users to reach for it,
+ * and requiring them to discover it behind "Enter custom model ID" made a
+ * documented choice effectively unreachable.
  */
 const CLAUDE_CODE_MODELS: ProviderModels[] = [
   {
     provider: "claude (aliases)",
-    models: ["opus", "sonnet", "haiku"],
-  },
-  {
-    provider: "claude-opus",
-    models: [
-      "claude-opus-4-7",
-      "claude-opus-4-6",
-      "claude-opus-4-5",
-      "claude-opus-4-1",
-      "claude-opus-4-0",
-    ],
-  },
-  {
-    provider: "claude-sonnet",
-    models: ["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-0", "claude-sonnet-3-7"],
-  },
-  {
-    provider: "claude-haiku",
-    models: ["claude-haiku-4-5", "claude-haiku-3-5"],
+    models: ["opus", "sonnet", "haiku", "fable", "inherit"],
   },
 ];
 
@@ -260,24 +252,32 @@ export async function readClaudeCodeCurrentModel(): Promise<string> {
 }
 
 /**
- * Returns the curated Claude Code model list, sorted so the family matching
- * `currentModel` appears first.
+ * Reads ~/.claude/settings.json and returns the registry id of the primary
+ * agent the last deploy made the default (or empty string if unset / file
+ * missing). scripts/deploy-claudecode-bundle.mjs writes this key on every
+ * deploy, so a re-run of the wizard can pre-select what is actually installed
+ * instead of silently resetting the default back to the built-in fallback.
  */
-export function getClaudeCodeModels(currentModel: string): ProviderModels[] {
-  const family = currentModel.includes("opus")
-    ? "claude-opus"
-    : currentModel.includes("sonnet")
-      ? "claude-sonnet"
-      : currentModel.includes("haiku")
-        ? "claude-haiku"
-        : "";
+export async function readClaudeCodeCurrentPrimaryAgent(): Promise<string> {
+  try {
+    const settingsPath = join(homedir(), ".claude", "settings.json");
+    const content = await readFile(settingsPath, "utf-8");
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return typeof parsed.agent === "string" ? parsed.agent : "";
+  } catch {
+    return "";
+  }
+}
 
-  if (!family) return CLAUDE_CODE_MODELS;
-
-  return [
-    ...CLAUDE_CODE_MODELS.filter((g) => g.provider === family),
-    ...CLAUDE_CODE_MODELS.filter((g) => g.provider !== family),
-  ];
+/**
+ * Returns the curated Claude Code model list.
+ *
+ * The list is a single alias group, so there is nothing to order by the
+ * currently configured model — the "current" model only drives the per-tier
+ * pre-fill at the prompt, not the shape of this list.
+ */
+export function getClaudeCodeModels(): ProviderModels[] {
+  return CLAUDE_CODE_MODELS;
 }
 
 /**

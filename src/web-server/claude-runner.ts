@@ -2,12 +2,18 @@
  * Headless `claude -p` run lifecycle (T001 of the session-panel async-runs plan).
  *
  * Owns everything between "the web route decided to run a job" and a finished
- * run record: spawn, output capture with caps, timeout escalation, `--output-
- * format json` parsing, exit mapping, per-write-target concurrency serialization
- * and ARCS_HOOK_* env scrubbing. The module is argv-agnostic — the calling route
- * supplies argv/cwd; this module never decides what the child does. The route's
- * post-run write-back (transcript mirror + metadata.run finalization) plugs in
- * as the per-job `onSettled` callback, invoked after the child fully exits.
+ * run record: spawn, streaming stdout capture, timeout escalation, NDJSON event
+ * parsing, exit mapping, per-write-target concurrency serialization and
+ * ARCS_HOOK_* env scrubbing. The route supplies argv/cwd and this module never
+ * decides what the child *does* — but it does own the child's OUTPUT CONTRACT:
+ * every run is normalized onto `--output-format stream-json
+ * --include-partial-messages --verbose` (see withStreamJsonArgv), so stdout is
+ * always the newline-delimited event stream the reader below understands. When
+ * the caller supplies an `eventLog` target, that stream is ALSO persisted
+ * verbatim to the run's own event log before the reader parses a byte of it
+ * (see run-event-log.ts) — the log is the durable record, parsing is a consumer.
+ * The route's post-run write-back (transcript mirror + metadata.run finalization)
+ * plugs in as the per-job `onSettled` callback, invoked after the child exits.
  *
  * Injectable `spawnImpl` + `binary` keep tests free of real children; the
  * default impl is plain node child_process `spawn` with `stdio:
@@ -16,6 +22,7 @@
  */
 
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import { openRunEventLog, type RunEventLogTarget } from "./run-event-log.js";
 
 export type RunOutcome = "success" | "error" | "timeout";
 
@@ -27,10 +34,51 @@ export interface ClaudeRunRecord {
   error?: string;
   replyText?: string;
   replyChars?: number;
+  /**
+   * Epoch ms (Date.now(), same unit as startedAt/endedAt — never an ISO string)
+   * of the first assistant content seen on the event stream: time-to-first-token
+   * is `firstTokenAt - startedAt`. Absent when the run produced no content
+   * (spawn failure, refused overlap, a timeout before the model spoke).
+   */
+  firstTokenAt?: number;
+  /**
+   * Count of stdout lines the NDJSON reader could not use — unparsable JSON,
+   * non-object JSON, or an unknown event type. Omitted when zero. A nonzero
+   * count on an otherwise successful run is the wire-format drift signal: the
+   * run still settles normally, the number says the reader fell behind claude.
+   */
+  skippedLines?: number;
+  /**
+   * Lines written to the run's durable event log — the count of stdout lines
+   * that reached disk, which is >= what the reader could use (the log keeps the
+   * ones it skipped too). Absent when the run had no log target.
+   */
+  eventLogLines?: number;
+  /**
+   * The event log is INCOMPLETE — it hit RUN_EVENT_LOG_MAX_BYTES or lost bytes
+   * to a short write, so what is on disk is no longer the whole stream. Omitted
+   * (never `false`) when the log is complete.
+   *
+   * This has to travel with `eventLogLines` or the count lies by omission: a
+   * capped log whose very first chunk was refused reports `eventLogLines: 0`,
+   * which is exactly what a child that said nothing reports. Anything that
+   * tails the file by offset must read this first.
+   */
+  eventLogTruncated?: boolean;
+  /**
+   * Why the event log could not be written, when it failed. REPORTED, never
+   * thrown: a run whose log is unwritable still runs, still settles and still
+   * returns its reply — losing the audit trail is not a reason to lose the run.
+   */
+  eventLogError?: string;
 }
 
 export interface ClaudeJobInput {
-  /** Full argv for the child, e.g. ["-p", "…", "--output-format", "json"]. */
+  /**
+   * Argv for the child, e.g. ["-p", "…", "--resume", "<id>"]. Any caller-supplied
+   * output-format flags are rewritten by withStreamJsonArgv — the runner owns
+   * that part of the contract because it owns the reader.
+   */
   argv: string[];
   /** Working directory for the child; defaults to the server's cwd. */
   cwd?: string;
@@ -44,6 +92,16 @@ export interface ClaudeJobInput {
   /** Base env for the child (defaults to process.env) minus the ARCS_HOOK_*
    *  handshake keys (ARCS_HOOK_TOKEN, ARCS_HOOK_SLUG, ARCS_HOOK_URL). */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Where to persist this run's stdout verbatim. When present, every stdout
+   * chunk is written to `sessions/{sessionId}.run-{runId}.events.jsonl` BEFORE
+   * the NDJSON reader below sees it, on every outcome — success, error and
+   * timeout alike. The caller supplies the runId it already persisted as the
+   * session's `currentRunId`, so the log's name and the session record cannot
+   * disagree. Omit it and the run keeps no log (the runner stays usable without
+   * a project dir).
+   */
+  eventLog?: RunEventLogTarget;
   /**
    * Post-run write-back invoked with the settled record after the child has
    * fully exited (`close` fired, stdio drained) — on every path that yields a
@@ -71,11 +129,60 @@ export interface ClaudeRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
 const DEFAULT_KILL_GRACE_MS = 5_000;
+/**
+ * Bound on the *raw* stdout tail kept as the last-resort reply for a child that
+ * emits no usable events. It no longer truncates real replies — those are
+ * assembled from whole event lines as they arrive.
+ */
 export const STDOUT_CAP = 1024 * 1024; // 1 MB
 export const STDERR_CAP = 4 * 1024; // 4 KB
+/**
+ * Ceiling on a single *unterminated* line the NDJSON reader will buffer — a
+ * memory guard against a child that never emits a newline, not a reply cap. It
+ * sits well above any single claude event (one message cannot approach 8 MB), so
+ * a long reply split across chunks still reassembles whole.
+ */
+export const MAX_EVENT_LINE = 8 * STDOUT_CAP; // 8 MB
+
+/**
+ * Output contract the runner forces onto every child. `--include-partial-messages`
+ * is what makes first-token timing observable at all, and claude >= 2.x refuses
+ * both companions in print mode: "--include-partial-messages requires --print and
+ * --output-format=stream-json" and "When using --print, --output-format=stream-json
+ * requires --verbose" — both exit 1 at flag validation, before any network call.
+ * The three therefore travel together and are never split.
+ */
+const STREAM_JSON_ARGV = [
+  "--output-format",
+  "stream-json",
+  "--include-partial-messages",
+  "--verbose",
+];
 
 /** Keys never forwarded to the child env — the hook handshake must not leak. */
 const ENV_SCRUB_KEYS = ["ARCS_HOOK_TOKEN", "ARCS_HOOK_SLUG", "ARCS_HOOK_URL"];
+
+/**
+ * Rewrites caller argv onto the runner's output contract: drops any
+ * `--output-format <v>` / `--output-format=<v>` the caller chose (routes still
+ * build plain `--output-format json`) plus any duplicate stream companions, then
+ * appends STREAM_JSON_ARGV. Everything else — `-p`, the prompt, `--resume`,
+ * `--session-id` — passes through untouched and in order.
+ */
+export function withStreamJsonArgv(argv: string[]): string[] {
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--output-format") {
+      i += 1; // drop the flag together with its value
+      continue;
+    }
+    if (arg.startsWith("--output-format=")) continue;
+    if (arg === "--include-partial-messages" || arg === "--verbose") continue;
+    rest.push(arg);
+  }
+  return [...rest, ...STREAM_JSON_ARGV];
+}
 
 // ---------------------------------------------------------------------------
 // Concurrency — one live run per write-target key
@@ -121,6 +228,25 @@ export function isRunLive(writeTargetKey: string): boolean {
   return liveRuns.has(writeTargetKey);
 }
 
+/**
+ * Pid of the child currently holding a write-target's slot.
+ *
+ * `undefined` means no live run (the spawn threw, or the slot was refused);
+ * `null` means a live run whose child never reported a pid (an async spawn
+ * failure — node reports ENOENT on the `error` event, not at spawn).
+ *
+ * Exists so the run route can persist the child's pid on the session's run
+ * claim: `runClaudeJob` spawns synchronously (nothing is awaited before
+ * `beginRun`), so a caller that reads this immediately after calling it —
+ * before its own first await — sees the pid of the child it just started.
+ * Read-only: it cannot start, stop or observe anything else about the run.
+ */
+export function liveRunPid(writeTargetKey: string): number | null | undefined {
+  const live = liveRuns.get(writeTargetKey);
+  if (live === undefined) return undefined;
+  return live.child.pid ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // runClaudeJob
 // ---------------------------------------------------------------------------
@@ -147,7 +273,13 @@ export async function runClaudeJob(
 
   let child: ChildProcess;
   try {
-    child = spawnImpl(binary, argv, { cwd, env: scrubEnv(env), stdio: ["ignore", "pipe", "pipe"] });
+    // NOTE: no "--cwd" flag — claude >= 2.x rejects it; the working directory
+    // rides spawn options only.
+    child = spawnImpl(binary, withStreamJsonArgv(argv), {
+      cwd,
+      env: scrubEnv(env),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   } catch (err) {
     // Some spawn failures surface synchronously (fake impls, odd platforms).
     return writeBack(input, fail("error", spawnErrorMessage(err, binary)));
@@ -165,7 +297,12 @@ export async function runClaudeJob(
 
   const record: ClaudeRunRecord = { pid: child.pid ?? null, startedAt, outcome: "success" };
   try {
-    const settled = await settleRun(child, { timeoutMs, killGraceMs, binary });
+    const settled = await settleRun(child, {
+      timeoutMs,
+      killGraceMs,
+      binary,
+      ...(input.eventLog !== undefined && { eventLog: input.eventLog }),
+    });
     record.endedAt = settled.endedAt;
     record.outcome = settled.outcome;
     if (settled.error !== undefined) record.error = settled.error;
@@ -173,6 +310,15 @@ export async function runClaudeJob(
       record.replyText = settled.replyText;
       record.replyChars = settled.replyText.length;
     }
+    // Streamed observations survive every outcome — a timed-out run that spoke
+    // before the kill still carries its TTFT number.
+    if (settled.firstTokenAt !== undefined) record.firstTokenAt = settled.firstTokenAt;
+    if (settled.skippedLines !== undefined) record.skippedLines = settled.skippedLines;
+    if (settled.eventLogLines !== undefined) record.eventLogLines = settled.eventLogLines;
+    if (settled.eventLogTruncated !== undefined) {
+      record.eventLogTruncated = settled.eventLogTruncated;
+    }
+    if (settled.eventLogError !== undefined) record.eventLogError = settled.eventLogError;
   } catch (err) {
     // Never throw on child-side failures — every path resolves to a record.
     record.outcome = "error";
@@ -210,6 +356,7 @@ interface SettleContext {
   timeoutMs: number;
   killGraceMs: number;
   binary: string;
+  eventLog?: RunEventLogTarget;
 }
 
 interface SettleResult {
@@ -217,12 +364,20 @@ interface SettleResult {
   outcome: RunOutcome;
   error?: string;
   replyText?: string;
+  firstTokenAt?: number;
+  skippedLines?: number;
+  eventLogLines?: number;
+  eventLogTruncated?: boolean;
+  eventLogError?: string;
 }
 
 function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResult> {
   return new Promise<SettleResult>((resolve) => {
-    const stdout = makeTailBuffer(STDOUT_CAP);
+    const stdout = makeStreamReader({ rawCap: STDOUT_CAP, lineCap: MAX_EVENT_LINE });
     const stderr = makeTailBuffer(STDERR_CAP);
+    // Opened before any listener attaches, so the file exists even for a child
+    // that never writes a byte — an error or timeout run still leaves a log.
+    const events = openRunEventLog(ctx.eventLog);
     let settled = false;
     let timedOut = false;
     let termTimer: NodeJS.Timeout | null = null;
@@ -235,6 +390,8 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
       killTimer = null;
     };
 
+    // Every settle path — error, close, timeout — carries whatever the stream
+    // already observed, so these two never depend on how the run ended.
     const settle = (result: SettleResult): void => {
       if (settled) return;
       settled = true;
@@ -242,7 +399,23 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
       child.removeAllListeners();
       child.stdout?.removeAllListeners();
       child.stderr?.removeAllListeners();
-      resolve(result);
+      // The log closes on EVERY settle path — error, close and timeout — so the
+      // durable record of what the child said outlives how the run ended.
+      events.flush();
+      const log = events.close();
+      const seen = stdout.snapshot();
+      resolve({
+        ...result,
+        ...(seen.firstTokenAt !== undefined && { firstTokenAt: seen.firstTokenAt }),
+        ...(seen.skippedLines > 0 && { skippedLines: seen.skippedLines }),
+        ...(ctx.eventLog !== undefined && { eventLogLines: log.lines }),
+        // Only when it engaged. A log that hit its cap and one from a silent
+        // child both report zero lines, so the count alone cannot tell them
+        // apart — this flag is the difference, and dropping it here is what
+        // made the cap invisible to every consumer of the record.
+        ...(log.truncated && { eventLogTruncated: true }),
+        ...(log.error !== undefined && { eventLogError: log.error }),
+      });
     };
 
     termTimer = setTimeout(() => {
@@ -253,7 +426,15 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
       }, ctx.killGraceMs);
     }, ctx.timeoutMs);
 
-    child.stdout?.on("data", (chunk: Buffer | string) => stdout.push(String(chunk)));
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      // DURABLE FIRST. The raw bytes hit disk synchronously here, before the
+      // reader below is given a chance to parse them — the log is the source of
+      // truth and the reader is a consumer, so a line the reader cannot use (or
+      // a process that dies on the very next statement) still leaves the line
+      // on disk. Never throws: openRunEventLog reports failures instead.
+      events.push(chunk);
+      stdout.push(String(chunk));
+    });
     child.stderr?.on("data", (chunk: Buffer | string) => stderr.push(String(chunk)));
 
     child.on("error", (err: Error) => {
@@ -264,15 +445,17 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
       });
     });
 
-    // Resolve on `close` (after stdio drained) rather than `exit` so the caps
-    // see the complete output. `close` also fires after a failed spawn.
+    // Resolve on `close` (after stdio drained) rather than `exit` so the reader
+    // sees the complete output. `close` also fires after a failed spawn.
     child.on("close", (code, signal) => {
+      // A final line that never got its newline is still a line.
+      stdout.flush();
       settle(
         mapExit({
           code,
           signal: signal ?? null,
           timedOut,
-          stdout,
+          stdout: stdout.snapshot(),
           stderr,
           timeoutMs: ctx.timeoutMs,
         }),
@@ -285,7 +468,7 @@ function mapExit(input: {
   code: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
-  stdout: TailBuffer;
+  stdout: StreamSnapshot;
   stderr: TailBuffer;
   timeoutMs: number;
 }): SettleResult {
@@ -300,22 +483,15 @@ function mapExit(input: {
   }
 
   if (input.code === 0) {
-    const parsed = parseClaudeJson(input.stdout.text());
-    if (parsed) {
-      if (parsed.is_error) {
-        return {
-          endedAt,
-          outcome: "error",
-          error: parsed.result?.trim() || "claude reported an error (is_error)",
-        };
-      }
-      // `result` is optional — fall back to the trimmed raw stdout when absent.
-      const replyText =
-        typeof parsed.result === "string" ? parsed.result : input.stdout.text().trim();
-      return { endedAt, outcome: "success", replyText };
+    const { result } = input.stdout;
+    if (result?.isError) {
+      return {
+        endedAt,
+        outcome: "error",
+        error: result.text?.trim() || "claude reported an error (is_error)",
+      };
     }
-    // Unparsable stdout on exit 0 — treat the trimmed raw stdout as the reply.
-    return { endedAt, outcome: "success", replyText: input.stdout.text().trim() };
+    return { endedAt, outcome: "success", replyText: replyFrom(input.stdout) };
   }
 
   if (input.signal) {
@@ -334,34 +510,32 @@ function mapExit(input: {
   };
 }
 
-interface ClaudeJsonOutput {
-  is_error?: boolean;
-  result?: string;
+/**
+ * Reply precedence, most authoritative first: the terminal `result` event's own
+ * text (verbatim, never trimmed — the model owns its whitespace), then the
+ * assembled text of the completed assistant messages, then the raw stdout tail
+ * for a child that spoke no events at all. Only the last one is STDOUT_CAP-bound.
+ */
+function replyFrom(stream: StreamSnapshot): string {
+  if (typeof stream.result?.text === "string") return stream.result.text;
+  const assistant = stream.assistantText.trim();
+  if (assistant) return assistant;
+  return stream.rawTail.trim();
 }
 
 /**
- * Parses `claude --output-format json` stdout. Returns null when the output is
- * not a JSON object carrying the is_error/result envelope, so the caller can
- * fall back to raw stdout. Never throws.
+ * The ceiling a run will actually be killed at: an explicit override first,
+ * then ARCS_CLAUDE_RUN_TIMEOUT_MS, then the 10-minute default.
+ *
+ * Exported because the run route has to persist the resulting DEADLINE with the
+ * session's run claim (a claim is only proof of life until the child is killed),
+ * and a second copy of this precedence in the route would silently drift from
+ * the one the timer here is armed with.
  */
-function parseClaudeJson(stdout: string): ClaudeJsonOutput | null {
-  const text = stdout.trim();
-  if (!text) return null;
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof value !== "object" || value === null) return null;
-  const candidate = value as ClaudeJsonOutput;
-  if (typeof candidate.is_error !== "boolean" && typeof candidate.result !== "string") {
-    return null;
-  }
-  return candidate;
-}
-
-function resolveTimeoutMs(timeoutMs: number | undefined, env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(
+  timeoutMs: number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
     return timeoutMs;
   }
@@ -439,4 +613,184 @@ function makeTailBuffer(limit: number): TailBuffer {
       return chunks.join("");
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// stream-json NDJSON reader
+// ---------------------------------------------------------------------------
+
+/** What the reader observed so far; read at settle time, never mid-flight. */
+interface StreamSnapshot {
+  /** The terminal `result` event, when the stream carried one. */
+  result?: { isError: boolean; text?: string };
+  /** Concatenated text of completed `assistant` messages (fallback reply). */
+  assistantText: string;
+  /** Epoch ms of the first assistant content seen (partial delta or message). */
+  firstTokenAt?: number;
+  /** Raw stdout tail — last-resort reply for a child that emits no events. */
+  rawTail: string;
+  /** Lines skipped: unparsable, non-object, or unknown-type. */
+  skippedLines: number;
+}
+
+interface StreamReader {
+  push(chunk: string): void;
+  /** Consumes a trailing line that arrived without its newline (at close). */
+  flush(): void;
+  snapshot(): StreamSnapshot;
+}
+
+/** Event types the reader knows; anything else is ignored (and counted). */
+const KNOWN_EVENT_TYPES = new Set(["result", "assistant", "user", "system", "stream_event"]);
+
+/**
+ * Line-oriented reader over `--output-format stream-json` stdout.
+ *
+ * Tolerant by construction, because the wire schema is claude's to change:
+ * unknown event types are ignored rather than fatal, unparsable lines are
+ * skipped and counted, and no shape assumption is made beyond "JSON object with
+ * a string `type`". It never throws — a reader that can fail a run would make
+ * every future claude release a potential outage.
+ *
+ * Chunk boundaries are irrelevant: a chunk that ends mid-JSON leaves the partial
+ * line buffered until its newline arrives, and one line split across ten chunks
+ * parses exactly once. Because complete lines are consumed as they arrive, the
+ * reply is never truncated by either cap — `rawCap` bounds only the unused raw
+ * fallback tail, and `lineCap` only a single *unterminated* line (a runaway
+ * child with no newlines), which is then dropped along with the rest of it.
+ */
+function makeStreamReader(caps: { rawCap: number; lineCap: number }): StreamReader {
+  const { rawCap, lineCap } = caps;
+  const raw = makeTailBuffer(rawCap);
+  const state: StreamSnapshot = { assistantText: "", rawTail: "", skippedLines: 0 };
+  let pending = "";
+  let dropping = false;
+
+  const consumeLine = (line: string): void => {
+    // Tolerate CRLF: the trailing \r is not part of the JSON.
+    const text = (line.endsWith("\r") ? line.slice(0, -1) : line).trim();
+    if (text === "") return; // blank separator lines are normal, not drift
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      state.skippedLines += 1;
+      return;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      state.skippedLines += 1;
+      return;
+    }
+    applyEvent(value as Record<string, unknown>, state);
+  };
+
+  return {
+    push(chunk: string): void {
+      raw.push(chunk);
+      const parts = (pending + chunk).split("\n");
+      // The last part has not met its newline yet — it stays buffered, which is
+      // exactly how a chunk that ends mid-JSON survives to be parsed once.
+      pending = parts.pop() ?? "";
+      for (const line of parts) {
+        // The tail of an over-cap line ends here; the next line is clean again.
+        if (dropping) dropping = false;
+        else consumeLine(line);
+      }
+      if (dropping) {
+        pending = "";
+      } else if (pending.length > lineCap) {
+        // One line longer than the cap with no newline in sight — drop it (and
+        // the rest of it) so a runaway child cannot balloon memory.
+        state.skippedLines += 1;
+        dropping = true;
+        pending = "";
+      }
+    },
+    flush(): void {
+      if (!dropping && pending !== "") consumeLine(pending);
+      pending = "";
+      dropping = false;
+    },
+    snapshot(): StreamSnapshot {
+      return { ...state, rawTail: raw.text() };
+    },
+  };
+}
+
+/**
+ * Folds one decoded event into the snapshot. Every branch is defensive about
+ * field types — a `result` without a string `result`, an `assistant` without
+ * content, a `stream_event` with a shape we have never seen are all survivable.
+ */
+function applyEvent(event: Record<string, unknown>, state: StreamSnapshot): void {
+  const type = typeof event.type === "string" ? event.type : "";
+
+  if (type === "result" || (!KNOWN_EVENT_TYPES.has(type) && isLegacyEnvelope(event))) {
+    // The legacy single-object `--output-format json` envelope has no `type`;
+    // an older or wrapped claude still settles the same way.
+    state.result = {
+      isError: event.is_error === true,
+      ...(typeof event.result === "string" && { text: event.result }),
+    };
+    return;
+  }
+
+  if (type === "assistant") {
+    const text = assistantMessageText(event.message);
+    if (text !== "") {
+      state.assistantText += text;
+      markFirstToken(state);
+    }
+    return;
+  }
+
+  if (type === "stream_event") {
+    // Partial deltas are the earliest possible content signal — this is the
+    // line `--include-partial-messages` exists to deliver, and where TTFT is
+    // actually measured. Their text is NOT accumulated: the completed
+    // `assistant` message repeats it, and double-counting would duplicate the
+    // fallback reply.
+    if (partialText(event.event) !== "") markFirstToken(state);
+    return;
+  }
+
+  // `user`, `system` and friends carry no reply text — known, so not drift.
+  if (!KNOWN_EVENT_TYPES.has(type)) state.skippedLines += 1;
+}
+
+/** The pre-stream `{is_error?, result?}` object, recognized by shape alone. */
+function isLegacyEnvelope(event: Record<string, unknown>): boolean {
+  return typeof event.is_error === "boolean" || typeof event.result === "string";
+}
+
+function markFirstToken(state: StreamSnapshot): void {
+  if (state.firstTokenAt === undefined) state.firstTokenAt = Date.now();
+}
+
+/** Text blocks of a completed assistant message, tolerant of string content. */
+function assistantMessageText(message: unknown): string {
+  const content = readField(message, "content");
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let text = "";
+  for (const block of content) {
+    if (readField(block, "type") !== "text") continue;
+    const blockText = readField(block, "text");
+    if (typeof blockText === "string") text += blockText;
+  }
+  return text;
+}
+
+/** Text carried by a partial-message event (`content_block_delta` and kin). */
+function partialText(inner: unknown): string {
+  for (const key of ["delta", "content_block"]) {
+    const text = readField(readField(inner, key), "text");
+    if (typeof text === "string" && text !== "") return text;
+  }
+  return "";
+}
+
+function readField(node: unknown, key: string): unknown {
+  if (typeof node !== "object" || node === null) return undefined;
+  return (node as Record<string, unknown>)[key];
 }

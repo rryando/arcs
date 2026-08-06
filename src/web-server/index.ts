@@ -4,13 +4,14 @@
 
 import { spawn } from "node:child_process";
 import { serve } from "@hono/node-server";
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT } from "../utils/hook-contract.js";
 import { createApp } from "./app.js";
 import { isLoopbackHost } from "./security.js";
 
 export interface StartWebServerOptions {
-  /** Port to listen on (default 4173). Pass 0 for an ephemeral port. */
+  /** Port to listen on (defaults to `DEFAULT_WEB_PORT`). Pass 0 for an ephemeral port. */
   port?: number;
-  /** Interface to bind (default 127.0.0.1). */
+  /** Interface to bind (defaults to `DEFAULT_WEB_HOST`). */
   host?: string;
   /** Auto-open the browser (default false here; the CLI command defaults true). */
   open?: boolean;
@@ -43,8 +44,8 @@ function openBrowser(url: string): void {
 export async function startWebServer(
   options: StartWebServerOptions = {},
 ): Promise<WebServerHandle> {
-  const host = options.host ?? "127.0.0.1";
-  const requestedPort = options.port ?? 4173;
+  const host = options.host ?? DEFAULT_WEB_HOST;
+  const requestedPort = options.port ?? DEFAULT_WEB_PORT;
   if (!isLoopbackHost(host)) {
     throw new Error(
       `ARCS web only binds to loopback addresses; refusing non-loopback host "${host}".`,

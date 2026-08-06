@@ -25,6 +25,7 @@ import {
   type SessionMeta,
 } from "../src/utils/session-store.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
+import { currentWebToken } from "../src/web-server/web-token.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 interface CapturedRequest {
@@ -203,7 +204,7 @@ async function withRouteCtx(run: (ctx: Ctx) => Promise<void>): Promise<void> {
 async function sendMessage(base: string, id: string, body: unknown) {
   const res = await fetch(`${base}/api/p/demo/sessions/${id}/message`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
     body: JSON.stringify(body),
   });
   const envelope = (await res.json()) as {
@@ -226,7 +227,7 @@ function setWorkspacePaths(projectDir: string, paths: string[]): void {
 async function createOpencode(base: string, body: unknown = {}) {
   const res = await fetch(`${base}/api/p/demo/sessions/opencode/new`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
     body: JSON.stringify(body),
   });
   const envelope = (await res.json()) as {
@@ -436,6 +437,71 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
       const { envelope } = await sendMessage(base, session.normalizedId, { message: "second" });
 
       expect(envelope.data?.messageQueue).toEqual(["first", "second"]);
+    });
+  });
+
+  it("refuses to queue for an arcs-origin session instead of swallowing the message", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      const thread = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "arcs-thread-demo-1",
+        origin: "arcs",
+        metadata: { control: "arcs-owned", directory: "/work/demo" },
+      });
+
+      const { status, envelope } = await sendMessage(base, thread.normalizedId, {
+        message: "into the void",
+        reference: REFERENCE,
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("SESSION_QUEUE_UNSUPPORTED");
+      // The refusal has to say what to do instead, or it is just a dead end.
+      expect(envelope.message).toMatch(/\/turns/);
+
+      // Nothing was accepted anywhere: no queue entry, no timestamp bump, and
+      // no reference turn left dangling in the sidecar.
+      const stored = await getSession(projectDir, thread.normalizedId);
+      expect(stored.messageQueue).toBeUndefined();
+      expect(stored.lastMessageAt).toBeUndefined();
+      expect(await readSessionTurns(projectDir, thread.normalizedId)).toEqual([]);
+      expect(opencode.requests).toHaveLength(0);
+    });
+  });
+
+  it("refuses a legacy arcs-owned record the same way, with no migration run", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      // A record persisted before `origin` existed: the marker is the only
+      // signal it was ARCS-minted, and the read path promotes it.
+      mkdirSync(resolve(projectDir, "sessions"), { recursive: true });
+      writeFileSync(
+        resolve(projectDir, "sessions", "index.json"),
+        JSON.stringify({
+          sessions: [
+            {
+              id: "arcs-thread-demo-legacy",
+              normalizedId: "arcs-thread-demo-legacy",
+              runtimeType: "claude-code",
+              runtimeSessionId: "arcs-thread-demo-legacy",
+              status: "active",
+              startedAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              metadata: { control: "arcs-owned", directory: "/work/demo" },
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const { status, envelope } = await sendMessage(base, "arcs-thread-demo-legacy", {
+        message: "into the void",
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("SESSION_QUEUE_UNSUPPORTED");
+      expect(
+        (await getSession(projectDir, "arcs-thread-demo-legacy")).messageQueue,
+      ).toBeUndefined();
     });
   });
 
@@ -650,6 +716,241 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The reference union (sessionReferenceSchema)
+// ---------------------------------------------------------------------------
+
+/**
+ * A reference turn exactly as ARCS wrote it BEFORE the union existed: the doc
+ * shape, carrying no variant tag anywhere. Sidecars full of these lines are
+ * already on disk, so both the schema (it must still parse an untagged body)
+ * and the writer (it must still produce these bytes) are pinned against it.
+ */
+const LEGACY_REFERENCE_LINE =
+  '{"id":-1,"type":"reference","text":"Queue drain happens at the next hook checkpoint.",' +
+  '"ts":"2026-01-01T00:00:00.000Z","section":{"depth":1,"text":"The session drains the queue ' +
+  'at the next hook checkpoint.","id":"sec_1","startOffset":120,"endOffset":220},' +
+  '"source":{"kind":"knowledge","label":"session-bridge","doc":"docs/bridge.md","id":"k_1"}}';
+
+/** A `file` reference: a POINTER plus a short anchor excerpt and the rev the
+ *  slice was taken at. */
+const FILE_REFERENCE = {
+  type: "file",
+  path: "src/web-server/routes/sessions.ts",
+  startLine: 91,
+  endLine: 106,
+  excerpt: "const sessionReferenceSchema = z.preprocess(",
+  headRev: "cabf1955ac",
+} as const;
+
+/** A `node` reference: a DAG entity, with no text slice of its own. */
+const NODE_REFERENCE = {
+  type: "node",
+  kind: "task",
+  id: "w3-reference-union-schema-and-prompt-assembly-ref-rendering",
+} as const;
+
+/** The one line the sidecar holds, as raw bytes. */
+function readSidecarLine(projectDir: string, normalizedId: string): string {
+  const raw = readFileSync(sessionTranscriptPath(projectDir, normalizedId), "utf-8");
+  expect(raw.endsWith("\n")).toBe(true);
+  const lines = raw.split("\n").filter((line) => line !== "");
+  expect(lines).toHaveLength(1);
+  return lines[0];
+}
+
+describe("POST /api/p/:slug/sessions/:id/message — reference union", () => {
+  it("still reads a doc reference turn written before the union existed", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_legacy",
+      });
+      mkdirSync(resolve(projectDir, "sessions"), { recursive: true });
+      writeFileSync(
+        sessionTranscriptPath(projectDir, session.normalizedId),
+        `${LEGACY_REFERENCE_LINE}\n`,
+        "utf-8",
+      );
+
+      // Parses off disk unchanged, and reaches the read-model intact.
+      expect(await readSessionTurns(projectDir, session.normalizedId)).toEqual([
+        JSON.parse(LEGACY_REFERENCE_LINE),
+      ]);
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      const envelope = (await res.json()) as { ok: boolean; data?: { turns: unknown[] } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.turns).toEqual([JSON.parse(LEGACY_REFERENCE_LINE)]);
+    });
+  });
+
+  it("writes an untagged doc reference byte-identically to the pre-union record", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_bytes",
+      });
+
+      // REFERENCE carries no `type` — exactly what every caller sent before the
+      // union, and what the web UI still sends today.
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "point me at the doc",
+        reference: REFERENCE,
+      });
+      expect(status).toBe(200);
+
+      // `ts` is the only value minted at write time; pin it and the bytes must
+      // match the pre-union record exactly — same keys, same order, no tag.
+      const line = readSidecarLine(projectDir, session.normalizedId).replace(
+        /"ts":"[^"]+"/,
+        '"ts":"2026-01-01T00:00:00.000Z"',
+      );
+      expect(line).toBe(LEGACY_REFERENCE_LINE);
+    });
+  });
+
+  // The tag is wire-only for the DOC record specifically — not for the sidecar in
+  // general. A pointer turn serializes its discriminator inside `ref`, which is
+  // what makes it re-readable as its own variant (pinned below).
+  it("adds no tag to the doc record — an explicit type:doc writes the same bytes", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_tagged",
+      });
+
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "tagged explicitly",
+        reference: { type: "doc", ...REFERENCE },
+      });
+      expect(status).toBe(200);
+
+      const line = readSidecarLine(projectDir, session.normalizedId).replace(
+        /"ts":"[^"]+"/,
+        '"ts":"2026-01-01T00:00:00.000Z"',
+      );
+      expect(line).toBe(LEGACY_REFERENCE_LINE);
+    });
+  });
+
+  it("400s an unknown reference variant instead of coercing it to a known one", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_unknown",
+      });
+
+      const { status, envelope } = await sendMessage(base, session.normalizedId, {
+        message: "unknown variant",
+        reference: { type: "diff", path: "src/a.ts", startLine: 1, endLine: 2 },
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("INVALID_BODY");
+      expect(envelope.message).toContain("type");
+      expect(envelope.message).toContain("'doc' | 'file' | 'node'");
+
+      // Refused before delivery: nothing queued, nothing appended.
+      const stored = await getSession(projectDir, session.normalizedId);
+      expect(stored.messageQueue).toBeUndefined();
+      expect(existsSync(sessionTranscriptPath(projectDir, session.normalizedId))).toBe(false);
+    });
+  });
+
+  it("400s a malformed variant rather than falling back to another one", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_malformed",
+      });
+      const send = (reference: unknown) =>
+        sendMessage(base, session.normalizedId, { message: "malformed", reference });
+
+      // Untagged, but not the doc shape — it is NOT silently read as a file ref.
+      const untagged = await send({ path: "src/a.ts", startLine: 1, endLine: 2 });
+      expect(untagged.status).toBe(400);
+      expect(untagged.envelope.message).toContain("section");
+
+      // A file ref missing its range.
+      const noRange = await send({ type: "file", path: "src/a.ts" });
+      expect(noRange.status).toBe(400);
+      expect(noRange.envelope.message).toContain("startLine");
+
+      // A backwards slice would render a nonsense pointer into the prompt.
+      const inverted = await send({ type: "file", path: "src/a.ts", startLine: 9, endLine: 2 });
+      expect(inverted.status).toBe(400);
+      expect(inverted.envelope.message).toContain("endLine");
+
+      // A node ref naming a kind that is not a DAG entity.
+      const badKind = await send({ type: "node", kind: "session", id: "s_1" });
+      expect(badKind.status).toBe(400);
+      expect(badKind.envelope.message).toContain("kind");
+
+      expect(existsSync(sessionTranscriptPath(projectDir, session.normalizedId))).toBe(false);
+    });
+  });
+
+  it("stores a file reference whole on the turn, with headRev intact", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_file",
+      });
+
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "look at this slice",
+        reference: FILE_REFERENCE,
+      });
+      expect(status).toBe(200);
+
+      const turns = await readSessionTurns(projectDir, session.normalizedId);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({
+        id: -1,
+        type: "reference",
+        // The pointer is the turn's own label; the doc fields stay unused.
+        text: "src/web-server/routes/sessions.ts:91-106",
+        ref: FILE_REFERENCE,
+      });
+      expect(turns[0].section).toBeUndefined();
+      expect(turns[0].source).toBeUndefined();
+      expect(turns[0].ref?.type === "file" && turns[0].ref.headRev).toBe("cabf1955ac");
+
+      // The discriminator IS on disk for a pointer record, and necessarily so —
+      // without it the line cannot be read back as a file reference. Only the
+      // frozen doc record stays untagged.
+      expect(readSidecarLine(projectDir, session.normalizedId)).toContain('"ref":{"type":"file"');
+    });
+  });
+
+  it("stores a node reference whole on the turn and serves it to the read-model", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_node",
+      });
+
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "this is the node",
+        reference: NODE_REFERENCE,
+      });
+      expect(status).toBe(200);
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      const envelope = (await res.json()) as { ok: boolean; data?: { turns: unknown[] } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.turns).toEqual([
+        expect.objectContaining({
+          id: -1,
+          type: "reference",
+          text: `task ${NODE_REFERENCE.id}`,
+          ref: NODE_REFERENCE,
+        }),
+      ]);
+    });
+  });
+});
+
 describe("GET /api/p/:slug/sessions/:id/transcript", () => {
   it("404s for a session the project does not have", async () => {
     await withRouteCtx(async ({ base }) => {
@@ -797,7 +1098,7 @@ describe("DELETE /api/p/:slug/sessions/:id", () => {
 
       const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
@@ -818,7 +1119,7 @@ describe("DELETE /api/p/:slug/sessions/:id", () => {
 
       const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
@@ -844,7 +1145,7 @@ describe("DELETE /api/p/:slug/sessions/:id", () => {
 
       const res = await fetch(`${base}/api/p/demo/sessions/${encodeURIComponent("Delete Me 1")}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };

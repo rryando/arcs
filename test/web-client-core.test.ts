@@ -1,14 +1,41 @@
 /**
- * Unit tests for the web client's pure shortcut-matching core and the
- * server's SSE change classifier.
+ * Unit tests for the web client's pure shortcut-matching core, its API request
+ * builder, its session-state vocabulary (the sessions filter, the live counter,
+ * the composer's resume gate and the badge they must all agree with about every
+ * row) and the zero-import leaf that vocabulary lives in, the run-stream fold
+ * and the turn-list composition that consume the run event stream, the server's
+ * SSE change classifier, and the dev-only vite plugin that supplies the token in
+ * `vite dev`.
  */
 
-import { describe, expect, it } from "vitest";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type Plugin, resolveConfig } from "vite";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
+import type { SessionTurn } from "../web/src/api/client.js";
+import {
+  EMPTY_RUN_STREAM,
+  foldRunEnd,
+  foldRunLine,
+  type RunStreamState,
+  runStreamText,
+} from "../web/src/api/sse.js";
+import { composeTurnList } from "../web/src/components/SessionPanel.js";
+import {
+  filterSessionsByState,
+  isSessionAttached,
+  isSessionLive,
+  type SessionStateSource,
+  SessionStatusBadge,
+  sessionStateChips,
+} from "../web/src/components/SessionStatusBadge.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { resolveReference } from "../web/src/lib/reference-resolver.js";
 import { type Binding, eventToKey, matchBindings } from "../web/src/lib/shortcuts.js";
+import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 function keyEvent(
   key: string,
@@ -241,5 +268,666 @@ describe("resolveReference", () => {
     expect(
       resolveReference({ slug: "arcs", kind: "plan", id: "my-plan", sectionId: "tasks" }),
     ).toEqual({ path: "/p/arcs/plans/my-plan", hash: "#tasks" });
+  });
+});
+
+describe("session state filter vs badge", () => {
+  /**
+   * The label `SessionStatusBadge` actually renders for a record, read off the
+   * element it returns rather than recomputed — so these assertions are about
+   * the badge itself, not about a second copy of its logic.
+   */
+  function badgeLabel(session: SessionStateSource): string {
+    const text: string[] = [];
+    const walk = (node: unknown): void => {
+      if (typeof node === "string") {
+        text.push(node);
+      } else if (Array.isArray(node)) {
+        for (const child of node) walk(child);
+      } else if (node && typeof node === "object" && "props" in node) {
+        walk((node as { props: { children?: unknown } }).props.children);
+      }
+    };
+    walk(SessionStatusBadge({ session }));
+    // [glyph, label] — the badge's own text is the last leaf.
+    return text.at(-1) ?? "";
+  }
+
+  // The record the two axes disagree about: stored `active` (its heartbeat
+  // lapsed, nothing ever closed it) while the server derives `idle`.
+  const lapsed: SessionStateSource = { status: "active", phase: "idle" };
+  const live: SessionStateSource = { status: "idle", phase: "running" };
+  const over: SessionStateSource = { status: "completed", phase: "ended" };
+  // Reached the UI without a phase (the record echoed by `POST /run`).
+  const phaseless: SessionStateSource = { status: "disconnected" };
+  const sessions = [lapsed, live, over, phaseless];
+
+  it("badges a session by its derived phase, falling back to the stored status", () => {
+    expect(badgeLabel(lapsed)).toBe("idle");
+    expect(badgeLabel(live)).toBe("running");
+    expect(badgeLabel(over)).toBe("ended");
+    expect(badgeLabel(phaseless)).toBe("disconnected");
+  });
+
+  it("never shows a row under a chip its own badge contradicts", () => {
+    for (const chip of sessionStateChips(sessions, null)) {
+      for (const session of filterSessionsByState(sessions, chip)) {
+        expect(badgeLabel(session)).toBe(chip);
+      }
+    }
+  });
+
+  it("filters the disagreeing record on its phase, never on its stored status", () => {
+    expect(filterSessionsByState(sessions, "idle")).toContain(lapsed);
+    expect(filterSessionsByState(sessions, "active")).toEqual([]);
+    expect(sessionStateChips(sessions, null)).not.toContain("active");
+  });
+
+  it("offers a chip for every visible row and no chip that matches nothing", () => {
+    const chips = sessionStateChips(sessions, null);
+    expect(chips).toEqual(["running", "idle", "ended", "disconnected"]);
+    for (const session of sessions) expect(chips).toContain(badgeLabel(session));
+    for (const chip of chips)
+      expect(filterSessionsByState(sessions, chip).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the active chip clickable after its last row leaves the list", () => {
+    expect(sessionStateChips([over], "running")).toEqual(["running", "ended"]);
+  });
+
+  it("filters nothing out under `all`", () => {
+    expect(filterSessionsByState(sessions, null)).toEqual(sessions);
+  });
+
+  // The two non-badge controls. Neither takes a badge prop, so giving the badge
+  // the record did nothing for them — they are only safe because they take the
+  // record themselves, and only proven safe because of these three tests.
+
+  // Stored `active`, but nothing is running it any more: the server derives
+  // `ended`. The record the header used to advertise as live.
+  const gone: SessionStateSource = { status: "active", phase: "ended" };
+  // Stored `idle` while a run is actually in flight — the opposite disagreement.
+  const busy: SessionStateSource = { status: "idle", phase: "running" };
+
+  it("counts a session as live off its badge, never off its stored status", () => {
+    expect(badgeLabel(gone)).toBe("ended");
+    expect(isSessionLive(gone)).toBe(false);
+
+    expect(badgeLabel(busy)).toBe("running");
+    expect(isSessionLive(busy)).toBe(true);
+  });
+
+  it("offers a headless resume exactly when nothing is driving the session", () => {
+    // Hidden by the old `status !== "active"` gate — the session the affordance
+    // exists for.
+    expect(isSessionAttached(gone)).toBe(false);
+    // Offered by it, against a session a terminal is actively driving.
+    expect(isSessionAttached(busy)).toBe(true);
+  });
+
+  it("keeps `idle` live but unattached — the two sets are not one set", () => {
+    // `idle` is the whole reason the counter and the resume gate cannot share a
+    // predicate: the record is not over (it belongs in "N live") but nothing
+    // holds its runtime thread (a headless resume is exactly what it wants).
+    const dormant: SessionStateSource = { status: "active", phase: "idle" };
+    expect(badgeLabel(dormant)).toBe("idle");
+    expect(isSessionLive(dormant)).toBe(true);
+    expect(isSessionAttached(dormant)).toBe(false);
+
+    // Phaseless fallback, both directions: the raw status is still classified,
+    // so a record echoed by `POST /run` is neither dropped from the count nor
+    // handed a resume it cannot use.
+    expect(isSessionLive(phaseless)).toBe(false);
+    expect(isSessionAttached(phaseless)).toBe(false);
+    expect(isSessionLive({ status: "active" })).toBe(true);
+    expect(isSessionAttached({ status: "active" })).toBe(true);
+  });
+});
+
+/**
+ * The block above drives `web/src/components/SessionStatusBadge.tsx`, which
+ * imports `src/shared/session-vocabulary.ts` directly by relative path across
+ * the workspace boundary. There is no alias and no third package, so that
+ * module's being a LEAF — not the directory it sits in — is the entire reason
+ * `vite build` does not pull the CLI's transitive graph into the browser
+ * bundle. Today only an in-file comment says so.
+ *
+ * No CI step would notice it stop being one. A stray value import of, say,
+ * `src/utils/session-store.js` is a legal src/ import under the root tsconfig,
+ * resolves under web's `moduleResolution: "bundler"` with no alias, and runs
+ * fine under vitest's Node environment — typecheck, lint and test all stay
+ * green. `build:web` runs only from `prepack`, so the break surfaces at release
+ * time, or as a silently broken shell nobody loads until a user does. This test
+ * is the only guard.
+ */
+describe("session vocabulary leaf", () => {
+  it("keeps src/shared/session-vocabulary.ts a zero-import leaf", () => {
+    const source = readFileSync(
+      new URL("../src/shared/session-vocabulary.ts", import.meta.url),
+      "utf-8",
+    );
+    // Match against code only. The leaf's own prose argues about imports at
+    // length — it contains the literal text "an import (forbidden above)",
+    // which the dynamic-import shape below matches verbatim.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+    // Non-vacuity first, and on the STRIPPED text as well as the raw read: a
+    // regex that matches nothing passes forever, so prove the file was read, is
+    // still this module, and survived stripping before trusting its silence.
+    expect(source.length).toBeGreaterThan(0);
+    for (const declaration of [
+      "export interface SessionStateSource",
+      "export function sessionState",
+      "export function isSessionLive",
+      "export function isSessionAttached",
+    ]) {
+      expect(source).toContain(declaration);
+      expect(code).toContain(declaration);
+    }
+
+    // Four shapes, because the obvious one misses two: any line OPENING an
+    // import (covers `import x from`, `import type {`, a bare `import "./x.js"`
+    // and the first line of a wrapped one), a single-line re-export, the
+    // closing line of a wrapped re-export, and a dynamic `import(`.
+    //
+    // `import type` is caught deliberately. A type-only import cannot reach the
+    // bundle by itself, but the file's own contract forbids every import
+    // outright, and one permitted type import is one `verbatimModuleSyntax`
+    // slip away from a value import — the distinction is not worth encoding.
+    expect(
+      code.match(/^\s*import\b|^\s*export\b.*\bfrom\b|^\s*\}\s*from\b|\bimport\s*\(/m),
+    ).toBeNull();
+  });
+});
+
+/**
+ * The client half of the run event stream (`GET …/runs/:runId/stream`), whose
+ * server half is covered by test/run-stream-route.test.ts.
+ *
+ * Everything here is driven through the pure fold, never through an
+ * `EventSource`: the browser's automatic reconnect is not the thing under test
+ * (it is the platform's), and what a client author can actually get wrong is
+ * the arithmetic on either side of it — the cursor it resumes at, and whether
+ * the deltas of a message and the completed message that repeats them both
+ * reach the screen.
+ */
+describe("run event stream fold", () => {
+  const delta = (text: string) =>
+    JSON.stringify({
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+    });
+  const assistant = (content: unknown[]) =>
+    JSON.stringify({ type: "assistant", message: { content } });
+
+  /** One run's log, exactly as the child wrote it: partial deltas, the completed
+   *  message that repeats them, a tool call, a line no version of this client
+   *  can parse, and a second message. */
+  const log = [
+    JSON.stringify({ type: "system", subtype: "init" }),
+    delta("hel"),
+    delta("lo"),
+    assistant([{ type: "text", text: "hello" }]),
+    assistant([{ type: "tool_use", name: "Read", input: { file_path: "src/web-server/app.ts" } }]),
+    "{ not json at all",
+    assistant([{ type: "text", text: " world" }]),
+  ];
+
+  /** Delivers `[from, to)` the way the route does — every line carrying its own
+   *  ABSOLUTE offset, which is the only reason a resumed connection is
+   *  indistinguishable from one that never dropped. */
+  function tail(state: RunStreamState, from: number, to = log.length): RunStreamState {
+    let next = state;
+    for (let offset = from; offset < to; offset += 1) {
+      next = foldRunLine(next, { offset, line: log[offset] ?? "" });
+    }
+    return next;
+  }
+
+  it("renders partial text as it arrives, before any message completes", () => {
+    const midMessage = tail(EMPTY_RUN_STREAM, 0, 3);
+    // The whole point of the second channel: text on screen while the message
+    // is still being written.
+    expect(runStreamText(midMessage)).toBe("hello");
+    expect(midMessage.text).toBe("");
+    expect(midMessage.partial).toBe("hello");
+  });
+
+  it("lets the completed message supersede its own deltas rather than repeat them", () => {
+    // The duplication a naive fold produces here is "hellohello": the completed
+    // `assistant` message carries the same text the deltas streamed.
+    expect(runStreamText(tail(EMPTY_RUN_STREAM, 0, 4))).toBe("hello");
+    expect(runStreamText(tail(EMPTY_RUN_STREAM, 0))).toBe("hello world");
+  });
+
+  it("ticks tools by name and target, and folds unknown lines to nothing", () => {
+    const state = tail(EMPTY_RUN_STREAM, 0);
+    expect(state.tools).toEqual([{ id: "4:0", name: "Read", target: "src/web-server/app.ts" }]);
+    // The `system` line, and the line no parser can read, both survive in the
+    // log and contribute nothing here — a view of the log may not fail on a
+    // record it has never seen.
+    expect(state.nextOffset).toBe(log.length);
+  });
+
+  it("resumes a dropped connection at the frame's own offset — no gap, no duplicate", () => {
+    // Seen through line 3; the cursor is the route's `from`: last seen + 1.
+    const dropped = tail(EMPTY_RUN_STREAM, 0, 4);
+    expect(dropped.nextOffset).toBe(4);
+
+    // What the reconnect delivers: `from = nextOffset`, absolute offsets intact.
+    const resumed = tail(dropped, dropped.nextOffset);
+    const uninterrupted = tail(EMPTY_RUN_STREAM, 0);
+
+    expect(runStreamText(resumed)).toBe(runStreamText(uninterrupted));
+    expect(resumed.tools).toEqual(uninterrupted.tools);
+    expect(resumed.nextOffset).toBe(uninterrupted.nextOffset);
+    // Non-vacuity: the drop really did split the run in two, and the second
+    // half really did carry content.
+    expect(runStreamText(dropped)).not.toBe(runStreamText(uninterrupted));
+  });
+
+  it("never rewinds the cursor, so a replayed frame cannot lower the resume point", () => {
+    const state = tail(EMPTY_RUN_STREAM, 0);
+    // `Last-Event-ID` merges as max(from, header) server-side; the cursor this
+    // side is a high-water mark for the same reason. Note there is deliberately
+    // no text dedupe behind it — the offset contract is what prevents a
+    // duplicate, and a dedupe here would hide a resume bug rather than fix one.
+    expect(foldRunLine(state, { offset: 1, line: delta("x") }).nextOffset).toBe(state.nextOffset);
+  });
+
+  it("settles on the end frame, carrying the outcome and the truncation flag", () => {
+    const ended = foldRunEnd(tail(EMPTY_RUN_STREAM, 0), {
+      offset: log.length,
+      outcome: "success",
+      truncated: true,
+    });
+    expect(ended.status).toBe("ended");
+    expect(ended.outcome).toBe("success");
+    expect(ended.truncated).toBe(true);
+    // The end frame's offset is the log's total line count — the `from` that
+    // would now return nothing.
+    expect(ended.nextOffset).toBe(log.length);
+
+    // Unknowable truncation is ABSENT, never `false`: a newer run owning the
+    // record makes this run's completeness unreadable, and the fold must not
+    // manufacture an answer for it.
+    const unknown = foldRunEnd(EMPTY_RUN_STREAM, { offset: 2 });
+    expect(unknown.truncated).toBeUndefined();
+    expect("truncated" in unknown).toBe(false);
+  });
+});
+
+/**
+ * The one rendering rule the two sources of a run's text have to obey.
+ *
+ * A run reaches the panel twice — live off its event log, then as the sidecar
+ * turns the settle folds down — and the visible symptom of getting the handover
+ * wrong is a flash of the same paragraph twice. A test that watched for the
+ * flash would be a timing test; this asserts the invariant that makes the flash
+ * impossible instead, over every commit the panel passes through.
+ */
+describe("session panel turn list", () => {
+  const runId = "run-7c1f";
+  const prompt: SessionTurn = { id: -9, type: "user", text: "summarize the route" };
+  /** What the settle folded down — tagged with the run, as the server writes it. */
+  const foldedText: SessionTurn = { id: -8, type: "assistant", text: "hello world", run: runId };
+  const foldedTool: SessionTurn = {
+    id: -7,
+    type: "assistant",
+    text: "",
+    tool: { name: "Read" },
+    run: runId,
+  };
+  /** A turn from an EARLIER run — tagged, but not with this one. */
+  const older: SessionTurn = { id: -12, type: "assistant", text: "yesterday", run: "run-0aaa" };
+
+  const streaming: RunStreamState = {
+    ...EMPTY_RUN_STREAM,
+    runId,
+    status: "open",
+    partial: "hello",
+  };
+  const settled: RunStreamState = {
+    ...streaming,
+    status: "ended",
+    text: "hello world",
+    partial: "",
+  };
+
+  /** Every commit one run puts the panel through, in order. The interesting
+   *  ones are the last three: the stream ends, the transcript has not refetched
+   *  yet, and then it has. */
+  const timeline: Array<{ at: string; turns: SessionTurn[]; live: RunStreamState | null }> = [
+    { at: "before any run", turns: [older], live: null },
+    {
+      at: "accepted, nothing streamed yet",
+      turns: [older, prompt],
+      live: { ...EMPTY_RUN_STREAM, runId, status: "connecting" },
+    },
+    { at: "streaming", turns: [older, prompt], live: streaming },
+    {
+      at: "reconnecting mid-run",
+      turns: [older, prompt],
+      live: { ...streaming, status: "connecting" },
+    },
+    { at: "settled, sidecar not refetched", turns: [older, prompt], live: settled },
+    {
+      at: "settled, sidecar refetched",
+      turns: [older, prompt, foldedText, foldedTool],
+      live: settled,
+    },
+    {
+      at: "stream state dropped after the swap",
+      turns: [older, prompt, foldedText, foldedTool],
+      live: null,
+    },
+  ];
+
+  const compose = (commit: (typeof timeline)[number]) => composeTurnList(commit.turns, commit.live);
+
+  it("never holds the streamed block and the run's folded turns in the same commit", () => {
+    for (const commit of timeline) {
+      const items = compose(commit);
+      const streamed = items.filter((item) => item.kind === "stream");
+      const folded = items.filter((item) => item.kind === "turn" && item.turn.run === runId);
+      // Labelled so a failure names the commit that broke it.
+      expect([commit.at, streamed.length === 0 || folded.length === 0]).toEqual([commit.at, true]);
+    }
+  });
+
+  it("covers both sides of the swap — the assertion above is not vacuous", () => {
+    const streamedAt = timeline.filter((commit) =>
+      compose(commit).some((item) => item.kind === "stream"),
+    );
+    const foldedAt = timeline.filter((commit) =>
+      compose(commit).some((item) => item.kind === "turn" && item.turn.run === runId),
+    );
+    expect(streamedAt.map((commit) => commit.at)).toEqual([
+      "accepted, nothing streamed yet",
+      "streaming",
+      "reconnecting mid-run",
+      "settled, sidecar not refetched",
+    ]);
+    expect(foldedAt.map((commit) => commit.at)).toEqual([
+      "settled, sidecar refetched",
+      "stream state dropped after the swap",
+    ]);
+  });
+
+  it("swaps in one commit — the run's text is on screen in every commit of the run", () => {
+    // No gap either: the block is dropped by the ARRIVAL of the folded turns,
+    // never by the stream ending, so no commit renders neither.
+    for (const commit of timeline.slice(1)) {
+      const items = compose(commit);
+      const carries =
+        items.some((item) => item.kind === "stream") ||
+        items.some((item) => item.kind === "turn" && item.turn.run === runId);
+      expect([commit.at, carries]).toEqual([commit.at, true]);
+    }
+  });
+
+  it("keeps an ended block that folded no turns — a silent run is still evidence", () => {
+    // The fold appends nothing for a run with no assistant output, so nothing
+    // ever tags the sidecar with it. An `end`-driven swap would blank the only
+    // record the user has that the run happened at all.
+    const items = composeTurnList([older, prompt], { ...settled, text: "", partial: "" });
+    expect(items.filter((item) => item.kind === "stream")).toHaveLength(1);
+  });
+
+  it("is keyed on the run, not on the presence of any folded turn", () => {
+    // An older run's folded turns must not suppress this run's live block.
+    const items = composeTurnList([older], streaming);
+    expect(items.map((item) => item.kind)).toEqual(["turn", "stream"]);
+    // And an idle stream (nothing being tailed) contributes nothing.
+    expect(composeTurnList([older], EMPTY_RUN_STREAM).map((item) => item.kind)).toEqual(["turn"]);
+  });
+});
+
+describe("api client web token", () => {
+  const TOKEN = "a".repeat(64);
+  const realFetch = globalThis.fetch;
+
+  interface FetchCall {
+    path: string;
+    method?: string;
+    headers: Record<string, string>;
+  }
+
+  /** Stands in for the served document. `querySelector` answers ONLY the exact
+   *  selector the server's injected tag matches (name pinned in
+   *  src/web-server/static.ts), so a client querying anything else reads null
+   *  and the token assertions below fail. */
+  function documentWithMeta(content: string | null) {
+    return {
+      querySelector: (selector: string) =>
+        selector === 'meta[name="arcs-web-token"]' && content !== null
+          ? { getAttribute: (name: string) => (name === "content" ? content : null) }
+          : null,
+    };
+  }
+
+  /** Loads a FRESH client module — the token is read once at load, so every
+   *  case needs its own instance — against the given document, and records
+   *  what it hands to `fetch`. `doc: undefined` is the non-browser case. */
+  async function loadClient(doc: unknown) {
+    vi.resetModules();
+    const calls: FetchCall[] = [];
+    const g = globalThis as any;
+    g.document = doc;
+    g.fetch = async (input: any, init: any) => {
+      calls.push({
+        path: String(input),
+        method: init?.method,
+        headers: { ...(init?.headers ?? {}) },
+      });
+      return { status: 200, json: async () => ({ ok: true, data: {} }) } as unknown as Response;
+    };
+    const { api, request } = await import("../web/src/api/client.js");
+    return { api, request, calls };
+  }
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    (globalThis as any).document = undefined;
+    vi.resetModules();
+  });
+
+  it("sends the injected token on mutating requests", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(TOKEN));
+    await api.deleteTask("arcs", "t1");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[0]?.headers["X-ARCS-Token"]).toBe(TOKEN);
+    expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("keeps the token when a call site passes its own headers", async () => {
+    const { request, calls } = await loadClient(documentWithMeta(TOKEN));
+    await request("/api/p/arcs/tasks", {
+      method: "POST",
+      headers: { "X-Custom": "1" },
+      body: "{}",
+    });
+
+    // The regression this pins: spreading `...init` after the header literal
+    // replaced the whole object and dropped the token for any call site that
+    // brought headers of its own.
+    expect(calls[0]?.headers["X-ARCS-Token"]).toBe(TOKEN);
+    expect(calls[0]?.headers["X-Custom"]).toBe("1");
+    expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
+    expect(calls[0]?.method).toBe("POST");
+  });
+
+  it("still lets a call site override a default header", async () => {
+    const { request, calls } = await loadClient(documentWithMeta(TOKEN));
+    await request("/api/p/arcs/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+    });
+
+    expect(calls[0]?.headers["Content-Type"]).toBe("text/plain");
+    expect(calls[0]?.headers["X-ARCS-Token"]).toBe(TOKEN);
+  });
+
+  it("leaves reads unchanged — no token on a GET", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(TOKEN));
+    await api.tasks("arcs");
+
+    expect(calls[0]?.method).toBeUndefined();
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+  });
+
+  it("degrades to no header when the shell carries no meta tag", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(null));
+    await api.deleteTask("arcs", "t1");
+
+    // No throw at module load, no bogus `X-ARCS-Token: undefined` — the server
+    // answers a clean 401 instead.
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+    expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("degrades to no header when there is no document at all", async () => {
+    const { api, calls } = await loadClient(undefined);
+    await api.deleteTask("arcs", "t1");
+
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+  });
+
+  it("empty meta content counts as no token", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(""));
+    await api.deleteTask("arcs", "t1");
+
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+  });
+});
+
+/**
+ * The dev-server counterpart of the block above: where the built shell gets its
+ * token from `src/web-server/static.ts`, `vite dev` gets it from the
+ * `arcs-web-token-dev` plugin in `web/vite.config.ts`.
+ *
+ * APPROACH — these tests drive vite's own `resolveConfig()` against the real
+ * `web/vite.config.ts` rather than importing the config module and reading its
+ * plugin array. That is deliberate: `apply: "serve"` is a declaration, and only
+ * vite decides what it means. Asserting the field would pin the source text;
+ * resolving the config pins the property that actually matters — the plugin is
+ * absent from the plugin pipeline of a production build, so a dev-only secret
+ * cannot reach a shipped shell. `vite` is already a root devDependency, so this
+ * costs no new dependency.
+ */
+describe("arcs-web-token-dev vite plugin", () => {
+  const PLUGIN = "arcs-web-token-dev";
+  const webDir = fileURLToPath(new URL("../web", import.meta.url));
+  const configFile = join(webDir, "vite.config.ts");
+
+  /** Resolves the real web config exactly as `vite dev` / `vite build` would.
+   *  Each call re-evaluates the config module, so the returned plugin is a
+   *  fresh instance bound to whatever ARCS_DATA_DIR is set at this moment. */
+  async function resolveWebConfig(command: "serve" | "build") {
+    return resolveConfig(
+      { root: webDir, configFile, logLevel: "silent" },
+      command,
+      command === "build" ? "production" : "development",
+    );
+  }
+
+  function pluginNames(plugins: readonly Plugin[]): string[] {
+    return plugins.map((plugin) => plugin.name);
+  }
+
+  async function tokenPlugin(): Promise<Plugin> {
+    const config = await resolveWebConfig("serve");
+    const plugin = config.plugins.find((candidate) => candidate.name === PLUGIN);
+    if (!plugin) throw new Error(`${PLUGIN} missing from the resolved serve config`);
+    return plugin;
+  }
+
+  /** Invokes `transformIndexHtml` the way vite's html pipeline does. The hook
+   *  may be declared bare or as `{ order, handler }`; normalize both so these
+   *  tests pin behaviour rather than declaration shape. */
+  async function transformIndexHtml(plugin: Plugin): Promise<unknown> {
+    const hook = plugin.transformIndexHtml;
+    const handler = typeof hook === "function" ? hook : hook?.handler;
+    if (typeof handler !== "function") {
+      throw new Error(`${PLUGIN} exposes no transformIndexHtml handler`);
+    }
+    const invoke = handler as (html: string, ctx: any) => unknown;
+    return invoke("<html><head></head><body></body></html>", {
+      path: "/index.html",
+      filename: join(webDir, "index.html"),
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is in the serve pipeline and out of the production build pipeline", async () => {
+    const [serve, build] = await Promise.all([
+      resolveWebConfig("serve"),
+      resolveWebConfig("build"),
+    ]);
+
+    expect(pluginNames(serve.plugins)).toContain(PLUGIN);
+    // The security property: a dev-only secret must never be injectable by a
+    // shipped shell. `apply: "serve"` is what buys this — drop it and this line
+    // fails.
+    expect(pluginNames(build.plugins)).not.toContain(PLUGIN);
+
+    // Guards the assertion above against being vacuously true: prove the same
+    // config file really was loaded for `build` (a config that failed to load,
+    // or a plugin array that silently emptied, would also "not contain" it).
+    expect(build.command).toBe("build");
+    expect(pluginNames(build.plugins)).toContain("@tailwindcss/vite:scan");
+    expect(pluginNames(serve.plugins)).toContain("@tailwindcss/vite:scan");
+  });
+
+  it("injects the token from web-token.json as the meta tag the client reads", async () => {
+    const token = "b".repeat(64);
+    await withTempDataDir(async (dir) => {
+      writeFileSync(join(dir, "web-token.json"), JSON.stringify({ token }), "utf-8");
+
+      const result = await transformIndexHtml(await tokenPlugin());
+
+      // The name is load-bearing: it is the one selector the client queries
+      // (see "api client web token" above) and the one static.ts emits.
+      expect(result).toEqual([
+        { tag: "meta", attrs: { name: "arcs-web-token", content: token }, injectTo: "head" },
+      ]);
+    });
+  });
+
+  it("injects nothing and warns at most once when the token file is missing", async () => {
+    await withTempDataDir(async () => {
+      // withTempDataDir seeds meta.json only — no web-token.json, i.e. the
+      // state of a machine where `arcs web` has never run.
+      const plugin = await tokenPlugin();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const first = await transformIndexHtml(plugin);
+      const second = await transformIndexHtml(plugin);
+
+      // Not fatal: reads still work, mutations 401. But a browser reload must
+      // not restate the warning on every request.
+      expect(first).toBeUndefined();
+      expect(second).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("web-token.json");
+    });
+  });
+
+  it("injects nothing and does not throw when the token file is unparsable", async () => {
+    await withTempDataDir(async (dir) => {
+      writeFileSync(join(dir, "web-token.json"), "{ not json at all", "utf-8");
+
+      const plugin = await tokenPlugin();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      // A truncated or half-written file must degrade like a missing one, not
+      // crash the dev server and not inject a bogus token.
+      await expect(transformIndexHtml(plugin)).resolves.toBeUndefined();
+    });
   });
 });

@@ -15,14 +15,21 @@ import { eventsRoute } from "./routes/events.js";
 import { hookEventsRoute } from "./routes/hook-events.js";
 import { projectsRoute } from "./routes/projects.js";
 import { sessionsRoute } from "./routes/sessions.js";
+import { workspaceRoute } from "./routes/workspace.js";
 import { secureLocalRequest } from "./security.js";
+import { settleOrphanedRunsOnStartup } from "./session-reconciler.js";
 import { registerStaticServing } from "./static.js";
 import { startWatcher } from "./watcher.js";
+import { requireWebToken } from "./web-auth.js";
+import { mintWebToken } from "./web-token.js";
 
 export interface CreateAppOptions {
   /** Override the static client root (default: <package>/dist/web-client). */
   staticRoot?: string;
-  /** Disable the data-dir watcher (tests). Default: true. */
+  /**
+   * Disable the startup side effects — the data-dir watcher, opencode discovery
+   * and the orphaned-run sweep (tests). Default: true.
+   */
   watch?: boolean;
 }
 
@@ -42,10 +49,17 @@ export function defaultStaticRoot(): string {
 export function createApp(options: CreateAppOptions = {}): Hono {
   const app = new Hono();
 
+  // Minted before a single route is registered: both the mutation gate and the
+  // index.html transform read the value this installs.
+  mintWebToken();
+
   app.use("*", secureLocalRequest);
   // Agent-driven, not browser-driven: the hook endpoint needs a shared secret on
   // top of the loopback check every other route relies on.
   app.use("/api/hook/*", requireHookToken);
+  // Browser-driven mutations need a secret of their own — loopback alone lets
+  // any other local process drive them. Deny-by-default, /api/hook/* exempt.
+  app.use("/api/*", requireWebToken);
 
   app.get("/api/health", (c) =>
     c.json(
@@ -62,6 +76,8 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route("/", collectionsRoute);
   app.route("/", sessionsRoute);
   app.route("/", hookEventsRoute);
+  // Read-only file plane (two GETs, no writes) — see routes/workspace.ts.
+  app.route("/", workspaceRoute);
   app.route("/", discoveryRoute);
   app.route("/", eventsRoute);
 
@@ -69,6 +85,13 @@ export function createApp(options: CreateAppOptions = {}): Hono {
     startWatcher(getDataDir());
     // No-op unless an opencode endpoint is configured in the environment.
     startOpencodeDiscovery();
+    // A run claim persisted by an earlier server process cannot be live in this
+    // one unless its child outlived the restart, so any claim whose process is
+    // gone settles here as `interrupted` — otherwise the session renders
+    // "running" forever with nothing left that could ever settle it. One pass at
+    // boot, never a poller; the sweep resolves rather than rejects, and the
+    // server must not wait on it.
+    void settleOrphanedRunsOnStartup(getDataDir());
   }
 
   registerStaticServing(app, options.staticRoot ?? defaultStaticRoot());

@@ -11,6 +11,7 @@ import { buildProjectRetrievalIndex } from "../src/retrieval/index-builder.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
 import { requireProjectDir } from "../src/web-server/respond.js";
 import { onDataChange, startWatcher, stopWatcher } from "../src/web-server/watcher.js";
+import { currentWebToken } from "../src/web-server/web-token.js";
 
 const SEED_META = JSON.stringify({
   version: "1.0",
@@ -74,9 +75,15 @@ async function boot(): Promise<Ctx> {
   return ctx;
 }
 
+/**
+ * Stands in for the SPA: mutating routes now require the per-server token the
+ * server injects into index.html (see web-token-gate.test.ts), so the happy-path
+ * helper always carries it. Cases asserting the pre-token guards (403/415) build
+ * their own bare fetch, since those checks run ahead of the token gate.
+ */
 async function api(base: string, path: string, init?: RequestInit) {
   const res = await fetch(`${base}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
     ...init,
   });
   const body = (await res.json()) as {

@@ -9,8 +9,9 @@
 //   2. Skills tree       → <destination>/skills/arcs-<name>/...
 //      (Claude Code skills must be flat under skills/; we use the `arcs-`
 //       prefix as a namespace so orphan pruning never touches user skills.)
-//   3. Default agent     → settings.json `agent` field, resolved through the
-//      explicit DEFAULT_AGENT_PRECEDENCE list (default: "arcs-orchestrate")
+//   3. Default agent     → settings.json `agent` field, resolved from an
+//      explicit DEPLOY_PRIMARY_AGENT selection, else through the
+//      DEFAULT_AGENT_PRECEDENCE list (default: "arcs-orchestrate")
 //
 // Env vars:
 //   DEPLOY_BUNDLE_ROOT   — override bundle root (default: opencode/arcs)
@@ -18,6 +19,8 @@
 //   DEPLOY_PROJECT_ROOT  — override project root (default: repository root)
 //   DEPLOY_SCOPE         — `global` or `project` (default: `global`)
 //   DEPLOY_DRY_RUN       — "false" to actually write; anything else = dry-run (default: dry-run)
+//   DEPLOY_PRIMARY_AGENT — user-selected default primary agent id; empty/unset falls
+//                          back to DEFAULT_AGENT_PRECEDENCE
 //
 // Outputs JSON to stdout: DeployResult
 // Exit code: 0 on success, 1 on error.
@@ -297,10 +300,28 @@ function buildSkillSources() {
 // lower-ranked primary is a fallback, never a silent replacement.
 const DEFAULT_AGENT_PRECEDENCE = ["arcs-orchestrate", "arcs-orchestrate-caveman", "arcs-flash"];
 
+function isSelectablePrimary(agent) {
+  return Boolean(agent) && agent.kind === "primary" && isActiveAgentForMode(agent, "claudecode");
+}
+
 function selectDefaultAgent(registry) {
+  // An explicit user selection outranks the pinned precedence — but only when it
+  // names a real Claude-Code-active primary. A user who asked for X must never
+  // silently get Y, so an unusable selection hard-fails instead of degrading
+  // into the precedence walk.
+  const requestedId = (process.env.DEPLOY_PRIMARY_AGENT ?? "").trim();
+  if (requestedId !== "") {
+    const requested = registry.find((record) => record.id === requestedId);
+    if (isSelectablePrimary(requested)) return requested;
+    const selectable = registry.filter(isSelectablePrimary).map((record) => record.id);
+    throw new Error(
+      `DEPLOY_PRIMARY_AGENT "${requestedId}" is not an active Claude Code primary agent. Selectable: ${selectable.join(", ") || "(none)"}`,
+    );
+  }
+
   for (const id of DEFAULT_AGENT_PRECEDENCE) {
     const agent = registry.find((record) => record.id === id);
-    if (agent && agent.kind === "primary" && isActiveAgentForMode(agent, "claudecode")) {
+    if (isSelectablePrimary(agent)) {
       return agent;
     }
   }

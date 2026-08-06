@@ -6,9 +6,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
-  type RunClaudeSessionInput,
   type SessionLinkedNodeType,
-  type SessionMessageReference,
+  type SessionReference,
+  type SessionTurnInput,
   type SessionUpdateInput,
 } from "./client";
 
@@ -26,6 +26,12 @@ export const qk = {
   plans: (slug: string) => ["plans", slug] as const,
   plan: (slug: string, id: string) => ["plan", slug, id] as const,
   graph: (slug: string) => ["graph", slug] as const,
+  /** Nested under a `workspace` area prefix so both leaves invalidate together.
+   *  Deliberately NOT under `sessions`: the workspace is the repo on disk, which
+   *  no ARCS data-dir change event describes, so borrowing that prefix would
+   *  refetch files on every unrelated session write. */
+  workspaceTree: (slug: string, path: string) => ["workspace", slug, "tree", path] as const,
+  workspaceFile: (slug: string, path: string) => ["workspace", slug, "file", path] as const,
   proposals: (slug: string) => ["proposals", slug] as const,
   search: (q: string, slug?: string, kind?: string) =>
     ["search", q, slug ?? "", kind ?? ""] as const,
@@ -118,6 +124,24 @@ export const usePlan = (slug: string, id: string) =>
   useQuery({ queryKey: qk.plan(slug, id), queryFn: () => api.plan(slug, id) });
 export const useGraph = (slug: string) =>
   useQuery({ queryKey: qk.graph(slug), queryFn: () => api.graph(slug), staleTime: 30_000 });
+/** One directory of the read-only workspace plane. `enabled` gates the fetch on
+ *  the browser actually showing the tree — a closed viewer must not walk the
+ *  repo on every render. */
+export const useWorkspaceTree = (slug: string, path: string, options?: { enabled?: boolean }) =>
+  useQuery({
+    queryKey: qk.workspaceTree(slug, path),
+    queryFn: () => api.workspaceTree(slug, path),
+    enabled: options?.enabled ?? true,
+    staleTime: 30_000,
+  });
+/** One file's text. A null path means nothing is open, so the query never fires
+ *  (the key would otherwise cache an empty-path request). */
+export const useWorkspaceFile = (slug: string, path: string | null) =>
+  useQuery({
+    queryKey: qk.workspaceFile(slug, path ?? ""),
+    queryFn: () => api.workspaceFile(slug, path ?? ""),
+    enabled: path !== null && path !== "",
+  });
 export const useProposals = (slug: string) =>
   useQuery({ queryKey: qk.proposals(slug), queryFn: () => api.proposals(slug) });
 export const useSearch = (q: string, slug?: string, kind?: string) =>
@@ -239,7 +263,11 @@ export function useSendSessionMessage(slug: string) {
     }: {
       id: string;
       message: string;
-      reference?: SessionMessageReference;
+      /** The whole union, matching `api.sendSessionMessage` and the server's
+       *  `sessionReferenceSchema`. Narrowing this to the doc variant would make
+       *  the transport hook unable to send a file or node reference that both
+       *  the API function and the route already accept. */
+      reference?: SessionReference;
     }) => api.sendSessionMessage(slug, id, message, reference),
     // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a
     // send that appended a reference turn refreshes open transcripts too.
@@ -247,13 +275,15 @@ export function useSendSessionMessage(slug: string) {
   });
 }
 
-export function useRunClaudeSession(slug: string) {
+export function useSendSessionTurn(slug: string) {
   const invalidate = useInvalidator();
   return useMutation({
-    mutationFn: ({ id, input }: { id: string; input: RunClaudeSessionInput }) =>
-      api.runClaudeSession(slug, id, input),
-    // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a run
-    // that appended user/reference turns refreshes open transcripts too.
+    mutationFn: ({ id, input }: { id: string; input: SessionTurnInput }) =>
+      api.sendSessionTurn(slug, id, input),
+    // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a turn
+    // that appended user/reference turns refreshes open transcripts too — and a
+    // turn that ADOPTED an observed session refreshes the list the freshly
+    // minted thread has to appear in before the panel can select it.
     onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
   });
 }

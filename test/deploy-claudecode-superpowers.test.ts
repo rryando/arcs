@@ -473,6 +473,111 @@ describe("deploy-claudecode-bundle", () => {
     }
   });
 
+  it("falls back to precedence when DEPLOY_PRIMARY_AGENT is empty", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-primary-empty-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      addPrimaryAgents(bundleRoot, ["arcs-flash", "arcs-orchestrate-caveman"]);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_PRIMARY_AGENT: "",
+      });
+
+      expect(proc.status).toBe(0);
+      const settings = JSON.parse(readFileSync(resolve(configRoot, "settings.json"), "utf-8"));
+      expect(settings.agent).toBe("arcs-orchestrate");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("lets DEPLOY_PRIMARY_AGENT outrank the default precedence order", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-primary-explicit-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      // arcs-orchestrate is active and ranks first in DEFAULT_AGENT_PRECEDENCE,
+      // so only an explicit selection can elect the lower-ranked arcs-flash.
+      addPrimaryAgents(bundleRoot, ["arcs-flash", "arcs-orchestrate-caveman"]);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_PRIMARY_AGENT: "arcs-flash",
+      });
+
+      expect(proc.status).toBe(0);
+      const settings = JSON.parse(readFileSync(resolve(configRoot, "settings.json"), "utf-8"));
+      expect(settings.agent).toBe("arcs-flash");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("elects an active primary outside the precedence list when explicitly selected", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-primary-unlisted-"));
+    const configRoot = resolve(tempRoot, "config");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      addPrimaryAgents(bundleRoot, ["arcs-experimental"]);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_PRIMARY_AGENT: "arcs-experimental",
+      });
+
+      expect(proc.status).toBe(0);
+      const settings = JSON.parse(readFileSync(resolve(configRoot, "settings.json"), "utf-8"));
+      expect(settings.agent).toBe("arcs-experimental");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails instead of silently falling back when DEPLOY_PRIMARY_AGENT is unusable", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-primary-invalid-"));
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      addPrimaryAgents(bundleRoot, ["arcs-opencode-only"]);
+      mutateRegistry(bundleRoot, (agents) => {
+        agents[3].modes = ["opencode"];
+      });
+
+      // unknown id, a subagent id, and a primary inactive for claudecode all
+      // hard-fail: an explicit selection must never degrade into precedence.
+      for (const badId of ["arcs-nope", "software-engineer", "arcs-opencode-only"]) {
+        const configRoot = resolve(tempRoot, `config-${badId}`);
+        const proc = runDeploy({
+          DEPLOY_BUNDLE_ROOT: bundleRoot,
+          DEPLOY_CONFIG_ROOT: configRoot,
+          DEPLOY_DRY_RUN: "false",
+          DEPLOY_PRIMARY_AGENT: badId,
+        });
+
+        expect(proc.status).toBe(1);
+        expect(proc.stderr).toContain(
+          `DEPLOY_PRIMARY_AGENT "${badId}" is not an active Claude Code primary agent`,
+        );
+        expect(proc.stderr).toContain("Selectable: arcs-orchestrate");
+        expect(proc.stderr).not.toContain("No active Claude Code primary agent in default");
+        expect(existsSync(resolve(configRoot, "settings.json"))).toBe(false);
+      }
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("prunes orphan arcs-* skill directories but leaves foreign skills alone", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-skills-orphan-"));
     const configRoot = resolve(tempRoot, "config");

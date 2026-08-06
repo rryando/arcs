@@ -173,6 +173,25 @@ const ARCS_FLASH_AGENT_KEY = "ARCS Flash";
 const ARCS_CAVEMAN_AGENT_KEY = "ARCS Caveman";
 
 /**
+ * Maps a registry agent id (as picked in the setup wizard) to its opencode.json
+ * agent key. Only used to choose which primary opencode starts on — all three
+ * primaries are registered regardless of the pick.
+ */
+const PRIMARY_AGENT_KEY_BY_ID: Record<string, string> = {
+  "arcs-orchestrate": ARCS_AGENT_KEY,
+  "arcs-flash": ARCS_FLASH_AGENT_KEY,
+  "arcs-orchestrate-caveman": ARCS_CAVEMAN_AGENT_KEY,
+};
+
+/**
+ * Reverse of {@link PRIMARY_AGENT_KEY_BY_ID} — maps an opencode.json
+ * `default_agent` key back to the registry id the setup wizard picks from.
+ */
+const PRIMARY_AGENT_ID_BY_KEY: Record<string, string> = Object.fromEntries(
+  Object.entries(PRIMARY_AGENT_KEY_BY_ID).map(([id, key]) => [key, id]),
+);
+
+/**
  * Checks whether the ARCS agent is already registered in opencode.json.
  */
 export function opencodeHasAgent(): boolean {
@@ -188,6 +207,21 @@ export function opencodeHasAgent(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Returns the registry id of the ARCS primary currently set as opencode's
+ * `default_agent`, or undefined when it is unset, unreadable, or names an agent
+ * outside the three ARCS primaries.
+ *
+ * Callers pre-select the wizard's primary prompt with it so re-running setup and
+ * pressing Enter preserves the existing default instead of resetting it.
+ */
+export function readOpencodePrimaryAgentId(): string | undefined {
+  const configFile = resolve(opencodeConfigDir(), "opencode.json");
+  if (!existsSync(configFile)) return undefined;
+  const key = readJsonFile(configFile).default_agent;
+  return typeof key === "string" ? PRIMARY_AGENT_ID_BY_KEY[key] : undefined;
 }
 
 export interface AgentWriteResult {
@@ -207,8 +241,14 @@ export interface AgentWriteResult {
  * All three agents share full ARCS tool access and workflow rules; ARCS Flash
  * runs a knowledge-first, parallel-first control flow, and ARCS Caveman layers
  * caveman-speak on top for token-efficient chat output.
+ *
+ * `primaryAgentId` picks which of the three opencode starts on. Omitting it (or
+ * passing an unknown id) keeps the historical default, ARCS Orchestrator.
  */
-export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteResult {
+export function writeOpencodeAgent(
+  modelConfig?: ModelTierConfig,
+  primaryAgentId?: string,
+): AgentWriteResult {
   const alreadyConfigured = opencodeHasAgent();
   const configFile = resolve(opencodeConfigDir(), "opencode.json");
   const promptFile = opencodePromptPath();
@@ -275,8 +315,10 @@ export function writeOpencodeAgent(modelConfig?: ModelTierConfig): AgentWriteRes
   }
 
   existing.agent = orderedAgents;
-  // Set ARCS Orchestrator as the startup default agent (Flash and Caveman are opt-in via Tab)
-  existing.default_agent = ARCS_AGENT_KEY;
+  // Set the startup default agent from the caller's pick; the other two stay
+  // registered and remain opt-in via Tab. Key order above is unaffected.
+  existing.default_agent =
+    (primaryAgentId ? PRIMARY_AGENT_KEY_BY_ID[primaryAgentId] : undefined) ?? ARCS_AGENT_KEY;
   // Inject the codegraph MCP server so graph-explorer can call mcp__codegraph__*
   ensureCodegraphMcpEntry(existing);
   writeJsonFile(configFile, existing);

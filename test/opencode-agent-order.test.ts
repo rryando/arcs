@@ -111,6 +111,32 @@ describe("writeOpencodeAgent — agent key order", () => {
     });
   });
 
+  it("honors an explicit primary agent id without changing key order", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      writeOpencodeAgent(undefined, "arcs-orchestrate-caveman");
+
+      const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+      const raw = readFileSync(configFile, "utf-8");
+      const config = JSON.parse(raw) as Record<string, unknown>;
+      const agentKeys = Object.keys(config.agent as object);
+
+      expect(config.default_agent).toBe("ARCS Caveman");
+      expect(agentKeys.slice(0, 3)).toEqual(["ARCS Orchestrator", "ARCS Flash", "ARCS Caveman"]);
+    });
+  });
+
+  it("falls back to ARCS Orchestrator for an unknown primary agent id", async () => {
+    await withTempHomeDir(async (homeDir) => {
+      writeOpencodeAgent(undefined, "not-a-registered-primary");
+
+      const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+      const raw = readFileSync(configFile, "utf-8");
+      const config = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(config.default_agent).toBe("ARCS Orchestrator");
+    });
+  });
+
   it("registers ARCS Flash as a primary agent pointing at its prompt file", async () => {
     await withTempHomeDir(async (homeDir) => {
       writeOpencodeAgent();

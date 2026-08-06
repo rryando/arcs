@@ -11,9 +11,11 @@
 import { useMemo, useState } from "react";
 import type { SessionLinkedNodeType, SessionMeta } from "../api/client";
 import { useLinkedSessions, usePlans, useTasks, useUpdateSession } from "../api/hooks";
+import { sessionLabel } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
 import { Badge, typeColor } from "./Badge";
 import { Dialog, inputClass } from "./Dialog";
+import { isVisibleSession } from "./SessionMessageForm";
 import { SessionStatusBadge } from "./SessionStatusBadge";
 import { useToaster } from "./Toaster";
 
@@ -199,7 +201,8 @@ export function SessionLinkModal({
 
 /**
  * Sessions linked to one task/plan. Renders nothing when empty, mirroring the
- * conditional "source files" block on plan detail.
+ * conditional "source files" block on plan detail — including when every linked
+ * session belongs to a runtime the UI hides (`isVisibleSession`).
  */
 export function LinkedSessions({
   slug,
@@ -211,7 +214,7 @@ export function LinkedSessions({
   nodeId: string;
 }) {
   const { data } = useLinkedSessions(slug, nodeType, nodeId);
-  const sessions = data ?? [];
+  const sessions = (data ?? []).filter(isVisibleSession);
   if (sessions.length === 0) return null;
 
   return (
@@ -225,7 +228,7 @@ export function LinkedSessions({
       <ul className="divide-y divide-term-border/40">
         {sessions.map((s) => (
           <li key={s.normalizedId} className="flex items-center gap-2 px-2 py-1 text-[12px]">
-            <SessionStatusBadge status={s.status} />
+            <SessionStatusBadge session={s} />
             <span className="font-bold">{sessionLabel(s)}</span>
             <span className="text-term-dim">{truncate(s.runtimeSessionId, 20)}</span>
             <span className="flex-1" />
@@ -235,10 +238,4 @@ export function LinkedSessions({
       </ul>
     </div>
   );
-}
-
-function sessionLabel(session: SessionMeta): string {
-  const title = session.metadata?.title;
-  if (typeof title === "string" && title) return truncate(title, 48);
-  return session.runtimeType;
 }

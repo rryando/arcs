@@ -18,12 +18,14 @@ import {
   type ModelTierConfig,
   type ProviderModels,
   readClaudeCodeCurrentModel,
+  readClaudeCodeCurrentPrimaryAgent,
   writeConfig,
 } from "./config.js";
 import {
   applyAgentModelConfig,
   displayPath,
   opencodeHasAgent,
+  readOpencodePrimaryAgentId,
   writeOpencodeAgent,
 } from "./instructions.js";
 
@@ -44,6 +46,63 @@ function registryTierAgentNames(tier: AgentTier): string {
   return getAgentsByTier()
     [tier].map((agent) => agent.id)
     .join(", ");
+}
+
+// ---------------------------------------------------------------------------
+// Primary Orchestrator Selection
+// ---------------------------------------------------------------------------
+
+/** Registry id of the primary the wizard defaults to (today's behavior). */
+const DEFAULT_PRIMARY_AGENT_ID = "arcs-orchestrate";
+
+/** The three ARCS primaries, in Tab-cycle order. All stay registered. */
+const PRIMARY_AGENT_OPTIONS: Array<{ value: string; label: string; hint: string }> = [
+  {
+    value: "arcs-orchestrate",
+    label: "ARCS Orchestrator",
+    hint: "Full gated pipeline. Maximum rigor, sequential phase gates.",
+  },
+  {
+    value: "arcs-flash",
+    label: "ARCS Flash",
+    hint: "Speed-optimized. Parallel dispatch, tiered gates, knowledge-first.",
+  },
+  {
+    value: "arcs-orchestrate-caveman",
+    label: "ARCS Caveman",
+    hint: "Terse. Minimal commentary, same gates.",
+  },
+];
+
+/**
+ * Asks which ARCS primary should be the startup default for one runtime.
+ * Every primary is installed either way — only the default changes — and each
+ * runtime is asked separately so OpenCode and Claude Code can differ.
+ *
+ * `currentPrimaryId` is the runtime's *installed* default. It pre-selects the
+ * prompt so re-running the wizard and pressing Enter preserves the existing
+ * choice; hard-coding the built-in default here would silently reset a user who
+ * had switched away from it. An absent or unrecognized value (unset, hand-edited
+ * to a non-ARCS agent, first run) falls back to the built-in default.
+ */
+async function selectPrimaryAgent(runtime: string, currentPrimaryId?: string): Promise<string> {
+  const initialValue =
+    currentPrimaryId && PRIMARY_AGENT_OPTIONS.some((option) => option.value === currentPrimaryId)
+      ? currentPrimaryId
+      : DEFAULT_PRIMARY_AGENT_ID;
+
+  const selected = await p.select({
+    message: `Which ARCS primary should be the default in ${runtime}?`,
+    options: PRIMARY_AGENT_OPTIONS,
+    initialValue,
+  });
+
+  if (p.isCancel(selected)) {
+    p.cancel("Setup cancelled.");
+    process.exit(0);
+  }
+
+  return selected as string;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,8 +378,12 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     opencodeAgentActive = alreadyHasAgent;
 
     if (alreadyHasAgent) {
-      // Already registered — re-apply silently to keep the entry and prompt up to date
-      const agentResult = writeOpencodeAgent(modelConfig);
+      // Already registered — skip the registration confirm, but still offer the
+      // primary pick: changing the default orchestrator is the main reason to
+      // re-run the wizard. Read the installed default first (writeOpencodeAgent
+      // overwrites it) and pre-select it so Enter is a no-op, not a reset.
+      const primaryAgentId = await selectPrimaryAgent("OpenCode", readOpencodePrimaryAgentId());
+      const agentResult = writeOpencodeAgent(modelConfig, primaryAgentId);
       opencodeAgentActive = true;
       p.note(
         [
@@ -331,7 +394,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       );
     } else {
       const shouldRegister = await p.confirm({
-        message: `Register ${color.cyan("ARCS - (Orchestrator)")} and ${color.cyan("ARCS - Caveman")} as primary agents in OpenCode? (Tab-switchable alongside Build/Plan)`,
+        message: `Register ${color.cyan("ARCS - (Orchestrator)")}, ${color.cyan("ARCS - Flash")} and ${color.cyan("ARCS - Caveman")} as primary agents in OpenCode? (Tab-switchable alongside Build/Plan)`,
         initialValue: true,
       });
 
@@ -341,7 +404,8 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       }
 
       if (shouldRegister) {
-        const agentResult = writeOpencodeAgent(modelConfig);
+        const primaryAgentId = await selectPrimaryAgent("OpenCode");
+        const agentResult = writeOpencodeAgent(modelConfig, primaryAgentId);
         opencodeAgentActive = true;
         const verb = agentResult.action === "created" ? "Created" : "Updated";
         p.note(
@@ -449,7 +513,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       if (!claudeModelConfig) {
         // ── Model selection for Claude Code ─────────────────────────────────
         const currentClaudeModel = await readClaudeCodeCurrentModel();
-        const claudeAvailableModels = getClaudeCodeModels(currentClaudeModel);
+        const claudeAvailableModels = getClaudeCodeModels();
 
         p.note(
           "ARCS agents are grouped into three tiers.\n" +
@@ -463,7 +527,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         const claudeHeavyModel = await selectModel(
           "Heavy model (reasoning, synthesis)",
           claudeAvailableModels,
-          currentClaudeModel || "claude-opus-4-7",
+          currentClaudeModel || "opus",
         );
         if (p.isCancel(claudeHeavyModel)) {
           p.cancel("Setup cancelled.");
@@ -473,7 +537,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         const claudeStandardModel = await selectModel(
           "Standard model (orchestration)",
           claudeAvailableModels,
-          currentClaudeModel || "claude-sonnet-4-6",
+          currentClaudeModel || "sonnet",
         );
         if (p.isCancel(claudeStandardModel)) {
           p.cancel("Setup cancelled.");
@@ -483,7 +547,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         const claudeLightModel = await selectModel(
           "Light/fast model (read-only, exploration)",
           claudeAvailableModels,
-          currentClaudeModel || "claude-haiku-4-5",
+          currentClaudeModel || "haiku",
         );
         if (p.isCancel(claudeLightModel)) {
           p.cancel("Setup cancelled.");
@@ -496,6 +560,13 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           light: claudeLightModel as string,
         };
       }
+
+      // Pre-select the primary the last deploy installed (recorded as
+      // `agent` in ~/.claude/settings.json) so a redeploy preserves it on Enter.
+      const claudePrimaryAgentId = await selectPrimaryAgent(
+        "Claude Code",
+        await readClaudeCodeCurrentPrimaryAgent(),
+      );
 
       const sClaude = p.spinner();
       sClaude.start("Deploying ARCS sub-agents to Claude Code…");
@@ -511,6 +582,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
             DEPLOY_MODEL_HEAVY: claudeModelConfig.heavy,
             DEPLOY_MODEL_STANDARD: claudeModelConfig.standard,
             DEPLOY_MODEL_LIGHT: claudeModelConfig.light,
+            DEPLOY_PRIMARY_AGENT: claudePrimaryAgentId,
           },
           encoding: "utf-8",
         });
@@ -605,6 +677,14 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
 const CUSTOM_MODEL_SENTINEL = "__custom__";
 const KEEP_DEFAULT_SENTINEL = "__keep_default__";
+
+/**
+ * Hints for list entries that are not real model identifiers and would
+ * otherwise read as one. Keyed by the literal option value.
+ */
+const MODEL_OPTION_HINTS: Record<string, string> = {
+  inherit: "defer to the host session's model",
+};
 
 /**
  * Per-agent model selection with "Keep default" as the first option.
@@ -714,7 +794,7 @@ async function selectModel(
       options.push({
         value: model,
         label: model,
-        hint: model === currentValue ? "current" : undefined,
+        hint: model === currentValue ? "current" : MODEL_OPTION_HINTS[model],
       });
     }
   }

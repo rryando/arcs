@@ -65,8 +65,12 @@ describe("OpenCode setup flow", () => {
     vi.mocked((prompts as any).__note).mockReset();
     vi.mocked((prompts as any).__text).mockReset();
     vi.mocked((prompts as any).__multiselect).mockReset();
+    vi.mocked((prompts as any).__select).mockReset();
     // text prompts return empty strings by default (model config)
     vi.mocked((prompts as any).__text).mockResolvedValue("");
+    // select prompts (model tiers, primary orchestrator) return an unrecognized
+    // value by default, which leaves every default-picking path on its fallback
+    vi.mocked((prompts as any).__select).mockResolvedValue("");
     vi.mocked((prompts as any).__multiselect).mockResolvedValue(["opencode"]);
     const actualChildProcess =
       await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -308,11 +312,166 @@ describe("OpenCode setup flow", () => {
     });
   });
 
+  it("makes the picked primary the OpenCode default agent", async () => {
+    const prompts = await import("@clack/prompts");
+    const PRIMARY_PROMPT = "Which ARCS primary should be the default in OpenCode?";
+
+    vi.mocked((prompts as any).__confirm)
+      .mockResolvedValueOnce(false) // customizeAgents
+      .mockResolvedValueOnce(true) // register agents
+      .mockResolvedValueOnce(false) // decline codegraph install
+      .mockResolvedValueOnce(false); // decline RTK install
+    vi.mocked((prompts as any).__select).mockImplementation(({ message }: { message: string }) =>
+      message === PRIMARY_PROMPT ? "arcs-flash" : "",
+    );
+
+    await withTempHomeDir(async (homeDir) => {
+      await runSetup("init");
+
+      expect((prompts as any).__select).toHaveBeenCalledWith(
+        expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: "arcs-orchestrate" }),
+      );
+
+      const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+      const config = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+
+      expect(config.default_agent).toBe("ARCS Flash");
+      // All three primaries stay registered, in their fixed Tab-cycle order
+      expect(Object.keys(config.agent as object).slice(0, 3)).toEqual([
+        "ARCS Orchestrator",
+        "ARCS Flash",
+        "ARCS Caveman",
+      ]);
+    });
+  });
+
+  describe("re-run primary orchestrator selection (OpenCode already registered)", () => {
+    const PRIMARY_PROMPT = "Which ARCS primary should be the default in OpenCode?";
+
+    /**
+     * Config with the ARCS agents already registered (so setup takes the
+     * already-registered branch) and no model/small_model (so the model-reuse
+     * fast path stays out of the way).
+     */
+    function writeRegistered(homeDir: string, defaultAgent?: string) {
+      writeFileSync(
+        resolve(homeDir, ".config", "opencode", "opencode.json"),
+        JSON.stringify(
+          {
+            ...(defaultAgent ? { default_agent: defaultAgent } : {}),
+            agent: {
+              "ARCS Orchestrator": { mode: "primary", prompt: "old-prompt" },
+              "ARCS Flash": { mode: "primary", prompt: "old-prompt" },
+              "ARCS Caveman": { mode: "primary", prompt: "old-prompt" },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    /** Mirrors pressing Enter: the prompt resolves to whatever it pre-selected. */
+    async function acceptPreSelectedPrimary() {
+      const prompts = await import("@clack/prompts");
+      vi.mocked((prompts as any).__select).mockImplementation(
+        ({ message, initialValue }: { message: string; initialValue?: string }) =>
+          message === PRIMARY_PROMPT ? initialValue : "",
+      );
+    }
+
+    it("pre-selects the installed default so accepting it is a no-op", async () => {
+      const prompts = await import("@clack/prompts");
+      await acceptPreSelectedPrimary();
+
+      vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(false); // customizeAgents
+
+      await withTempHomeDir(async (homeDir) => {
+        const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+        writeRegistered(homeDir, "ARCS Flash");
+
+        await runSetup("config");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: "arcs-flash" }),
+        );
+        const updated = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+        expect(updated.default_agent).toBe("ARCS Flash");
+      });
+    });
+
+    it("switches the default primary when the user picks a different one on a re-run", async () => {
+      const prompts = await import("@clack/prompts");
+
+      vi.mocked((prompts as any).__select).mockImplementation(({ message }: { message: string }) =>
+        message === PRIMARY_PROMPT ? "arcs-orchestrate-caveman" : "",
+      );
+      vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(false); // customizeAgents
+
+      await withTempHomeDir(async (homeDir) => {
+        const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+        writeRegistered(homeDir, "ARCS Orchestrator");
+
+        await runSetup("config");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: "arcs-orchestrate" }),
+        );
+        const updated = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+        expect(updated.default_agent).toBe("ARCS Caveman");
+        // All three primaries stay registered, in their fixed Tab-cycle order
+        expect(Object.keys(updated.agent as object).slice(0, 3)).toEqual([
+          "ARCS Orchestrator",
+          "ARCS Flash",
+          "ARCS Caveman",
+        ]);
+      });
+    });
+
+    it("falls back to arcs-orchestrate when no default_agent is recorded", async () => {
+      const prompts = await import("@clack/prompts");
+      await acceptPreSelectedPrimary();
+
+      vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(false); // customizeAgents
+
+      await withTempHomeDir(async (homeDir) => {
+        writeRegistered(homeDir);
+
+        await runSetup("config");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: "arcs-orchestrate" }),
+        );
+      });
+    });
+
+    it("falls back to arcs-orchestrate when default_agent names a non-ARCS agent", async () => {
+      const prompts = await import("@clack/prompts");
+      await acceptPreSelectedPrimary();
+
+      vi.mocked((prompts as any).__confirm).mockResolvedValueOnce(false); // customizeAgents
+
+      await withTempHomeDir(async (homeDir) => {
+        const configFile = resolve(homeDir, ".config", "opencode", "opencode.json");
+        writeRegistered(homeDir, "build");
+
+        await runSetup("config");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: "arcs-orchestrate" }),
+        );
+        const updated = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+        expect(updated.default_agent).toBe("ARCS Orchestrator");
+      });
+    });
+  });
+
   describe("reuse existing OpenCode config confirm", () => {
     const REUSE_MESSAGE = "Reuse the existing OpenCode model config?";
     const HEAVY_PROMPT = "Heavy model (reasoning, synthesis)";
     const STANDARD_PROMPT = "Standard model (general purpose)";
     const LIGHT_PROMPT = "Light/fast model (read-only, exploration)";
+    const PRIMARY_PROMPT = "Which ARCS primary should be the default in OpenCode?";
 
     /** Config that satisfies every detection leg: parses, ARCS agent registered, all tiers filled. */
     function writeFullyConfigured(homeDir: string) {
@@ -370,8 +529,12 @@ describe("OpenCode setup flow", () => {
           }),
         );
 
-        // No tier prompts, no per-agent customization prompt
-        expect((prompts as any).__select).not.toHaveBeenCalled();
+        // No tier prompts, no per-agent customization prompt — the only select
+        // is the primary-orchestrator pick, which a re-run must still offer.
+        expect((prompts as any).__select).toHaveBeenCalledTimes(1);
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT }),
+        );
         for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
           expect((prompts as any).__text).not.toHaveBeenCalledWith(
             expect.objectContaining({ message }),
@@ -487,8 +650,10 @@ describe("OpenCode setup flow", () => {
     const HEAVY_PROMPT = "Heavy model (reasoning, synthesis)";
     const STANDARD_PROMPT = "Standard model (orchestration)";
     const LIGHT_PROMPT = "Light/fast model (read-only, exploration)";
+    const PRIMARY_PROMPT = "Which ARCS primary should be the default in Claude Code?";
+    const DEFAULT_PRIMARY = "arcs-orchestrate";
 
-    const REUSED = { heavy: "claude-opus-4-7", standard: "claude-sonnet-4-6", light: "inherit" };
+    const REUSED = { heavy: "opus", standard: "sonnet", light: "inherit" };
 
     /** Manifest shape written by scripts/deploy-claudecode-bundle.mjs on every deploy. */
     function writeBundleManifest(homeDir: string, manifest: unknown) {
@@ -521,7 +686,7 @@ describe("OpenCode setup flow", () => {
 
       vi.mocked((prompts as any).__multiselect).mockResolvedValue(["claudecode"]);
       vi.mocked((prompts as any).__select).mockReset();
-      vi.mocked((prompts as any).__select).mockResolvedValue("");
+      vi.mocked((prompts as any).__select).mockResolvedValue(DEFAULT_PRIMARY);
 
       vi.mocked(childProcess.spawnSync).mockImplementation(((cmd: any, args: any, options: any) => {
         if (cmd === "node") {
@@ -550,7 +715,10 @@ describe("OpenCode setup flow", () => {
       }) as any);
     }
 
-    function expectDeployedWith(models: { heavy: string; standard: string; light: string }) {
+    function expectDeployedWith(
+      models: { heavy: string; standard: string; light: string },
+      primaryAgent: string = DEFAULT_PRIMARY,
+    ) {
       expect(childProcess.spawnSync).toHaveBeenCalledWith(
         "node",
         expect.arrayContaining([expect.stringContaining("deploy-claudecode-bundle.mjs")]),
@@ -559,6 +727,7 @@ describe("OpenCode setup flow", () => {
             DEPLOY_MODEL_HEAVY: models.heavy,
             DEPLOY_MODEL_STANDARD: models.standard,
             DEPLOY_MODEL_LIGHT: models.light,
+            DEPLOY_PRIMARY_AGENT: primaryAgent,
           }),
         }),
       );
@@ -592,8 +761,16 @@ describe("OpenCode setup flow", () => {
           );
         }
 
-        // No tier prompts at all
-        expect((prompts as any).__select).not.toHaveBeenCalled();
+        // No tier prompts at all — only the primary orchestrator pick
+        for (const message of [HEAVY_PROMPT, STANDARD_PROMPT, LIGHT_PROMPT]) {
+          expect((prompts as any).__select).not.toHaveBeenCalledWith(
+            expect.objectContaining({ message }),
+          );
+        }
+        expect((prompts as any).__select).toHaveBeenCalledTimes(1);
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT }),
+        );
 
         // Deploy still runs, with the recovered values verbatim
         expectDeployedWith(REUSED);
@@ -614,6 +791,7 @@ describe("OpenCode setup flow", () => {
           if (message === HEAVY_PROMPT) return "picked-heavy";
           if (message === STANDARD_PROMPT) return "picked-standard";
           if (message === LIGHT_PROMPT) return "picked-light";
+          if (message === PRIMARY_PROMPT) return DEFAULT_PRIMARY;
           return "";
         },
       );
@@ -653,6 +831,7 @@ describe("OpenCode setup flow", () => {
           if (message === HEAVY_PROMPT) return "picked-heavy";
           if (message === STANDARD_PROMPT) return "picked-standard";
           if (message === LIGHT_PROMPT) return "picked-light";
+          if (message === PRIMARY_PROMPT) return DEFAULT_PRIMARY;
           return "";
         },
       );
@@ -696,6 +875,7 @@ describe("OpenCode setup flow", () => {
           if (message === HEAVY_PROMPT) return "picked-heavy";
           if (message === STANDARD_PROMPT) return "picked-standard";
           if (message === LIGHT_PROMPT) return "picked-light";
+          if (message === PRIMARY_PROMPT) return DEFAULT_PRIMARY;
           return "";
         },
       );
@@ -718,6 +898,108 @@ describe("OpenCode setup flow", () => {
           standard: "picked-standard",
           light: "picked-light",
         });
+      });
+    });
+
+    it("passes the picked primary orchestrator to the deploy script", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+      vi.mocked((prompts as any).__select).mockImplementation(
+        ({ message }: { message: string }) => {
+          if (message === HEAVY_PROMPT) return "picked-heavy";
+          if (message === STANDARD_PROMPT) return "picked-standard";
+          if (message === LIGHT_PROMPT) return "picked-light";
+          if (message === PRIMARY_PROMPT) return "arcs-orchestrate-caveman";
+          return "";
+        },
+      );
+
+      await withTempHomeDir(async () => {
+        // No ~/.claude/.arcs-bundle.json — the full tier sequence runs.
+        await runSetup("init");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: DEFAULT_PRIMARY }),
+        );
+        expectDeployedWith(
+          { heavy: "picked-heavy", standard: "picked-standard", light: "picked-light" },
+          "arcs-orchestrate-caveman",
+        );
+      });
+    });
+
+    /** settings.json shape written by the deploy script's settings merge. */
+    function writeClaudeSettings(homeDir: string, settings: unknown) {
+      mkdirSync(resolve(homeDir, ".claude"), { recursive: true });
+      writeFileSync(
+        resolve(homeDir, ".claude", "settings.json"),
+        JSON.stringify(settings, null, 2),
+      );
+    }
+
+    /** Mirrors pressing Enter on the primary prompt: resolves to its pre-selection. */
+    async function acceptPreSelectedPrimary() {
+      const prompts = await import("@clack/prompts");
+      vi.mocked((prompts as any).__select).mockImplementation(
+        ({ message, initialValue }: { message: string; initialValue?: string }) => {
+          if (message === HEAVY_PROMPT) return "picked-heavy";
+          if (message === STANDARD_PROMPT) return "picked-standard";
+          if (message === LIGHT_PROMPT) return "picked-light";
+          if (message === PRIMARY_PROMPT) return initialValue;
+          return "";
+        },
+      );
+    }
+
+    it("pre-selects the primary the last deploy installed so a redeploy preserves it", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+      await acceptPreSelectedPrimary();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+
+      await withTempHomeDir(async (homeDir) => {
+        writeClaudeSettings(homeDir, { agent: "arcs-flash" });
+
+        await runSetup("config");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: "arcs-flash" }),
+        );
+        expectDeployedWith(
+          { heavy: "picked-heavy", standard: "picked-standard", light: "picked-light" },
+          "arcs-flash",
+        );
+      });
+    });
+
+    it("falls back to arcs-orchestrate when settings.json records no usable primary", async () => {
+      const prompts = await import("@clack/prompts");
+      await setupClaudeOnly();
+      await acceptPreSelectedPrimary();
+
+      vi.mocked((prompts as any).__confirm)
+        .mockResolvedValueOnce(true) // deploy to Claude Code
+        .mockResolvedValueOnce(false) // decline codegraph install
+        .mockResolvedValueOnce(false); // decline RTK install
+
+      await withTempHomeDir(async (homeDir) => {
+        // A real settings.json, but `agent` names a sub-agent, not an ARCS primary.
+        writeClaudeSettings(homeDir, { agent: "graph-explorer" });
+
+        await runSetup("config");
+
+        expect((prompts as any).__select).toHaveBeenCalledWith(
+          expect.objectContaining({ message: PRIMARY_PROMPT, initialValue: DEFAULT_PRIMARY }),
+        );
       });
     });
   });
