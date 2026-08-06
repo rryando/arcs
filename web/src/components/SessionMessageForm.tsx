@@ -8,12 +8,13 @@
  *
  * Callers that already know the target pass `session` and get the compose view
  * straight away. Callers that only have text to send (a document section) omit
- * it and get a session picker first.
+ * it and get a session picker first — the picker lists only the runtimes the UI
+ * currently surfaces (`isVisibleSession`).
  */
 
-import { useCallback, useState } from "react";
-import type { SessionLinkedNodeType, SessionMeta } from "../api/client";
-import { useCreateOpencodeSession, useSendSessionMessage } from "../api/hooks";
+import { useCallback, useMemo, useState } from "react";
+import type { SessionLinkedNodeType, SessionMeta, SessionRuntimeType } from "../api/client";
+import { useSendSessionMessage } from "../api/hooks";
 import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
 import { cx, truncate } from "../lib/format";
 import { Dialog, inputClass } from "./Dialog";
@@ -47,6 +48,17 @@ export function canSendMessage(session: SessionMeta): boolean {
   return messageDelivery(session).kind !== "unsupported";
 }
 
+/** Runtimes the UI temporarily does not surface. The API still returns their
+ *  sessions — every user-facing list filters them out client-side instead, so
+ *  turning a runtime back on is a one-line change here. */
+const HIDDEN_RUNTIMES: readonly SessionRuntimeType[] = ["opencode"];
+
+/** True when a session belongs to a runtime the UI currently surfaces. Shared
+ *  by every session list (table, picker, panel dropdown) so they cannot drift. */
+export function isVisibleSession(session: SessionMeta): boolean {
+  return !HIDDEN_RUNTIMES.includes(session.runtimeType);
+}
+
 export interface SessionMessageFormProps {
   slug: string;
   /** Known target — when omitted the form asks the user to pick one first. */
@@ -69,7 +81,6 @@ export function SessionMessageForm({
   onClose,
 }: SessionMessageFormProps) {
   const sendMessage = useSendSessionMessage(slug);
-  const createSession = useCreateOpencodeSession(slug);
   const { push } = useToaster();
   const [picked, setPicked] = useState<SessionMeta | null>(null);
   const [filter, setFilter] = useState("");
@@ -79,7 +90,8 @@ export function SessionMessageForm({
   const focusOnMount = useCallback((node: HTMLTextAreaElement | null) => node?.focus(), []);
 
   const target = session ?? picked;
-  const candidates = useSessionCandidates(slug, filter, linkedNodeType, linkedNodeId);
+  const allCandidates = useSessionCandidates(slug, filter, linkedNodeType, linkedNodeId);
+  const candidates = useMemo(() => allCandidates.filter(isVisibleSession), [allCandidates]);
 
   const delivery = target ? messageDelivery(target) : null;
   const text = message.trim();
@@ -102,24 +114,6 @@ export function SessionMessageForm({
               : "message sent to session",
           );
           onClose();
-        },
-        onError: (err) => push("error", err instanceof Error ? err.message : String(err)),
-      },
-    );
-  };
-
-  // Selecting the new session outright (rather than just refreshing the list)
-  // is the point of the affordance: the user wanted somewhere to send a
-  // message, so the picker hands straight over to the compose view — with any
-  // `initialText` still in the textarea.
-  const createAndPick = () => {
-    if (createSession.isPending) return;
-    createSession.mutate(
-      {},
-      {
-        onSuccess: (created) => {
-          setPicked(created);
-          push("success", "opencode session created");
         },
         onError: (err) => push("error", err instanceof Error ? err.message : String(err)),
       },
@@ -160,20 +154,19 @@ export function SessionMessageForm({
           )}
         </div>
 
-        {/* Always offered, not just when the list is empty — an empty picker
-            must never be a dead end, and a filtered-down one is the same
-            problem in miniature. */}
+        {/* Session creation is off while opencode is hidden — the affordance
+            stays visible but inert so the picker is not a silent dead end, and
+            the copy still says how a claude-code session gets registered. */}
         <div className="mt-2 flex items-baseline gap-2">
           <button
             type="button"
-            disabled={createSession.isPending}
-            onClick={createAndPick}
-            className="shrink-0 border border-term-green/60 px-2 py-0.5 text-[12px] text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
+            disabled
+            className="shrink-0 border border-term-border px-2 py-0.5 text-[12px] text-term-dim disabled:opacity-50"
           >
-            {createSession.isPending ? "starting…" : "+ new opencode session"}
+            opencode sessions — coming soon
           </button>
           <span className="text-[11px] leading-snug text-term-dim">
-            starts in the project workspace. Claude Code sessions cannot be created remotely — run{" "}
+            Claude Code sessions cannot be created remotely — run{" "}
             <span className="kbd">claude</span> in a linked directory instead.
           </span>
         </div>

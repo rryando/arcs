@@ -14,6 +14,11 @@
  * session, run a fresh one-shot, or run against a persistent ARCS-owned
  * thread. Those modes are asynchronous by contract — the panel says the reply
  * appears when the job finishes, never "sent".
+ *
+ * opencode is temporarily hidden from the UI (`isVisibleSession`): its sessions
+ * are absent from the picker, and a selection still pointing at one (deep link,
+ * stale state) gets a "coming soon" placeholder instead of the composer. The
+ * per-runtime branches below stay intact for when it comes back.
  */
 
 import { useNavigate, useParams } from "@tanstack/react-router";
@@ -21,11 +26,11 @@ import { createContext, type ReactNode, useContext, useEffect, useMemo, useState
 import type { SessionMessageReference, SessionTurn } from "../api/client";
 import { useRunClaudeSession, useSendSessionMessage, useSessionTranscript } from "../api/hooks";
 import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
-import { cx, truncate } from "../lib/format";
+import { cx, relativeTime, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
-import { MAX_LENGTH, messageDelivery, WARN_LENGTH } from "./SessionMessageForm";
+import { isVisibleSession, MAX_LENGTH, messageDelivery, WARN_LENGTH } from "./SessionMessageForm";
 import { useToaster } from "./Toaster";
 
 // ---------------------------------------------------------------------------
@@ -107,6 +112,18 @@ const DELIVER_VIA_VALUES: readonly DeliverVia[] = ["native", "resume", "oneshot"
 const isDeliverVia = (value: string): value is DeliverVia =>
   (DELIVER_VIA_VALUES as readonly string[]).includes(value);
 
+/** A mirror older than this is called out — checkpoints are frequent, so a long
+ *  gap usually means the session moved on (or died) without one. */
+const MIRROR_STALE_MS = 10 * 60_000;
+
+/** `metadata.run` timestamps are epoch milliseconds (the runner writes
+ *  `Date.now()`), while `relativeTime` takes an ISO string — convert here so
+ *  the panel never renders an invalid date. */
+function relativeEpoch(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms)) return "—";
+  return relativeTime(new Date(ms).toISOString());
+}
+
 export function SessionPanel() {
   const { slug } = useParams({ strict: false }) as { slug: string };
   const { open, selectedSessionId, pendingRef, openSession, clearRef, close } = useSessionPanel();
@@ -118,18 +135,38 @@ export function SessionPanel() {
 
   // Shared picker list — unfiltered, linked sessions sorted first. The panel
   // itself does not filter to linked sessions (see the "sort by linkage, never
-  // filter by it" gotcha).
-  const candidates = useSessionCandidates(slug, "");
-  const selectedSession = useMemo(
-    () => candidates.find((s) => s.normalizedId === selectedSessionId) ?? null,
-    [candidates, selectedSessionId],
+  // filter by it" gotcha); it does drop runtimes the UI hides.
+  const allCandidates = useSessionCandidates(slug, "");
+  const candidates = useMemo(() => allCandidates.filter(isVisibleSession), [allCandidates]);
+  // Resolved against the UNFILTERED list so a deep link (or a stale selection)
+  // pointing at a hidden runtime is detectable instead of silently "no session".
+  const selected = useMemo(
+    () => allCandidates.find((s) => s.normalizedId === selectedSessionId) ?? null,
+    [allCandidates, selectedSessionId],
   );
+  const hiddenSelection = selected !== null && !isVisibleSession(selected);
+  // Everything downstream (delivery copy, composer, transcript) treats a hidden
+  // selection as no selection — the placeholder note takes the composer's slot.
+  const selectedSession = hiddenSelection ? null : selected;
 
   const transcript = useSessionTranscript(slug, selectedSessionId, {
     // Mounted only while the panel is open AND a claude-code session is
     // selected — opencode has no mirror, and a closed panel must not poll.
     enabled: open && selectedSessionId !== null && selectedSession?.runtimeType === "claude-code",
   });
+
+  // ARCS-owned records are headless bookkeeping — no terminal session is
+  // attached, so a native send would land in a queue nothing ever drains.
+  const arcsOwned = selectedSession?.metadata?.control === "arcs-owned";
+  const queuedCount = selectedSession?.messageQueue?.length ?? 0;
+  const run = selectedSession?.metadata?.run;
+  // Absent outcome = a record from before the write-back existed, not a failure.
+  const failedRun = run && run.outcome !== undefined && run.outcome !== "success" ? run : null;
+
+  const mirroredAt = transcript.data?.mirroredAt ?? null;
+  const mirrorAge = mirroredAt === null ? null : Date.now() - new Date(mirroredAt).getTime();
+  const mirrorStale =
+    mirrorAge !== null && Number.isFinite(mirrorAge) && mirrorAge > MIRROR_STALE_MS;
 
   const delivery = selectedSession ? messageDelivery(selectedSession) : null;
   const text = message.trim();
@@ -151,6 +188,13 @@ export function SessionPanel() {
     if (deliverVia === "resume" && !resumeEligible) setDeliverVia("native");
   }, [deliverVia, resumeEligible]);
 
+  // Same rule for the other direction: native is a black hole on an ARCS-owned
+  // record, so fall the selection back to a headless one-shot rather than let
+  // the composer queue into nothing.
+  useEffect(() => {
+    if (deliverVia === "native" && arcsOwned) setDeliverVia("oneshot");
+  }, [deliverVia, arcsOwned]);
+
   const sendLabel = runPending
     ? "job running…"
     : sendMessage.isPending
@@ -164,6 +208,7 @@ export function SessionPanel() {
   const submit = () => {
     if (disabled || !selectedSession || !delivery) return;
     if (deliverVia === "resume" && !resumeEligible) return;
+    if (deliverVia === "native" && arcsOwned) return;
 
     if (deliverVia === "native") {
       sendMessage.mutate(
@@ -253,7 +298,9 @@ export function SessionPanel() {
         </button>
       </header>
 
-      {/* runtime copy — the delivery asymmetry, stated outright */}
+      {/* runtime copy — the delivery asymmetry, stated outright. A hidden
+          selection reads as "no session" here; the composer slot below carries
+          the one note that explains why. */}
       {selectedSession ? (
         <div className="flex items-center gap-2 border-b border-term-border px-2 py-1 text-[11px]">
           {selectedSession.runtimeType === "opencode" ? (
@@ -272,11 +319,13 @@ export function SessionPanel() {
         </div>
       )}
 
-      {/* session picker — any runtime */}
+      {/* session picker — every runtime the UI surfaces */}
       <div className="border-b border-term-border p-2">
         <div className="mb-1 text-[10px] tracking-wide text-term-dim uppercase">session</div>
         <select
-          value={selectedSessionId ?? ""}
+          // Falls back to the placeholder option when the selection is hidden
+          // or not loaded — a value with no matching <option> renders blank.
+          value={selectedSession?.normalizedId ?? ""}
           onChange={(e) => {
             if (e.target.value) openSession(e.target.value);
           }}
@@ -298,138 +347,160 @@ export function SessionPanel() {
         )}
       </div>
 
-      {/* composer + pending reference */}
-      <div className="border-b border-term-border p-2">
-        {pendingRef && (
-          <div className="mb-2 border border-term-cyan/40 bg-term-inset">
-            <div className="flex items-center gap-2 border-b border-term-border/60 px-2 py-0.5">
-              <span className="text-[10px] font-bold tracking-wide text-term-cyan uppercase">
-                reference
-              </span>
-              <span className="flex-1" />
-              <button
-                type="button"
-                title="remove reference"
-                onClick={clearRef}
-                className="text-term-dim hover:text-term-red"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="px-2 py-1 text-[11px] leading-snug text-term-dim">
-              <span className="text-term-fg">{pendingRef.source.label}</span>{" "}
-              <span className="text-term-cyan">§ {pendingRef.section.id}</span>
-              <span className="mt-0.5 block text-term-dim/80">
-                {truncate(pendingRef.text, 120)}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {selectedSession && (
-          <div className="mb-1 flex items-center gap-2 text-[11px]">
-            <label
-              htmlFor="deliver-via"
-              className="text-[10px] tracking-wide text-term-dim uppercase"
-            >
-              deliver via
-            </label>
-            <select
-              id="deliver-via"
-              value={deliverVia}
-              onChange={(e) =>
-                setDeliverVia(isDeliverVia(e.target.value) ? e.target.value : "native")
-              }
-              disabled={runPending}
-              title="how this message reaches the agent"
-              className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
-            >
-              <option value="native">
-                native — {delivery?.kind === "live" ? "live inject" : "queued at checkpoint"}
-              </option>
-              <option
-                value="resume"
-                disabled={!resumeEligible}
-                title={
-                  resumeEligible
-                    ? "headless resume of the selected claude-code session"
-                    : "resume needs a claude-code session that is not active — a live terminal session cannot be resumed headlessly"
-                }
-              >
-                resume — headless resume of this session
-              </option>
-              <option value="oneshot">one-shot — fresh headless claude, no memory</option>
-              <option value="stable">thread — coherent headless thread</option>
-            </select>
-          </div>
-        )}
-
-        {selectedSession && delivery && (
-          <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
-            {deliverVia === "native" ? (
-              <>
-                <span
-                  className={cx(
-                    "font-bold",
-                    delivery.kind === "live" ? "text-term-green" : "text-term-amber",
-                  )}
-                >
-                  {delivery.kind}
+      {/* composer + pending reference — a hidden-runtime selection gets a
+          placeholder instead of the chat controls, so the panel never shows a
+          composer that cannot reach anything. */}
+      {hiddenSelection ? (
+        <div className="border-b border-term-border p-2 text-[11px] text-term-dim">
+          opencode sessions — coming soon
+        </div>
+      ) : (
+        <div className="border-b border-term-border p-2">
+          {pendingRef && (
+            <div className="mb-2 border border-term-cyan/40 bg-term-inset">
+              <div className="flex items-center gap-2 border-b border-term-border/60 px-2 py-0.5">
+                <span className="text-[10px] font-bold tracking-wide text-term-cyan uppercase">
+                  reference
                 </span>
-                <span>{delivery.hint}</span>
-              </>
-            ) : (
-              <span className="text-term-amber">
-                runs a headless claude job in the workspace; the reply appears in the transcript
-                when the job finishes — not live
+                <span className="flex-1" />
+                <button
+                  type="button"
+                  title="remove reference"
+                  onClick={clearRef}
+                  className="text-term-dim hover:text-term-red"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="px-2 py-1 text-[11px] leading-snug text-term-dim">
+                <span className="text-term-fg">{pendingRef.source.label}</span>{" "}
+                <span className="text-term-cyan">§ {pendingRef.section.id}</span>
+                <span className="mt-0.5 block text-term-dim/80">
+                  {truncate(pendingRef.text, 120)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {selectedSession && (
+            <div className="mb-1 flex items-center gap-2 text-[11px]">
+              <label
+                htmlFor="deliver-via"
+                className="text-[10px] tracking-wide text-term-dim uppercase"
+              >
+                deliver via
+              </label>
+              <select
+                id="deliver-via"
+                value={deliverVia}
+                onChange={(e) =>
+                  setDeliverVia(isDeliverVia(e.target.value) ? e.target.value : "native")
+                }
+                disabled={runPending}
+                title="how this message reaches the agent"
+                className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
+              >
+                <option
+                  value="native"
+                  disabled={arcsOwned}
+                  title={
+                    arcsOwned
+                      ? "ARCS-owned headless record — no terminal session drains this queue; use thread or one-shot"
+                      : "delivered by the session's own runtime"
+                  }
+                >
+                  native — {delivery?.kind === "live" ? "live inject" : "queued at checkpoint"}
+                </option>
+                <option
+                  value="resume"
+                  disabled={!resumeEligible}
+                  title={
+                    resumeEligible
+                      ? "headless resume of the selected claude-code session"
+                      : "resume needs a claude-code session that is not active — a live terminal session cannot be resumed headlessly"
+                  }
+                >
+                  resume — headless resume of this session
+                </option>
+                <option value="oneshot">one-shot — fresh headless claude, no memory</option>
+                <option value="stable">thread — coherent headless thread</option>
+              </select>
+            </div>
+          )}
+
+          {selectedSession && delivery && (
+            <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
+              {deliverVia === "native" ? (
+                <>
+                  <span
+                    className={cx(
+                      "font-bold",
+                      delivery.kind === "live" ? "text-term-green" : "text-term-amber",
+                    )}
+                  >
+                    {delivery.kind}
+                  </span>
+                  <span>{delivery.hint}</span>
+                </>
+              ) : (
+                <span className="text-term-amber">
+                  runs a headless claude job in the workspace; the reply appears in the transcript
+                  when the job finishes — not live
+                </span>
+              )}
+            </div>
+          )}
+
+          {queuedCount > 0 && (
+            <div className="mb-1 text-[11px] text-term-amber">
+              {queuedCount} queued · waiting for the session's next checkpoint
+            </div>
+          )}
+
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            disabled={!selectedSession || runPending}
+            placeholder={
+              selectedSession ? "message for the agent…" : "pick a session first — no target yet"
+            }
+            rows={3}
+            className={cx(inputClass, "resize-y leading-snug disabled:opacity-50")}
+          />
+
+          {text.length > WARN_LENGTH && (
+            <div className="mt-1 text-[11px] text-term-amber">
+              {text.length} characters —{" "}
+              {tooLong
+                ? `over the ${MAX_LENGTH} character ceiling for one message; trim it before sending`
+                : "large messages may be slow to deliver or truncated by the target session"}
+            </div>
+          )}
+
+          <div className="mt-2 flex items-center gap-2 text-[12px]">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={submit}
+              className="border border-term-green/60 px-2 py-0.5 font-bold text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
+            >
+              {sendLabel}
+            </button>
+            <span className="flex-1" />
+            {selectedSession && (
+              <span className="text-[10px] text-term-dim">
+                <span className="kbd">ctrl</span>+<span className="kbd">enter</span> send
               </span>
             )}
           </div>
-        )}
-
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          disabled={!selectedSession || runPending}
-          placeholder={
-            selectedSession ? "message for the agent…" : "pick a session first — no target yet"
-          }
-          rows={3}
-          className={cx(inputClass, "resize-y leading-snug disabled:opacity-50")}
-        />
-
-        {text.length > WARN_LENGTH && (
-          <div className="mt-1 text-[11px] text-term-amber">
-            {text.length} characters —{" "}
-            {tooLong
-              ? `over the ${MAX_LENGTH} character ceiling for one message; trim it before sending`
-              : "large messages may be slow to deliver or truncated by the target session"}
-          </div>
-        )}
-
-        <div className="mt-2 flex items-center gap-2 text-[12px]">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={submit}
-            className="border border-term-green/60 px-2 py-0.5 font-bold text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
-          >
-            {sendLabel}
-          </button>
-          <span className="flex-1" />
-          {selectedSession && (
-            <span className="text-[10px] text-term-dim">
-              <span className="kbd">ctrl</span>+<span className="kbd">enter</span> send
-            </span>
-          )}
         </div>
-      </div>
+      )}
 
       {/* transcript — claude-code only; opencode has no mirror */}
       {selectedSession?.runtimeType === "claude-code" && (
@@ -442,10 +513,22 @@ export function SessionPanel() {
               transcript
             </h3>
             <span className="flex-1" />
-            <span className="text-[10px] text-term-dim">
-              checkpoint-mirrored — refreshed at each checkpoint, never live
+            {/* Mirror freshness, not a static claim: the transcript is only as
+                current as the last checkpoint, and a stale one is the usual
+                reason a reply seems missing. */}
+            <span
+              title="the transcript is a checkpoint mirror — refreshed at each checkpoint, never live"
+              className={cx("text-[10px]", mirrorStale ? "text-term-amber" : "text-term-dim")}
+            >
+              {mirroredAt === null ? "never mirrored" : `last mirror ${relativeTime(mirroredAt)}`}
             </span>
           </header>
+          {failedRun && (
+            <div className="border-b border-term-red/40 px-2 py-1 text-[11px] text-term-red">
+              run failed — {failedRun.error ?? failedRun.outcome}
+              <span className="ml-2 text-term-dim">{relativeEpoch(failedRun.endedAt)}</span>
+            </div>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {transcript.isLoading ? (
               <div className="text-[11px] text-term-dim">loading…</div>

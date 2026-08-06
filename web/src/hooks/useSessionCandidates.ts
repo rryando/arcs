@@ -13,10 +13,40 @@ import type { SessionLinkedNodeType, SessionMeta } from "../api/client";
 import { useSessions } from "../api/hooks";
 import { truncate } from "../lib/format";
 
+/** Metadata is persisted verbatim from the runtime, so a declared key can still
+ *  arrive as a non-string — read it defensively, never trust the type alone. */
+function metaText(session: SessionMeta, key: "title" | "directory"): string {
+  const value = session.metadata?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Last path segment of a workspace directory, POSIX or Windows separators. */
+function directoryName(directory: string): string {
+  const segments = directory.replace(/[/\\]+$/, "").split(/[/\\]/);
+  return segments[segments.length - 1] || directory;
+}
+
+/**
+ * Human-readable name for a session: runtime title, else the workspace
+ * directory's basename, else the first 8 characters of the runtime session id.
+ * Never "untitled" — every session has at least an id.
+ */
+export function sessionName(session: SessionMeta): string {
+  const directory = metaText(session, "directory");
+  const lead = metaText(session, "title") || (directory ? directoryName(directory) : "");
+  return lead ? truncate(lead, 48) : session.runtimeSessionId.slice(0, 8);
+}
+
+/**
+ * `sessionName` plus a short id discriminator, for lists that do not show the
+ * session id in a column of their own. Several sessions routinely share one
+ * repo directory (and claude-code reports no title at all), so the name alone
+ * would render as a wall of identical options.
+ */
 export function sessionLabel(session: SessionMeta): string {
-  const title = session.metadata?.title;
-  if (typeof title === "string" && title) return truncate(title, 48);
-  return session.runtimeType;
+  const id8 = session.runtimeSessionId.slice(0, 8);
+  const name = sessionName(session);
+  return name === id8 ? id8 : `${name} · ${id8}`;
 }
 
 /**
@@ -34,10 +64,15 @@ export function useSessionCandidates(
   return useMemo<SessionMeta[]>(() => {
     const all = sessionsData?.sessions ?? [];
     const q = filter.trim().toLowerCase();
+    // Matched against the raw metadata too, not just the rendered label: the
+    // label truncates and shows only a directory's basename, so typing a repo
+    // path (or a title the label trimmed away) must still find the session.
     const matched = q
       ? all.filter(
           (s) =>
             sessionLabel(s).toLowerCase().includes(q) ||
+            metaText(s, "title").toLowerCase().includes(q) ||
+            metaText(s, "directory").toLowerCase().includes(q) ||
             s.runtimeSessionId.toLowerCase().includes(q) ||
             s.runtimeType.includes(q),
         )

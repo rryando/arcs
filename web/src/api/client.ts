@@ -99,6 +99,34 @@ export type SessionStatus = "active" | "idle" | "completed" | "failed" | "discon
 export type SessionRuntimeType = "opencode" | "claude-code";
 export type SessionLinkedNodeType = "task" | "plan";
 
+/** Write-back of a headless `claude -p` run, persisted on `metadata.run` when
+ *  the child exits — on every outcome path, so a failed run is readable. */
+export interface SessionRunMeta {
+  mode: string;
+  /** Absent only on a record written before the write-back existed. */
+  outcome?: "success" | "error" | "timeout";
+  /** Failure detail — present on error/timeout outcomes. */
+  error?: string;
+  /** Epoch milliseconds (the runner writes `Date.now()`), never an ISO string. */
+  startedAt?: number;
+  endedAt?: number;
+  replyChars?: number;
+}
+
+/** Session metadata, persisted verbatim by the bridge. Only the keys the UI
+ *  reads are named; the index signature keeps everything else addressable. */
+export interface SessionMetadata {
+  /** Runtime-reported session title, when the runtime reports one. */
+  title?: string;
+  /** Workspace directory the session runs in. */
+  directory?: string;
+  /** `"arcs-owned"` marks a headless record ARCS minted itself — no terminal
+   *  session is attached to it, so nothing ever drains its message queue. */
+  control?: string;
+  run?: SessionRunMeta;
+  [key: string]: unknown;
+}
+
 export interface SessionMeta {
   id: string;
   normalizedId: string;
@@ -113,7 +141,10 @@ export interface SessionMeta {
   linkedNodeType?: SessionLinkedNodeType;
   /** Normalized task/plan id — never a diagram node id (T001…). */
   linkedNodeId?: string;
-  metadata?: Record<string, unknown>;
+  /** Messages awaiting the session's next checkpoint; the key is absent (never
+   *  an empty array) once the session drains it. */
+  messageQueue?: string[];
+  metadata?: SessionMetadata;
 }
 
 export interface SessionUpdateInput {

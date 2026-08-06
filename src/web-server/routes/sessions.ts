@@ -147,6 +147,29 @@ async function primaryWorkspacePath(projectDir: string, slug: string): Promise<s
   return directory;
 }
 
+/**
+ * The claude-facing session uuid for an ARCS stable thread.
+ *
+ * The ARCS thread id (`arcs-thread-<slug>-<uuid4>`) is deliberately
+ * human-readable — it labels the session picker and names the transcript
+ * sidecar — so it can never be handed to claude: `--session-id`/`--resume` on
+ * claude >= 2.x accept a bare RFC-4122 uuid only and exit 1 with "Invalid
+ * session ID. Must be a valid UUID." on anything else. Each thread therefore
+ * carries its own uuid on `metadata.claudeSessionId`, minted once and reused
+ * for every later turn: re-seeding an id claude already knows fails with
+ * "already in use", so the mint must not repeat.
+ */
+async function threadClaudeSessionId(projectDir: string, thread: string): Promise<string> {
+  try {
+    const existing = await getSession(projectDir, thread);
+    const persisted = existing.metadata?.claudeSessionId;
+    if (typeof persisted === "string" && persisted !== "") return persisted;
+  } catch {
+    // No record for this thread yet — mint its first uuid below.
+  }
+  return randomUUID();
+}
+
 function parseFilters(status: string | undefined, runtimeType: string | undefined): SessionFilters {
   const filters: SessionFilters = {};
   if (status && (SESSION_STATUSES as readonly string[]).includes(status)) {
@@ -379,8 +402,8 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
  *   project's primary workspace.
  * - stable: the run targets a persistent ARCS-owned thread (`arcs-thread-<slug>-
  *   <uuid4>` minted once then reused) so a conversation accumulates in one
- *   sidecar; the first successful spawn seeds the thread (`--session-id`),
- *   later spawns resume it (`--resume` + `--session-id`).
+ *   sidecar; the first successful spawn seeds the thread's claude-facing uuid
+ *   (`--session-id`), later spawns continue it (`--resume` alone).
  *
  * Modes 2/3 append the user turn (and optional reference) to the write-target
  * sidecar immediately — the panel shows the prompt before the run ends, with
@@ -404,6 +427,8 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       let writeTarget: SessionMeta;
       let dir: string;
       let runThreadId: string | undefined;
+      /** Stable mode only — the uuid claude itself keys the thread on. */
+      let runClaudeSessionId: string | undefined;
       let firstStableSpawn = false;
 
       if (mode === "resume") {
@@ -431,16 +456,26 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
           });
         } else {
           // stable — reuse the referenced session's own thread when ARCS owns
-          // it, otherwise take the payload threadId or mint a fresh one.
+          // it, otherwise take the payload threadId or mint a fresh one. A
+          // payload threadId names the ARCS thread record only and gets its own
+          // minted claude uuid: attaching to an external session's real claude
+          // thread is mode=resume's job, never stable's.
           const thread =
             (session.metadata?.control === "arcs-owned" && session.runtimeSessionId) ||
             threadId ||
             `arcs-thread-${slug}-${randomUUID()}`;
           runThreadId = thread;
+          // Read before the upsert: metadata merges shallowly, so writing an
+          // unconditionally minted uuid would clobber the thread's own one.
+          runClaudeSessionId = await threadClaudeSessionId(projectDir, thread);
           writeTarget = await upsertSession(projectDir, {
             runtimeType: "claude-code",
             runtimeSessionId: thread,
-            metadata: { control: "arcs-owned", directory: dir },
+            metadata: {
+              control: "arcs-owned",
+              directory: dir,
+              claudeSessionId: runClaudeSessionId,
+            },
           });
           firstStableSpawn = writeTarget.metadata?.threadInitialized !== true;
         }
@@ -478,10 +513,16 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       } else if (mode === "oneshot") {
         argv = ["-p", message, "--output-format", "json"];
       } else {
-        const thread = runThreadId as string;
+        // Stable threads speak claude's uuid, never the ARCS thread id. The
+        // seed spawn claims the uuid with --session-id; every later turn
+        // continues it with --resume ALONE — claude >= 2.x refuses the two
+        // flags together unless --fork-session is set, and --fork-session is
+        // deliberately unused because it mints a new id per turn, which would
+        // scatter one conversation across a new thread every send.
+        const claudeThread = runClaudeSessionId as string;
         argv = firstStableSpawn
-          ? ["-p", message, "--session-id", thread, "--output-format", "json"]
-          : ["-p", message, "--resume", thread, "--session-id", thread, "--output-format", "json"];
+          ? ["-p", message, "--session-id", claudeThread, "--output-format", "json"]
+          : ["-p", message, "--resume", claudeThread, "--output-format", "json"];
       }
 
       // Fire-and-forget: the run proceeds out-of-band. The runner invokes the

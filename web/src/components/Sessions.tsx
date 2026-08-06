@@ -1,9 +1,11 @@
 /**
  * Sessions view — live agent runtime sessions discovered for this project.
  *
- * The table mirrors whatever the opencode discovery bridge has written into the
- * session store, plus the DAG link a human attached to a session. Sessions whose
- * runtime accepts messages can also be prompted from here.
+ * The table mirrors whatever the session bridge has written into the session
+ * store, plus the DAG link a human attached to a session. Sessions whose
+ * runtime accepts messages can also be prompted from here. Runtimes the UI does
+ * not currently surface are filtered out client-side (`isVisibleSession`) — the
+ * API still returns them.
  */
 
 import { useParams } from "@tanstack/react-router";
@@ -15,9 +17,10 @@ import { type Column, DataTable } from "../components/DataTable";
 import { ConfirmDialog } from "../components/Dialog";
 import { Panel } from "../components/Panel";
 import { useToaster } from "../components/Toaster";
+import { sessionName } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
 import { SessionLinkModal } from "./SessionLinkModal";
-import { canSendMessage, SessionMessageForm } from "./SessionMessageForm";
+import { canSendMessage, isVisibleSession, SessionMessageForm } from "./SessionMessageForm";
 import { useSessionPanel } from "./SessionPanel";
 import { SESSION_STATUSES, SessionStatusBadge } from "./SessionStatusBadge";
 
@@ -46,14 +49,20 @@ export function SessionsView() {
   const [linkTarget, setLinkTarget] = useState<SessionMeta | null>(null);
   const [messageTarget, setMessageTarget] = useState<SessionMeta | null>(null);
 
-  const sessions = data?.sessions ?? [];
+  // The API returns every runtime; the view shows only the ones the UI
+  // currently surfaces, so the counts below describe what the user can see.
+  const sessions = useMemo(() => (data?.sessions ?? []).filter(isVisibleSession), [data]);
 
   const rows = useMemo(() => {
     const list = statusFilter ? sessions.filter((s) => s.status === statusFilter) : sessions;
     return [...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [sessions, statusFilter]);
 
-  const liveCount = sessions.filter((s) => s.status === "active" || s.status === "idle").length;
+  // ARCS-owned records are headless run bookkeeping, not sessions a human can
+  // reach — counting them as "live" advertises agents nobody is talking to.
+  const liveCount = sessions.filter(
+    (s) => (s.status === "active" || s.status === "idle") && s.metadata?.control !== "arcs-owned",
+  ).length;
 
   const linkLabel = useMemo(() => {
     const titles = new Map<string, string>();
@@ -86,7 +95,22 @@ export function SessionsView() {
         title: "status",
         className: "w-36",
         sortValue: (s) => SESSION_STATUSES.indexOf(s.status),
-        render: (s) => <SessionStatusBadge status={s.status} />,
+        render: (s) => {
+          const queued = s.messageQueue?.length ?? 0;
+          return (
+            <span className="inline-flex items-center gap-1">
+              <SessionStatusBadge status={s.status} />
+              {queued > 0 && (
+                <span
+                  title={`${queued} message${queued === 1 ? "" : "s"} queued — waiting for the session's next checkpoint`}
+                  className="text-term-amber"
+                >
+                  ✉{queued}
+                </span>
+              )}
+            </span>
+          );
+        },
       },
       {
         key: "runtime",
@@ -126,18 +150,15 @@ export function SessionsView() {
       {
         key: "title",
         title: "session",
-        sortValue: (s) => metaString(s, "title").toLowerCase(),
-        render: (s) => {
-          const title = metaString(s, "title");
-          return (
-            <span>
-              <span className="font-bold">
-                {title || metaString(s, "sessionSlug") || "untitled"}
-              </span>
-              <span className="ml-2 text-term-dim">{truncate(s.runtimeSessionId, 20)}</span>
-            </span>
-          );
-        },
+        sortValue: (s) => sessionName(s).toLowerCase(),
+        // The id column sits right here, so the row shows the bare name — the
+        // discriminated `sessionLabel` is for lists without an id of their own.
+        render: (s) => (
+          <span>
+            <span className="font-bold">{sessionName(s)}</span>
+            <span className="ml-2 text-term-dim">{truncate(s.runtimeSessionId, 20)}</span>
+          </span>
+        ),
       },
       {
         key: "directory",
@@ -227,7 +248,7 @@ export function SessionsView() {
         hint={`${rows.length}/${sessions.length} · ${liveCount} live`}
         actions={
           <span className="text-[11px] text-term-dim">
-            opencode bridge · <span className="kbd">l</span> link · <span className="kbd">v</span>{" "}
+            session bridge · <span className="kbd">l</span> link · <span className="kbd">v</span>{" "}
             view · <span className="kbd">m</span> message · <span className="kbd">x</span> forget
           </span>
         }
@@ -274,7 +295,7 @@ export function SessionsView() {
                 },
               },
             ]}
-            emptyMessage="no sessions — start `opencode serve` and set OPENCODE_PORT"
+            emptyMessage="no sessions — run `claude` in a linked directory to register one"
           />
         )}
       </Panel>

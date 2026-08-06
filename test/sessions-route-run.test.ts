@@ -39,6 +39,9 @@ import {
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 const WORKSPACE = "/work/demo";
+/** A bare RFC-4122 v4 uuid — the only shape claude >= 2.x accepts on
+ *  `--session-id`/`--resume` (the human-readable ARCS thread id is rejected). */
+const BARE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const RUN_RECORD: ClaudeRunRecord = {
   pid: 4242,
   startedAt: 1_700_000_000_000,
@@ -415,22 +418,27 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
       });
       expect(first.envelope.data?.run).toEqual({ accepted: true, mode: "stable", threadId });
 
-      // First spawn seeds the thread with --session-id only.
+      // The ARCS thread id names the record (picker label + sidecar filename);
+      // claude only ever sees the bare uuid minted onto metadata.
+      const threadSession = (await listSessions(projectDir)).find(
+        (s) => s.runtimeSessionId === threadId,
+      );
+      expect(threadSession).toBeDefined();
+      const claudeSessionId = threadSession?.metadata?.claudeSessionId as string;
+      expect(claudeSessionId).toMatch(BARE_UUID);
+
+      // First spawn seeds the thread with --session-id <bare uuid> only.
       expect(capturedJobs[0].argv).toEqual([
         "-p",
         "start the thread",
         "--session-id",
-        threadId,
+        claudeSessionId,
         "--output-format",
         "json",
       ]);
       expect(capturedJobs[0].writeTargetKey).toBe(threadId);
 
       // The first successful spawn marks the thread initialized.
-      const threadSession = (await listSessions(projectDir)).find(
-        (s) => s.runtimeSessionId === threadId,
-      );
-      expect(threadSession).toBeDefined();
       await vi.waitFor(async () => {
         const stored = await getSession(projectDir, threadSession?.normalizedId ?? "");
         expect(stored.metadata?.threadInitialized).toBe(true);
@@ -443,16 +451,17 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
       });
       expect(second.status).toBe(202);
       expect(second.envelope.data?.run?.threadId).toBe(threadId);
+      // Later spawns continue the same uuid with --resume ALONE: claude >= 2.x
+      // refuses --session-id alongside --resume.
       expect(capturedJobs[1].argv).toEqual([
         "-p",
         "continue",
         "--resume",
-        threadId,
-        "--session-id",
-        threadId,
+        claudeSessionId,
         "--output-format",
         "json",
       ]);
+      expect(capturedJobs[1].argv).not.toContain("--session-id");
 
       // The conversation accumulates in the one sidecar, in order: each run's
       // user turn (request-time append) followed by the success assistant reply
@@ -485,18 +494,83 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
 
       expect(status).toBe(202);
       expect(envelope.data?.run?.threadId).toBe("cc_ext_1");
-      expect(capturedJobs[0].argv).toEqual([
-        "-p",
-        "use this thread",
-        "--session-id",
-        "cc_ext_1",
-        "--output-format",
-        "json",
-      ]);
 
       // The referenced session becomes the ARCS-owned write-target.
       const claimed = await getSession(projectDir, external.normalizedId);
       expect(claimed.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
+
+      // A payload threadId names the ARCS thread record only — it gets its own
+      // minted claude uuid rather than being passed through as a session id
+      // (attaching to an external session's real thread is mode=resume's job).
+      const claudeSessionId = claimed.metadata?.claudeSessionId as string;
+      expect(claudeSessionId).toMatch(BARE_UUID);
+      expect(claudeSessionId).not.toBe("cc_ext_1");
+      expect(capturedJobs[0].argv).toEqual([
+        "-p",
+        "use this thread",
+        "--session-id",
+        claudeSessionId,
+        "--output-format",
+        "json",
+      ]);
+    });
+  });
+
+  it("mints the claude uuid once, persists it on metadata, and reuses it on later sends", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_seed_uuid",
+      });
+
+      const first = await postRun(base, seed.normalizedId, { mode: "stable", message: "one" });
+      expect(first.status).toBe(202);
+      const threadId = first.envelope.data?.run?.threadId as string;
+
+      const seeded = await getSession(projectDir, threadId);
+      const claudeSessionId = seeded.metadata?.claudeSessionId as string;
+      expect(claudeSessionId).toMatch(BARE_UUID);
+      // Two independent identities: the ARCS thread id carries its own uuid.
+      expect(claudeSessionId).not.toBe(threadId);
+      expect(threadId).not.toContain(claudeSessionId);
+
+      await vi.waitFor(async () => {
+        const stored = await getSession(projectDir, threadId);
+        expect(stored.metadata?.threadInitialized).toBe(true);
+      });
+
+      const second = await postRun(base, threadId, { mode: "stable", message: "two" });
+      expect(second.status).toBe(202);
+      expect(second.envelope.data?.run?.threadId).toBe(threadId);
+
+      // The uuid is minted exactly once: the re-upsert merges shallowly, so the
+      // persisted claudeSessionId (and threadInitialized) survive untouched.
+      const afterSecond = await getSession(projectDir, threadId);
+      expect(afterSecond.metadata?.claudeSessionId).toBe(claudeSessionId);
+      expect(afterSecond.metadata?.threadInitialized).toBe(true);
+      expect(capturedJobs[1].argv).toEqual([
+        "-p",
+        "two",
+        "--resume",
+        claudeSessionId,
+        "--output-format",
+        "json",
+      ]);
+
+      // A third send keeps resuming the same uuid — never re-seeding it
+      // (claude answers "already in use" when --session-id names a known id).
+      const third = await postRun(base, threadId, { mode: "stable", message: "three" });
+      expect(third.status).toBe(202);
+      expect(capturedJobs[2].argv).toEqual([
+        "-p",
+        "three",
+        "--resume",
+        claudeSessionId,
+        "--output-format",
+        "json",
+      ]);
+      const afterThird = await getSession(projectDir, threadId);
+      expect(afterThird.metadata?.claudeSessionId).toBe(claudeSessionId);
     });
   });
 });
