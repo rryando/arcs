@@ -14,7 +14,52 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+/**
+ * Recorder for the syscalls that carry the mode guarantee.
+ *
+ * The repair-path window is an ORDER property — `writeFile`'s `mode` is a no-op
+ * on an inode that already exists, so the only thing that keeps the fresh token
+ * out of a 0644 inode is the chmod running BEFORE the write. A final-state
+ * assertion cannot see that; the call sequence can. `vi.hoisted` because the
+ * mock factory below is hoisted above every import.
+ */
+type FsCall = { op: "chmod" | "writeFile"; path: string; mode?: number; errno?: string };
+const fsSpy = vi.hoisted(() => ({ calls: [] as FsCall[] }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  // Both wrappers delegate to the real implementation — this records the
+  // sequence, it does not simulate a filesystem.
+  const chmod = async (
+    path: Parameters<typeof actual.chmod>[0],
+    mode: Parameters<typeof actual.chmod>[1],
+  ): Promise<void> => {
+    const call: FsCall = { op: "chmod", path: String(path), mode: Number(mode) };
+    fsSpy.calls.push(call);
+    try {
+      await actual.chmod(path, mode);
+    } catch (err) {
+      call.errno = (err as NodeJS.ErrnoException)?.code;
+      throw err;
+    }
+  };
+  const writeFile = async (
+    file: Parameters<typeof actual.writeFile>[0],
+    data: Parameters<typeof actual.writeFile>[1],
+    options?: Parameters<typeof actual.writeFile>[2],
+  ): Promise<void> => {
+    const mode =
+      typeof options === "object" && options !== null && options.mode !== undefined
+        ? Number(options.mode)
+        : undefined;
+    fsSpy.calls.push({ op: "writeFile", path: String(file), mode });
+    return actual.writeFile(file, data, options);
+  };
+  return { ...actual, default: { ...actual, chmod, writeFile }, chmod, writeFile };
+});
+
 import {
   type ClaudeSettings,
   claudeSettingsLocalPath,
@@ -48,6 +93,11 @@ function projectDirFor(dataDir: string, slug: string): string {
   const dir = resolve(dataDir, "projects", slug);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/** The recorded calls that touched the settings file, in the order they ran. */
+function recordSettingsCalls(settingsPath: string): FsCall[] {
+  return fsSpy.calls.filter((c) => c.path === settingsPath);
 }
 
 describe("installClaudeCodeHook", () => {
@@ -121,11 +171,61 @@ describe("installClaudeCodeHook", () => {
         await installClaudeCodeHook({ workspacePath: workspace, projectDir, slug: "demo" });
 
         // `writeFile`'s mode applies only at create and this write truncates the
-        // inode already there, so only the unconditional chmod narrows it.
+        // inode already there, so the chmods are what narrow it.
         expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
         // `.claude` holds the user's other files — ARCS must not narrow it.
         expect(statSync(claudeDir).mode & 0o777).toBe(dirModeBefore);
         expect(readSettings(workspace).permissions).toEqual({ allow: ["Bash(ls)"] });
+      });
+    });
+  });
+
+  it("narrows a pre-existing file BEFORE the new token is written into it", async () => {
+    await withTempDataDir(async (dataDir) => {
+      await withWorkspace(async (workspace) => {
+        const projectDir = projectDirFor(dataDir, "demo");
+        const settingsPath = claudeSettingsLocalPath(workspace);
+        mkdirSync(resolve(workspace, ".claude"), { recursive: true });
+        writeFileSync(settingsPath, "{}", "utf-8");
+        chmodSync(settingsPath, 0o644);
+
+        fsSpy.calls.length = 0;
+        await installClaudeCodeHook({ workspacePath: workspace, projectDir, slug: "demo" });
+
+        // The order IS the control: a trailing chmod alone would leave the fresh
+        // token sitting in the 0644 inode for the write plus an await hop.
+        const calls = recordSettingsCalls(settingsPath);
+        expect(calls.map((c) => `${c.op}:${c.mode?.toString(8)}`)).toEqual([
+          "chmod:600",
+          "writeFile:600",
+          "chmod:600",
+        ]);
+        // The leading chmod really ran here — the file existed, so no ENOENT.
+        expect(calls[0].errno).toBeUndefined();
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+        expect(readFileSync(settingsPath, "utf-8")).toContain("ARCS_HOOK_TOKEN=");
+      });
+    });
+  });
+
+  it("tolerates ENOENT from the pre-write chmod when there is no file yet", async () => {
+    await withTempDataDir(async (dataDir) => {
+      await withWorkspace(async (workspace) => {
+        const projectDir = projectDirFor(dataDir, "demo");
+
+        fsSpy.calls.length = 0;
+        const result = await installClaudeCodeHook({
+          workspacePath: workspace,
+          projectDir,
+          slug: "demo",
+        });
+
+        const calls = recordSettingsCalls(result.settingsPath);
+        expect(calls.map((c) => c.op)).toEqual(["chmod", "writeFile", "chmod"]);
+        // Nothing to narrow yet, and that must not fail the install: on this
+        // path the create-mode is what makes the inode 0600 with no window.
+        expect(calls[0].errno).toBe("ENOENT");
+        expect(statSync(result.settingsPath).mode & 0o777).toBe(0o600);
       });
     });
   });
@@ -215,12 +315,16 @@ describe("installClaudeCodeHook", () => {
         const malformed = '{\n  "permissions": { "allow": ["Bash(ls)"] },\n}';
         writeFileSync(claudeSettingsLocalPath(workspace), malformed, "utf-8");
 
+        fsSpy.calls.length = 0;
         await expect(
           installClaudeCodeHook({ workspacePath: workspace, projectDir, slug: "demo" }),
         ).rejects.toThrow(/not valid JSON/);
 
         // Byte-for-byte untouched — the user's permissions block survives.
         expect(readFileSync(claudeSettingsLocalPath(workspace), "utf-8")).toBe(malformed);
+        // And mode-untouched too: the pre-write chmod sits after the parse, so
+        // an aborted install does not restat a file it refused to write.
+        expect(recordSettingsCalls(claudeSettingsLocalPath(workspace))).toEqual([]);
         // And no token was rotated, so any previously installed hook still works.
         expect(await readHookToken(projectDir)).toBeUndefined();
       });

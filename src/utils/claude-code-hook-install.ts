@@ -54,6 +54,24 @@ export function claudeSettingsLocalPath(workspacePath: string): string {
 }
 
 /**
+ * `chmod` that tolerates an absent file and nothing else.
+ *
+ * Used to narrow a settings file BEFORE it is rewritten, where "there is no
+ * file yet" is the ordinary fresh-install outcome and not a failure — the
+ * write's own `mode` covers that path. Every other errno (EPERM on a file this
+ * user does not own, EROFS) means the mode of a token-bearing file is not ours
+ * to set, so it propagates and fails the install closed, exactly as the
+ * trailing chmod does.
+ */
+async function chmodIfPresent(path: string, mode: number): Promise<void> {
+  try {
+    await chmod(path, mode);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+  }
+}
+
+/**
  * Returns a copy of `settings` with the ARCS hook entry registered under every
  * hook event, replacing any prior entry that runs the same `hookScriptPath`.
  * Pure — no I/O, so the merge rules are directly testable.
@@ -143,26 +161,46 @@ export async function installClaudeCodeHook(options: {
   await mkdir(dirname(settingsPath), { recursive: true });
   // The merged command embeds `ARCS_HOOK_TOKEN=<value>`, so this file is a
   // SECOND cleartext copy of the hook token — this one in the user's repo
-  // rather than under ARCS's own data dir. `mode` covers the fresh create; it
-  // does NOT cover a pre-existing file, because this is a direct, non-atomic
-  // open(path, "w", mode) that truncates the inode already there and leaves
-  // that inode's mode alone. (That create-only caveat is exactly the one that
-  // does NOT apply to the token store's temp+rename writer, where every write
-  // installs a fresh inode — it bites squarely here.) So the chmod is
-  // unconditional, and that is also what repairs a 0644 file left behind by an
-  // older install.
+  // rather than under ARCS's own data dir. It is narrowed in three steps
+  // because no one of them covers both the fresh and the repair path:
+  //
+  //   1. chmod BEFORE the write, best-effort. `writeFile` is a direct,
+  //      non-atomic open(path, "w", mode): when the file already exists the
+  //      `mode` argument is a no-op and the open merely truncates the inode
+  //      that is there, so without this step the freshly minted token would be
+  //      written into a still-0644 inode and sit world-readable for the write
+  //      plus an await hop. ENOENT is ignored (see chmodIfPresent) because on a
+  //      fresh install there is nothing to narrow yet. This runs AFTER the
+  //      strict parse above, so a file that aborts the install keeps its mode
+  //      as well as its bytes.
+  //   2. `mode` on the write itself. It applies only when the open CREATES the
+  //      inode — which is precisely the fresh path, where it means the inode is
+  //      0600 before the token's first byte reaches it and step 1 had nothing
+  //      to do. (That create-only caveat is exactly the one that does NOT apply
+  //      to the token store's temp+rename writer, where every write installs a
+  //      fresh inode — it bites squarely here.)
+  //   3. chmod after the write, unconditional. Steps 1 and 2 are each a claim
+  //      about how THIS writer behaves — one assumes the inode survives the
+  //      write, the other that the write creates it. Step 3 assumes nothing, so
+  //      "0600 when this function returns" is a postcondition rather than an
+  //      inference from the writer's syscalls.
   //
   // What this buys, stated honestly: 0o600 is a cross-user control. It does
   // nothing against a process running as THIS user, and it does not hide the
   // token from `ps` — the value is inlined in the hook command string, so every
   // hook fire still exposes it in the process table. Handing the hook a path
   // (`ARCS_HOOK_TOKEN_FILE=<path>`) instead of the value would close that; the
-  // mode only closes the on-disk half.
+  // mode only closes the on-disk half. Nor can any mode revoke a descriptor
+  // another account already opened on a 0644 file: the write edits that same
+  // inode in place, so such a reader follows the file into the new token. All
+  // three steps are a floor from this point forward, not a retraction of what
+  // was reachable before.
   //
   // The `.claude` DIRECTORY is deliberately left exactly as found. Unlike the
   // hooks dir under ARCS's data dir, which holds nothing but the token, this
   // one holds the user's other Claude Code files, and narrowing it would be a
   // hostile surprise in a directory ARCS does not own.
+  await chmodIfPresent(settingsPath, 0o600);
   await writeFile(settingsPath, `${JSON.stringify(merged, null, 2)}\n`, {
     encoding: "utf-8",
     mode: 0o600,

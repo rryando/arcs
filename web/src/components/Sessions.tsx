@@ -24,6 +24,7 @@ import { canSendMessage, isVisibleSession, SessionMessageForm } from "./SessionM
 import { useSessionPanel } from "./SessionPanel";
 import {
   filterSessionsByState,
+  isSessionLive,
   SessionStatusBadge,
   sessionState,
   sessionStateChips,
@@ -34,11 +35,6 @@ const RUNTIME_LABEL: Record<string, string> = {
   opencode: "opencode",
   "claude-code": "claude code",
 };
-
-/** States that mean "a session a human could talk to right now": the live
- *  phases, plus the raw `active` a record that arrived without a phase is
- *  badged with. */
-const LIVE_STATES = new Set(["running", "idle", "active"]);
 
 function metaString(session: SessionMeta, key: string): string {
   const value = session.metadata?.[key];
@@ -92,13 +88,13 @@ export function SessionsView() {
     [sessions, stateFilter],
   );
 
-  // Counted off the same derived state the badges show: a record still stored
-  // `active` whose process is gone derives `ended`, and advertising it as live
-  // is the stale-liveness bug the derived phase exists to kill. ARCS-owned
-  // records are headless run bookkeeping, not sessions a human can reach —
-  // counting them as "live" advertises agents nobody is talking to.
+  // `isSessionLive` reads the same derived state the badges show — it takes the
+  // record, so this count cannot drift back onto the persisted status the way a
+  // local predicate over `s.status` did. ARCS-owned records are headless run
+  // bookkeeping, not sessions a human can reach — counting them as "live"
+  // advertises agents nobody is talking to.
   const liveCount = sessions.filter(
-    (s) => LIVE_STATES.has(sessionState(s)) && s.metadata?.control !== "arcs-owned",
+    (s) => isSessionLive(s) && s.metadata?.control !== "arcs-owned",
   ).length;
 
   const linkLabel = useMemo(() => {

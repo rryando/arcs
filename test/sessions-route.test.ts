@@ -714,6 +714,241 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The reference union (sessionReferenceSchema)
+// ---------------------------------------------------------------------------
+
+/**
+ * A reference turn exactly as ARCS wrote it BEFORE the union existed: the doc
+ * shape, carrying no variant tag anywhere. Sidecars full of these lines are
+ * already on disk, so both the schema (it must still parse an untagged body)
+ * and the writer (it must still produce these bytes) are pinned against it.
+ */
+const LEGACY_REFERENCE_LINE =
+  '{"id":-1,"type":"reference","text":"Queue drain happens at the next hook checkpoint.",' +
+  '"ts":"2026-01-01T00:00:00.000Z","section":{"depth":1,"text":"The session drains the queue ' +
+  'at the next hook checkpoint.","id":"sec_1","startOffset":120,"endOffset":220},' +
+  '"source":{"kind":"knowledge","label":"session-bridge","doc":"docs/bridge.md","id":"k_1"}}';
+
+/** A `file` reference: a POINTER plus a short anchor excerpt and the rev the
+ *  slice was taken at. */
+const FILE_REFERENCE = {
+  type: "file",
+  path: "src/web-server/routes/sessions.ts",
+  startLine: 91,
+  endLine: 106,
+  excerpt: "const sessionReferenceSchema = z.preprocess(",
+  headRev: "cabf1955ac",
+} as const;
+
+/** A `node` reference: a DAG entity, with no text slice of its own. */
+const NODE_REFERENCE = {
+  type: "node",
+  kind: "task",
+  id: "w3-reference-union-schema-and-prompt-assembly-ref-rendering",
+} as const;
+
+/** The one line the sidecar holds, as raw bytes. */
+function readSidecarLine(projectDir: string, normalizedId: string): string {
+  const raw = readFileSync(sessionTranscriptPath(projectDir, normalizedId), "utf-8");
+  expect(raw.endsWith("\n")).toBe(true);
+  const lines = raw.split("\n").filter((line) => line !== "");
+  expect(lines).toHaveLength(1);
+  return lines[0];
+}
+
+describe("POST /api/p/:slug/sessions/:id/message — reference union", () => {
+  it("still reads a doc reference turn written before the union existed", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_legacy",
+      });
+      mkdirSync(resolve(projectDir, "sessions"), { recursive: true });
+      writeFileSync(
+        sessionTranscriptPath(projectDir, session.normalizedId),
+        `${LEGACY_REFERENCE_LINE}\n`,
+        "utf-8",
+      );
+
+      // Parses off disk unchanged, and reaches the read-model intact.
+      expect(await readSessionTurns(projectDir, session.normalizedId)).toEqual([
+        JSON.parse(LEGACY_REFERENCE_LINE),
+      ]);
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      const envelope = (await res.json()) as { ok: boolean; data?: { turns: unknown[] } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.turns).toEqual([JSON.parse(LEGACY_REFERENCE_LINE)]);
+    });
+  });
+
+  it("writes an untagged doc reference byte-identically to the pre-union record", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_bytes",
+      });
+
+      // REFERENCE carries no `type` — exactly what every caller sent before the
+      // union, and what the web UI still sends today.
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "point me at the doc",
+        reference: REFERENCE,
+      });
+      expect(status).toBe(200);
+
+      // `ts` is the only value minted at write time; pin it and the bytes must
+      // match the pre-union record exactly — same keys, same order, no tag.
+      const line = readSidecarLine(projectDir, session.normalizedId).replace(
+        /"ts":"[^"]+"/,
+        '"ts":"2026-01-01T00:00:00.000Z"',
+      );
+      expect(line).toBe(LEGACY_REFERENCE_LINE);
+    });
+  });
+
+  // The tag is wire-only for the DOC record specifically — not for the sidecar in
+  // general. A pointer turn serializes its discriminator inside `ref`, which is
+  // what makes it re-readable as its own variant (pinned below).
+  it("adds no tag to the doc record — an explicit type:doc writes the same bytes", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_tagged",
+      });
+
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "tagged explicitly",
+        reference: { type: "doc", ...REFERENCE },
+      });
+      expect(status).toBe(200);
+
+      const line = readSidecarLine(projectDir, session.normalizedId).replace(
+        /"ts":"[^"]+"/,
+        '"ts":"2026-01-01T00:00:00.000Z"',
+      );
+      expect(line).toBe(LEGACY_REFERENCE_LINE);
+    });
+  });
+
+  it("400s an unknown reference variant instead of coercing it to a known one", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_unknown",
+      });
+
+      const { status, envelope } = await sendMessage(base, session.normalizedId, {
+        message: "unknown variant",
+        reference: { type: "diff", path: "src/a.ts", startLine: 1, endLine: 2 },
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("INVALID_BODY");
+      expect(envelope.message).toContain("type");
+      expect(envelope.message).toContain("'doc' | 'file' | 'node'");
+
+      // Refused before delivery: nothing queued, nothing appended.
+      const stored = await getSession(projectDir, session.normalizedId);
+      expect(stored.messageQueue).toBeUndefined();
+      expect(existsSync(sessionTranscriptPath(projectDir, session.normalizedId))).toBe(false);
+    });
+  });
+
+  it("400s a malformed variant rather than falling back to another one", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_malformed",
+      });
+      const send = (reference: unknown) =>
+        sendMessage(base, session.normalizedId, { message: "malformed", reference });
+
+      // Untagged, but not the doc shape — it is NOT silently read as a file ref.
+      const untagged = await send({ path: "src/a.ts", startLine: 1, endLine: 2 });
+      expect(untagged.status).toBe(400);
+      expect(untagged.envelope.message).toContain("section");
+
+      // A file ref missing its range.
+      const noRange = await send({ type: "file", path: "src/a.ts" });
+      expect(noRange.status).toBe(400);
+      expect(noRange.envelope.message).toContain("startLine");
+
+      // A backwards slice would render a nonsense pointer into the prompt.
+      const inverted = await send({ type: "file", path: "src/a.ts", startLine: 9, endLine: 2 });
+      expect(inverted.status).toBe(400);
+      expect(inverted.envelope.message).toContain("endLine");
+
+      // A node ref naming a kind that is not a DAG entity.
+      const badKind = await send({ type: "node", kind: "session", id: "s_1" });
+      expect(badKind.status).toBe(400);
+      expect(badKind.envelope.message).toContain("kind");
+
+      expect(existsSync(sessionTranscriptPath(projectDir, session.normalizedId))).toBe(false);
+    });
+  });
+
+  it("stores a file reference whole on the turn, with headRev intact", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_file",
+      });
+
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "look at this slice",
+        reference: FILE_REFERENCE,
+      });
+      expect(status).toBe(200);
+
+      const turns = await readSessionTurns(projectDir, session.normalizedId);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({
+        id: -1,
+        type: "reference",
+        // The pointer is the turn's own label; the doc fields stay unused.
+        text: "src/web-server/routes/sessions.ts:91-106",
+        ref: FILE_REFERENCE,
+      });
+      expect(turns[0].section).toBeUndefined();
+      expect(turns[0].source).toBeUndefined();
+      expect(turns[0].ref?.type === "file" && turns[0].ref.headRev).toBe("cabf1955ac");
+
+      // The discriminator IS on disk for a pointer record, and necessarily so —
+      // without it the line cannot be read back as a file reference. Only the
+      // frozen doc record stays untagged.
+      expect(readSidecarLine(projectDir, session.normalizedId)).toContain('"ref":{"type":"file"');
+    });
+  });
+
+  it("stores a node reference whole on the turn and serves it to the read-model", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_ref_node",
+      });
+
+      const { status } = await sendMessage(base, session.normalizedId, {
+        message: "this is the node",
+        reference: NODE_REFERENCE,
+      });
+      expect(status).toBe(200);
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}/transcript`);
+      const envelope = (await res.json()) as { ok: boolean; data?: { turns: unknown[] } };
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.turns).toEqual([
+        expect.objectContaining({
+          id: -1,
+          type: "reference",
+          text: `task ${NODE_REFERENCE.id}`,
+          ref: NODE_REFERENCE,
+        }),
+      ]);
+    });
+  });
+});
+
 describe("GET /api/p/:slug/sessions/:id/transcript", () => {
   it("404s for a session the project does not have", async () => {
     await withRouteCtx(async ({ base }) => {

@@ -1,13 +1,19 @@
 /**
  * Session state vocabulary: what state a session is in, which states can be
- * filtered on, and the glyph + badge that render one.
+ * filtered on, which of them mean a session is still live or currently attached
+ * to a process, and the glyph + badge that render one.
  *
- * Deriving, matching and rendering all live in this one module on purpose. A
- * session carries two state fields (persisted `status`, derived `phase`), and
- * the moment two call sites pick between them independently the UI starts
- * disagreeing with itself — a table badged `running` under an `active` chip.
- * Everything user-facing goes through `sessionState()`, so there is nothing to
- * keep in sync.
+ * Deriving, matching, classifying and rendering all live in this one module on
+ * purpose. A session carries two state fields (persisted `status`, derived
+ * `phase`), and the moment two call sites pick between them independently the
+ * UI starts disagreeing with itself — a table badged `running` under an
+ * `active` chip. Everything user-facing goes through `sessionState()`, so there
+ * is nothing to keep in sync.
+ *
+ * The liveness predicates below take the RECORD for the same reason the badge
+ * does: giving the badge a record protects badge call sites only, and a counter
+ * or an affordance gate takes no badge prop. Handing them the record too is
+ * what extends that protection past the badge.
  *
  * Every Tailwind class is written as a literal string in the lookup maps below.
  * Templated class names (`text-term-${x}`) are silently dropped by the Tailwind
@@ -53,6 +59,71 @@ export type SessionStateSource = Pick<SessionMeta, "status" | "phase">;
  */
 export function sessionState(session: SessionStateSource): string {
   return session.phase ?? session.status;
+}
+
+/** States meaning "this session is not over": the live phases, plus the raw
+ *  `active`/`idle` a record that arrived without a phase is badged with. */
+const LIVE_STATES = new Set(["running", "idle", "active"]);
+
+/** States meaning "a process is driving this session right now".
+ *
+ *  Deliberately NARROWER than `LIVE_STATES`, and the reason both sets belong in
+ *  this module rather than at their call sites: `idle` is live — the record is
+ *  not over and the session list counts it — but nothing holds its runtime
+ *  thread, which is exactly the session a headless resume works on. One shared
+ *  "live" set would silently conflate "not over" with "attached" and take the
+ *  resume affordance away from every session that can actually use it.
+ *
+ *  REACHABLE PAIRS. The server's derivation (`deriveSessionPhase` →
+ *  `reconcilePhase` → `runDeadlinePhase`, all composed in `withPhases`) can
+ *  only ever produce these (`status`, `phase`) pairs, exhaustively:
+ *
+ *    active/idle · active/running · completed/ended · disconnected/ended ·
+ *    failed/failed · idle/idle · idle/running
+ *
+ *  So `ended` comes ONLY from a terminal status (`completed`/`disconnected`):
+ *  the derivation returns it before looking at any liveness evidence, the
+ *  reconciler early-returns on every non-`running` derivation, and both probes
+ *  can only demote `running` to `idle`. A record stored `active` whose process
+ *  is gone therefore derives `idle` — "no fresh evidence of attachment" — and
+ *  never `ended`. Both sit outside this set, so this predicate answers the same
+ *  either way; the pair that carries the meaning is `active`/`idle`, because
+ *  that is what "the process is gone" actually looks like on the wire. */
+const ATTACHED_STATES = new Set(["running", "active"]);
+
+/**
+ * Is this a session a human could still reach — as the badge beside it reads?
+ *
+ * What the sessions header counts as "N live". Takes the record so the count is
+ * computed from the same field the badge one row below renders, rather than
+ * from whichever of the two a call site happened to reach for.
+ *
+ * This is the SAFE half of the pair: across the reachable pairs above, `status`
+ * and `phase` never disagree about liveness. A record stored `active` whose
+ * process is gone derives `idle`, and `idle` is live — the record is not over —
+ * so the count is right read either way. That is a property of today's
+ * derivation, not a guarantee; reading the record keeps the count correct if it
+ * stops holding. `isSessionAttached` below is where the two genuinely disagree.
+ */
+export function isSessionLive(session: SessionStateSource): boolean {
+  return LIVE_STATES.has(sessionState(session));
+}
+
+/**
+ * Is a process driving this session right now?
+ *
+ * The gate on affordances that need the session's runtime thread free — today
+ * the composer's headless resume, which cannot attach to a session a terminal
+ * is already driving. Reading the persisted status here is wrong in BOTH
+ * directions, and both are reachable pairs: a record stored `active` whose
+ * process is gone derives `idle` — no fresh evidence of attachment — and would
+ * be refused the resume it is the perfect candidate for (`active`/`idle`),
+ * while a live `running` session stored `idle` would be offered one that cannot
+ * work (`idle`/`running`). `idle` is the state the whole affordance turns on;
+ * it is never `ended`, which only a terminal status produces.
+ */
+export function isSessionAttached(session: SessionStateSource): boolean {
+  return ATTACHED_STATES.has(sessionState(session));
 }
 
 /**

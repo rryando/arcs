@@ -57,9 +57,11 @@ export async function readHookToken(projectDir: string): Promise<string | undefi
  * other UNIX accounts out; it is NOT a defense against a process running as
  * THIS user, which can read the file at any mode. Nor is this the token's only
  * copy — `arcs hooks install-claude-code --write` embeds the same value in the
- * workspace's .claude/settings.local.json, which is still written under the
- * plain umask. So this is a floor on ARCS's own copy, not a guarantee about the
- * secret.
+ * workspace's .claude/settings.local.json, which is now created 0o600 and
+ * chmodded 0o600 unconditionally too (claude-code-hook-install.ts), though that
+ * copy is inlined into the hook command string and so still leaks to `ps` on
+ * every hook fire. So this is a floor on ARCS's own copy, not a guarantee about
+ * the secret.
  *
  * A chmod failure propagates and fails the install command. That is
  * deliberate — the caller (`arcs hooks install-claude-code`) has not printed

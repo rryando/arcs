@@ -328,13 +328,26 @@ describe("POST /api/p/:slug/sessions/:id/run — resume", () => {
     });
   });
 
-  it("409s when the claude-code session is still active", async () => {
+  it("409s when a process is attached — stored idle, derived phase running", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       const session = await createSession(projectDir, {
         runtimeType: "claude-code",
-        runtimeSessionId: "cc_active_1",
-        status: "active",
+        runtimeSessionId: "cc_attached_1",
+        // Persisted `idle`: the field the old gate read, and the one that would
+        // wave this resume straight through into a session a terminal is driving.
+        status: "idle",
       });
+      // A fresh checkpoint derives `running`, and the agent list confirms the
+      // terminal is still there, so the demote-only reconciler leaves it there.
+      await updateSession(projectDir, {
+        id: session.normalizedId,
+        lastCheckpointAt: new Date().toISOString(),
+      });
+      agentsProbe.stdout = JSON.stringify([{ pid: 4141, sessionId: "cc_attached_1" }]);
+
+      const view = await getSessionView(base, session.normalizedId);
+      expect(view.status).toBe("idle");
+      expect(view.phase).toBe("running");
 
       const { status, envelope } = await postRun(base, session.normalizedId, {
         mode: "resume",
@@ -344,6 +357,72 @@ describe("POST /api/p/:slug/sessions/:id/run — resume", () => {
       expect(status).toBe(409);
       expect(envelope.code).toBe("CLAUDE_SESSION_ACTIVE");
       expect(capturedJobs).toHaveLength(0);
+    });
+  });
+
+  it("resumes a default-constructed observed record — stored active, derived phase idle", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      // No `status` supplied: buildSession defaults it to "active", which is
+      // where nearly every observed claude-code record sits forever — so this is
+      // the record the status gate made headless resume dead UI-wide for. No
+      // checkpoint, so nothing attests to a live process and the phase derives
+      // `idle`: the session a headless resume is FOR.
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_default_1",
+        metadata: { directory: WORKSPACE },
+      });
+      expect(session.status).toBe("active");
+
+      const view = await getSessionView(base, session.normalizedId);
+      expect(view.status).toBe("active");
+      expect(view.phase).toBe("idle");
+
+      const { status, envelope } = await postRun(base, session.normalizedId, {
+        mode: "resume",
+        message: "carry on",
+      });
+
+      expect(status).toBe(202);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.run).toEqual({ accepted: true, mode: "resume" });
+      expect(capturedJobs).toHaveLength(1);
+      expect(capturedJobs[0]).toMatchObject({
+        argv: ["-p", "carry on", "--resume", "cc_default_1", "--output-format", "json"],
+        cwd: WORKSPACE,
+        writeTargetKey: session.normalizedId,
+      });
+    });
+  });
+
+  it("gates on the RECONCILED phase — a fresh checkpoint no agent reports is resumable", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_stale_1",
+        status: "active",
+        metadata: { directory: WORKSPACE },
+      });
+      // The store alone derives `running` off this checkpoint; the agent list
+      // answers "nobody is driving it" (a closed terminal), and the reconciler
+      // demotes to `idle`. Gating on deriveSessionPhase without the reconciler
+      // would refuse this resume.
+      await updateSession(projectDir, {
+        id: session.normalizedId,
+        lastCheckpointAt: new Date().toISOString(),
+      });
+      agentsProbe.stdout = "[]";
+
+      expect((await getSessionView(base, session.normalizedId)).phase).toBe("idle");
+
+      const { status, envelope } = await postRun(base, session.normalizedId, {
+        mode: "resume",
+        message: "the terminal is gone",
+      });
+
+      expect(status).toBe(202);
+      expect(envelope.ok).toBe(true);
+      expect(capturedJobs).toHaveLength(1);
     });
   });
 

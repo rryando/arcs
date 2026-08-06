@@ -8,7 +8,7 @@ import {
   api,
   type RunClaudeSessionInput,
   type SessionLinkedNodeType,
-  type SessionMessageReference,
+  type SessionReference,
   type SessionUpdateInput,
 } from "./client";
 
@@ -239,7 +239,11 @@ export function useSendSessionMessage(slug: string) {
     }: {
       id: string;
       message: string;
-      reference?: SessionMessageReference;
+      /** The whole union, matching `api.sendSessionMessage` and the server's
+       *  `sessionReferenceSchema`. Narrowing this to the doc variant would make
+       *  the transport hook unable to send a file or node reference that both
+       *  the API function and the route already accept. */
+      reference?: SessionReference;
     }) => api.sendSessionMessage(slug, id, message, reference),
     // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a
     // send that appended a reference turn refreshes open transcripts too.

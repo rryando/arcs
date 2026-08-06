@@ -1,7 +1,8 @@
 /**
  * Unit tests for the web client's pure shortcut-matching core, its API request
- * builder, its session-state vocabulary (the sessions filter and the badge that
- * must agree about every row), the server's SSE change classifier, and the
+ * builder, its session-state vocabulary (the sessions filter, the live counter,
+ * the composer's resume gate and the badge they must all agree with about every
+ * row), the server's SSE change classifier, and the
  * dev-only vite plugin that supplies the token in `vite dev`.
  */
 
@@ -13,6 +14,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
 import {
   filterSessionsByState,
+  isSessionAttached,
+  isSessionLive,
   type SessionStateSource,
   SessionStatusBadge,
   sessionStateChips,
@@ -323,6 +326,50 @@ describe("session state filter vs badge", () => {
 
   it("filters nothing out under `all`", () => {
     expect(filterSessionsByState(sessions, null)).toEqual(sessions);
+  });
+
+  // The two non-badge controls. Neither takes a badge prop, so giving the badge
+  // the record did nothing for them — they are only safe because they take the
+  // record themselves, and only proven safe because of these three tests.
+
+  // Stored `active`, but nothing is running it any more: the server derives
+  // `ended`. The record the header used to advertise as live.
+  const gone: SessionStateSource = { status: "active", phase: "ended" };
+  // Stored `idle` while a run is actually in flight — the opposite disagreement.
+  const busy: SessionStateSource = { status: "idle", phase: "running" };
+
+  it("counts a session as live off its badge, never off its stored status", () => {
+    expect(badgeLabel(gone)).toBe("ended");
+    expect(isSessionLive(gone)).toBe(false);
+
+    expect(badgeLabel(busy)).toBe("running");
+    expect(isSessionLive(busy)).toBe(true);
+  });
+
+  it("offers a headless resume exactly when nothing is driving the session", () => {
+    // Hidden by the old `status !== "active"` gate — the session the affordance
+    // exists for.
+    expect(isSessionAttached(gone)).toBe(false);
+    // Offered by it, against a session a terminal is actively driving.
+    expect(isSessionAttached(busy)).toBe(true);
+  });
+
+  it("keeps `idle` live but unattached — the two sets are not one set", () => {
+    // `idle` is the whole reason the counter and the resume gate cannot share a
+    // predicate: the record is not over (it belongs in "N live") but nothing
+    // holds its runtime thread (a headless resume is exactly what it wants).
+    const dormant: SessionStateSource = { status: "active", phase: "idle" };
+    expect(badgeLabel(dormant)).toBe("idle");
+    expect(isSessionLive(dormant)).toBe(true);
+    expect(isSessionAttached(dormant)).toBe(false);
+
+    // Phaseless fallback, both directions: the raw status is still classified,
+    // so a record echoed by `POST /run` is neither dropped from the count nor
+    // handed a resume it cannot use.
+    expect(isSessionLive(phaseless)).toBe(false);
+    expect(isSessionAttached(phaseless)).toBe(false);
+    expect(isSessionLive({ status: "active" })).toBe(true);
+    expect(isSessionAttached({ status: "active" })).toBe(true);
   });
 });
 

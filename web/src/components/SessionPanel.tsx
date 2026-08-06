@@ -23,7 +23,7 @@
 
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import type { SessionMessageReference, SessionTurn } from "../api/client";
+import type { SessionDocReference, SessionTurn } from "../api/client";
 import { useRunClaudeSession, useSendSessionMessage, useSessionTranscript } from "../api/hooks";
 import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
@@ -31,6 +31,7 @@ import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
 import { isVisibleSession, MAX_LENGTH, messageDelivery, WARN_LENGTH } from "./SessionMessageForm";
+import { isSessionAttached } from "./SessionStatusBadge";
 import { useToaster } from "./Toaster";
 
 // ---------------------------------------------------------------------------
@@ -42,10 +43,17 @@ interface SessionPanelContextValue {
   open: boolean;
   /** Selected session's normalizedId; null until the user picks one. */
   selectedSessionId: string | null;
-  /** Document-section reference awaiting a send (set by T005's ✉ flow). */
-  pendingRef: SessionMessageReference | null;
+  /** Document-section reference awaiting a send (set by T005's ✉ flow).
+   *
+   *  Deliberately the DOC variant, not the whole `SessionReference` union: the
+   *  pending-ref preview below dereferences `source.label`, `section.id` and
+   *  `text`, which only a doc reference has, and the ✉ flow is the only
+   *  producer until the file plane lands. The transport (`useSendSessionMessage`
+   *  / `api.sendSessionMessage`) takes the full union — this narrowing is a
+   *  property of the UI that builds the value, never of the wire. */
+  pendingRef: SessionDocReference | null;
   /** Attach a reference (from a doc section) and open the panel. */
-  openWithRef: (ref: SessionMessageReference) => void;
+  openWithRef: (ref: SessionDocReference) => void;
   /** Select a session and open the panel. */
   openSession: (id: string) => void;
   close: () => void;
@@ -60,7 +68,7 @@ const SessionPanelContext = createContext<SessionPanelContextValue | null>(null)
 export function SessionPanelProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [pendingRef, setPendingRef] = useState<SessionMessageReference | null>(null);
+  const [pendingRef, setPendingRef] = useState<SessionDocReference | null>(null);
 
   const value = useMemo<SessionPanelContextValue>(
     () => ({
@@ -171,19 +179,35 @@ export function SessionPanel() {
   const delivery = selectedSession ? messageDelivery(selectedSession) : null;
   const text = message.trim();
   const tooLong = text.length > MAX_LENGTH;
-  // A headless resume targets the SELECTED session's runtime thread, so it is
-  // only offered for a claude-code session that is not currently active — a
-  // live terminal session cannot be resumed headlessly.
+  // A headless resume takes over the SELECTED session's runtime thread, so it
+  // is only offered for a claude-code session no process is currently driving —
+  // a live terminal session cannot be resumed headlessly.
+  //
+  // Gated on the derived state (`isSessionAttached`), never on the persisted
+  // `status`, for the same reason the table's filter, chips and live counter
+  // are: the two disagree, and here they disagree in both directions. A session
+  // stored `active` whose process is gone derives `idle` — "no fresh evidence
+  // of attachment", which is the one state this affordance exists for — and a
+  // live `running` session stored `idle` would be offered a resume that cannot
+  // work.
+  //
+  // `idle`, not `ended`: `ended` is reachable only from a terminal status
+  // (`completed`/`disconnected`), never from a process that went away, so it is
+  // not what this gate ever sees on a resumable session — the exhaustive set of
+  // (status, phase) pairs is listed beside ATTACHED_STATES in
+  // SessionStatusBadge. Both sit outside that set so the predicate answers the
+  // same either way, but `idle` is the state to reason about here.
   const resumeEligible =
-    selectedSession?.runtimeType === "claude-code" && selectedSession.status !== "active";
+    selectedSession?.runtimeType === "claude-code" && !isSessionAttached(selectedSession);
   const runPending = runClaude.isPending;
   const busy = sendMessage.isPending || runPending;
   const disabled =
     !selectedSession || !delivery || delivery.kind === "unsupported" || !text || tooLong || busy;
 
   // Resume is only meaningful against the session it was chosen for; switching
-  // sessions (or the session going active mid-flow) makes it stale, so drop
-  // back to native instead of letting a stale disabled option lie in the UI.
+  // sessions (or the session picking up a live process mid-flow) makes it
+  // stale, so drop back to native instead of letting a stale disabled option
+  // lie in the UI.
   useEffect(() => {
     if (deliverVia === "resume" && !resumeEligible) setDeliverVia("native");
   }, [deliverVia, resumeEligible]);
@@ -417,7 +441,7 @@ export function SessionPanel() {
                   title={
                     resumeEligible
                       ? "headless resume of the selected claude-code session"
-                      : "resume needs a claude-code session that is not active — a live terminal session cannot be resumed headlessly"
+                      : "resume needs a claude-code session nothing is currently driving — a session badged running cannot be resumed headlessly"
                   }
                 >
                   resume — headless resume of this session

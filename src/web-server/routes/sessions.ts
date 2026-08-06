@@ -22,6 +22,8 @@ import {
   appendSessionTurn,
   mirrorSessionTranscript,
   readSessionTurns,
+  referenceTurnText,
+  type SessionReference,
   sessionTranscriptPath,
 } from "../../utils/claude-transcript.js";
 import { DagError } from "../../utils/errors.js";
@@ -84,11 +86,21 @@ const updateSessionSchema = z.object({
   linkedNodeId: z.string().nullable().optional(),
 });
 
-/** A document section the caller is pointing the session at. When present, the
- *  delivery call is followed by an ARCS-authored reference turn in the session's
- *  transcript sidecar (see appendReferenceTurn). Shared by POST /message and
- *  POST /run so both routes accept byte-identical reference payloads. */
-const sessionReferenceSchema = z.object({
+/**
+ * The `doc` variant — a markdown document section.
+ *
+ * FROZEN, field for field: this is the only reference shape that existed before
+ * the union, so every reference turn already on disk carries exactly these keys
+ * and nothing else. Widening or tightening `section`/`source` here would strand
+ * those sidecars, so the union adds a tag and touches nothing else. The tag is
+ * REQUIRED here, exactly as on the pointer variants: a legacy body carrying no
+ * tag never reaches this schema untagged, because `sessionReferenceSchema`'s
+ * preprocess fills it in before the union runs. That preprocess is the whole
+ * legacy mechanism — a default here would be a dead second one implying the tag
+ * is optional at this boundary when it cannot be.
+ */
+const docReferenceSchema = z.object({
+  type: z.literal("doc"),
   section: z.object({
     depth: z.number(),
     text: z.string(),
@@ -104,6 +116,59 @@ const sessionReferenceSchema = z.object({
     id: z.string().optional(),
   }),
 });
+
+/** The `file` variant — a line range in a workspace file. `headRev` rides along
+ *  so a later diff can tell whether the file moved under the agent. */
+const fileReferenceSchema = z.object({
+  type: z.literal("file"),
+  path: z.string().min(1),
+  startLine: z.number().int().min(1),
+  endLine: z.number().int().min(1),
+  excerpt: z.string().optional(),
+  headRev: z.string().optional(),
+});
+
+/** The `node` variant — a DAG entity, with no text slice of its own. */
+const nodeReferenceSchema = z.object({
+  type: z.literal("node"),
+  kind: z.enum(["task", "plan", "knowledge"]),
+  id: z.string().min(1),
+});
+
+/**
+ * Something the caller is pointing the session at. When present, the delivery
+ * call is followed by an ARCS-authored reference turn in the session's
+ * transcript sidecar (see `appendReference`). Shared by POST /message and POST
+ * /run so both routes accept byte-identical reference payloads.
+ *
+ * A discriminated union on `type`, so an unknown variant is REJECTED (400
+ * INVALID_BODY naming the three tags) rather than coerced into the nearest
+ * shape. The one accommodation is the preprocess below: a body with no `type`
+ * at all can only be a pre-union doc reference — every caller and every stored
+ * turn predating the union is exactly that — so the tag is filled in before the
+ * union sees it. Nothing else is inferred: an explicitly tagged body is matched
+ * on its own tag and fails on its own merits.
+ */
+const sessionReferenceSchema = z
+  .preprocess(
+    (value) =>
+      typeof value === "object" && value !== null && !Array.isArray(value) && !("type" in value)
+        ? { ...value, type: "doc" }
+        : value,
+    z.discriminatedUnion("type", [docReferenceSchema, fileReferenceSchema, nodeReferenceSchema]),
+  )
+  .superRefine((reference, ctx) => {
+    // A backwards slice would render a nonsense pointer into the prompt. Checked
+    // here rather than on the variant because a discriminated-union option must
+    // stay a plain object schema.
+    if (reference.type === "file" && reference.endLine < reference.startLine) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endLine"],
+        message: `endLine (${reference.endLine}) must be >= startLine (${reference.startLine})`,
+      });
+    }
+  });
 
 const sendMessageSchema = z.object({
   message: z.string().min(1),
@@ -123,6 +188,36 @@ const runClaudeMessageSchema = z.object({
 const createOpencodeSessionSchema = z.object({
   title: z.string().min(1).optional(),
 });
+
+/**
+ * Records a delivered reference on the session's transcript sidecar. Shared by
+ * POST /message and POST /run so both write the same record for the same
+ * payload.
+ *
+ * A `doc` reference writes exactly the fields this route has always written —
+ * `text`, `ts`, `section`, `source`, in that order — so the serialized line is
+ * byte-identical to one written before the union existed: no tag is added to the
+ * DOC record.
+ *
+ * That is NOT "the tag never reaches disk". The pointer kinds have no historical
+ * fields, so they ride `ref` whole — discriminator included — and a stored
+ * `ref: {type: "file"|"node", ...}` is exactly what makes a pointer turn
+ * re-readable as its own variant. The tag is on disk there, correctly and
+ * necessarily; it is only the frozen doc record that stays untagged.
+ */
+async function appendReference(
+  projectDir: string,
+  sessionId: string,
+  reference: SessionReference,
+): Promise<void> {
+  await appendReferenceTurn(projectDir, sessionId, {
+    text: referenceTurnText(reference),
+    ts: new Date().toISOString(),
+    ...(reference.type === "doc"
+      ? { section: reference.section, source: reference.source }
+      : { ref: reference }),
+  });
+}
 
 function sessionDirectory(session: SessionMeta): string | undefined {
   const directory = session.metadata?.directory;
@@ -207,6 +302,49 @@ function parseFilters(status: string | undefined, runtimeType: string | undefine
  * live right now"; the raw `status` still travels for the record's own state.
  */
 type SessionView = SessionMeta & { phase: SessionPhase };
+
+/**
+ * The state this module decides from, stated exactly as the web client states
+ * it: the derived phase, falling back to the record's own status for a record
+ * that reached a decision site without one.
+ *
+ * One derivation on BOTH sides of the wire — the mirror of `sessionState()` in
+ * web/src/components/SessionStatusBadge.tsx. An affordance the client offers and
+ * the answer this server gives are then computed from the same field, so they
+ * cannot disagree about whether a session is reachable.
+ */
+function sessionState(session: SessionMeta & { phase?: SessionPhase }): string {
+  return session.phase ?? session.status;
+}
+
+/**
+ * States meaning "a process is driving this session right now".
+ *
+ * Deliberately NARROWER than "not over": `idle` is live — the record has not
+ * finished — but nothing holds its runtime thread, and that gap is precisely the
+ * headless-resume use case. Conflating the two sets would refuse a resume to
+ * every session that can actually use one.
+ *
+ * `active` is the persisted status, reachable only through `sessionState`'s
+ * fallback for a record handed to the predicate without a derived phase. Every
+ * call site in this module goes through `withPhases` first, so the phase decides
+ * in practice; the fallback is the conservative answer (treat as attached,
+ * refuse) for anything that does not, rather than a silent accept.
+ */
+const ATTACHED_STATES = new Set(["running", "active"]);
+
+/**
+ * Is a process attached to this session right now?
+ *
+ * The gate on anything needing the session's runtime thread free — today the
+ * headless `claude -p --resume`, which cannot attach to a thread a terminal is
+ * already driving. Takes the RECORD, never a pre-picked string, so no call site
+ * can hand it the persisted status while the UI one screen away renders the
+ * derived phase.
+ */
+function isSessionAttached(session: SessionMeta & { phase?: SessionPhase }): boolean {
+  return ATTACHED_STATES.has(sessionState(session));
+}
 
 /**
  * Epoch-ms deadline the claimed run will be killed at, when the spawn site
@@ -563,14 +701,9 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
 
     // Delivery succeeded (or was accepted into the queue) — record the
     // reference turn against the session's transcript sidecar, carrying the
-    // section/source payload verbatim so the web UI can render click-through.
+    // payload verbatim so the web UI can render click-through.
     if (reference !== undefined) {
-      await appendReferenceTurn(projectDir, session.normalizedId, {
-        text: reference.text,
-        ts: new Date().toISOString(),
-        section: reference.section,
-        source: reference.source,
-      });
+      await appendReference(projectDir, session.normalizedId, reference);
     }
 
     return updated;
@@ -585,8 +718,9 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
  * `metadata.run` with the outcome on every path and, for resume mode, mirroring
  * the resumed session's transcript into its sidecar.
  *
- * - resume: the referenced session must be a claude-code session that is not
- *   currently active; the run resumes its runtime thread in the session's own
+ * - resume: the referenced session must be a claude-code session with no process
+ *   attached to it — the DERIVED phase decides, not the persisted status (see
+ *   `isSessionAttached`); the run resumes its runtime thread in the session's own
  *   directory.
  * - oneshot: the run targets a deterministic ARCS-owned session
  *   (`arcs-oneshot-<slug>`) recreated idempotently on every call, in the
@@ -629,10 +763,28 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
             `cannot resume session "${session.normalizedId}": only claude-code sessions can be run headlessly`,
           );
         }
-        if (session.status === "active") {
+        // Gated on the DERIVED phase, never on the persisted status. `buildSession`
+        // defaults `status` to "active", so nearly every observed claude-code
+        // record sits at persisted `active` forever — a status gate therefore
+        // refused a headless resume for effectively all of them, including the
+        // dead-terminal session the feature exists for, while offering nothing to
+        // a live `running` session stored `idle`. Wrong in both directions, and
+        // read through the same `withPhases` the sessions list serves the client
+        // from, so the option the UI enables and the answer this route gives are
+        // one derivation.
+        //
+        // CAVEAT, accepted deliberately: `reconcilePhase` is DEMOTE-ONLY, so
+        // `idle` means "no fresh evidence that anything is attached", NOT
+        // "provably unattached" — a live terminal session whose last checkpoint
+        // aged past CHECKPOINT_TTL_MS (5 min) reads `idle` too, and this gate lets
+        // a resume through for it. That trade is the point: the alternative is the
+        // status gate, which refused every such session forever.
+        const [view] = await withPhases(projectDir, [session]);
+        if (isSessionAttached(view)) {
           throw new DagError(
             "CLAUDE_SESSION_ACTIVE",
-            `cannot resume session "${session.normalizedId}": the session is still active`,
+            `cannot resume session "${session.normalizedId}": a process is attached to it ` +
+              `(phase "${view.phase}"), so its runtime thread is not free for a headless run`,
           );
         }
         writeTarget = session;
@@ -695,12 +847,7 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
           text: message,
         });
         if (reference !== undefined) {
-          await appendReferenceTurn(projectDir, writeTarget.normalizedId, {
-            text: reference.text,
-            ts: new Date().toISOString(),
-            section: reference.section,
-            source: reference.source,
-          });
+          await appendReference(projectDir, writeTarget.normalizedId, reference);
         }
       }
 

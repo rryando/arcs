@@ -276,6 +276,9 @@ export interface SessionTurn {
   section?: SessionTurnSection;
   /** Reference turns only. */
   source?: SessionTurnSource;
+  /** Reference turns only, POINTER kinds: the file-slice or DAG-node payload,
+   *  preserved whole. Doc references carry `section`/`source` instead. */
+  ref?: SessionFileReference | SessionNodeReference;
 }
 
 /** Read-model for a session's transcript sidecar. */
@@ -285,15 +288,51 @@ export interface SessionTranscript {
   mirroredAt: string | null;
 }
 
-/** Optional document-section reference carried with a send. When present the
- *  server follows the delivery call with an ARCS-authored reference turn in
- *  the session's transcript sidecar. Mirrors the server's
- *  `sendMessageSchema.reference`. */
-export interface SessionMessageReference {
+/** The `doc` variant — a markdown document section. Its tag is optional because
+ *  the server defaults it: a body with no `type` is a doc reference, which is
+ *  what every caller sent before the union existed. Mirrors the server's
+ *  `docReferenceSchema`.
+ *
+ *  This is also the ONLY variant the UI can build today (the MarkdownViewer ✉
+ *  flow), so a call site that genuinely dereferences `section`/`source` — the
+ *  pending-ref preview — names this type directly. Anything that merely
+ *  CARRIES a reference to the API must take `SessionReference` instead: a
+ *  transport narrower than the transport it wraps silently drops variants the
+ *  server already accepts. */
+export interface SessionDocReference {
+  type?: "doc";
   section: SessionTurnSection;
   text: string;
   source: SessionTurnSource;
 }
+
+/** The `file` variant — a line range in a workspace file, sent as a POINTER:
+ *  `excerpt` is a short anchor, never the authoritative content. `headRev` is
+ *  the revision the slice was taken at, so a later diff can tell whether the
+ *  file moved under the agent. Mirrors the server's `fileReferenceSchema`. */
+export interface SessionFileReference {
+  type: "file";
+  path: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  excerpt?: string;
+  headRev?: string;
+}
+
+/** The `node` variant — a DAG entity, with no text slice of its own. Mirrors
+ *  the server's `nodeReferenceSchema`. */
+export interface SessionNodeReference {
+  type: "node";
+  kind: "task" | "plan" | "knowledge";
+  id: string;
+}
+
+/** Optional reference carried with a send. When present the server follows the
+ *  delivery call with an ARCS-authored reference turn in the session's
+ *  transcript sidecar. Mirrors the server's `sessionReferenceSchema` — a
+ *  discriminated union on `type`; an unknown variant is refused with 400. */
+export type SessionReference = SessionDocReference | SessionFileReference | SessionNodeReference;
 
 /** Payload for POST /sessions/:id/run — a headless `claude -p` targeting mode.
  *  `threadId` is the stable-mode thread to reuse; when absent (and the
@@ -303,7 +342,7 @@ export interface RunClaudeSessionInput {
   mode: "resume" | "oneshot" | "stable";
   message: string;
   threadId?: string;
-  reference?: SessionMessageReference;
+  reference?: SessionReference;
 }
 
 /** Acceptance of a headless run, returned as HTTP 202 — the run itself
@@ -495,15 +534,10 @@ export const api = {
   deleteSession: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/sessions/${id}`, { method: "DELETE" }),
   /** Live-injects a prompt into the runtime behind the session (opencode only).
-   *  An optional `reference` (a document section the caller is pointing the
-   *  session at) is included in the body ONLY when present — absent, the body
-   *  stays byte-identical to `{ message }`. */
-  sendSessionMessage: (
-    slug: string,
-    id: string,
-    message: string,
-    reference?: SessionMessageReference,
-  ) =>
+   *  An optional `reference` (whatever the caller is pointing the session at —
+   *  a doc section, a file slice or a DAG node) is included in the body ONLY
+   *  when present — absent, the body stays byte-identical to `{ message }`. */
+  sendSessionMessage: (slug: string, id: string, message: string, reference?: SessionReference) =>
     request<SessionMeta>(`/api/p/${slug}/sessions/${id}/message`, {
       method: "POST",
       body: JSON.stringify(reference === undefined ? { message } : { message, reference }),
