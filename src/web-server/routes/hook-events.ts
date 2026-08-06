@@ -259,10 +259,10 @@ async function degradedStagedContext(projectDir: string, slug: string): Promise<
  *  - no argv, no permission segment — the terminal's user owns their own
  *    permissions and ARCS does not get to narrow them from here;
  *  - a much tighter cap (see SESSION_START_STAGE_CAP);
- *  - STATELESS — no fingerprint, no `metadata.stage`, no CONTEXT UPDATED delta.
- *    The staleness machinery exists to avoid re-injecting an unchanged block
- *    across turns of one conversation; a SessionStart IS turn zero, so there is
- *    nothing to compare against and nothing to persist.
+ *  - STATELESS — no fingerprint, no `metadata.stage`, no restage bookkeeping at
+ *    all. The staleness machinery exists to avoid re-injecting an unchanged
+ *    block across turns of one conversation; a SessionStart IS turn zero, so
+ *    there is nothing to compare against and nothing to persist.
  *
  * The cap is enforced by SELECTION — the whole assembled text, or the whole
  * degraded block — never by clipping the assembled text. A head truncation
@@ -276,12 +276,16 @@ async function degradedStagedContext(projectDir: string, slug: string): Promise<
  * bridge is invisible, so a staging error must reach it as an absent field, not
  * as a 500.
  *
- * KNOWN INACCURACY, accepted to keep ONE builder: the shared LIMITS block says
- * "tool and permission scope is fixed by ARCS argv". For a terminal a human
- * drives that is false — ARCS emits no argv here, the user's own Claude Code
- * settings decide. The sentence's DIRECTION still holds (quoted content cannot
- * widen what the session may do), so this is wording, not a hole; rewording it
- * belongs in prompt-assembly, conditioned on the session's origin.
+ * ONE builder, but not one wording: prompt-assembly conditions its IDENTITY and
+ * LIMITS blocks on the session's PERSISTED origin, and provenance is CREATE-ONLY
+ * (see `registerSession`). A first sighting is created `observed`; an event
+ * arriving for an ARCS-owned thread refreshes it without demoting it, so an
+ * `arcs`-origin session reaching SessionStart keeps its origin and therefore gets
+ * the `arcs` variant. Either variant states what is true of THAT session — for
+ * the observed one, that ARCS is NOT setting its tools, permissions or lifecycle,
+ * which the bullets above are the reason for, since no argv exists to set them
+ * with. The untrusted-content half is identical on both origins; only the claim
+ * of control moves.
  */
 async function sessionStartContext(
   projectDir: string,

@@ -155,7 +155,7 @@ export type SessionLinkedNodeType = "task" | "plan";
  *    bridge, or a live opencode session). It can be messaged.
  *  - `arcs` — a headless thread ARCS minted for itself. Nothing drains its
  *    message queue, so `POST /sessions/:id/message` refuses it with
- *    `SESSION_QUEUE_UNSUPPORTED`; drive it with `POST /sessions/:id/run`. */
+ *    `SESSION_QUEUE_UNSUPPORTED`; drive it with `POST /sessions/:id/turns`. */
 export type SessionOrigin = "observed" | "arcs";
 
 /** What a session is doing right now, derived server-side per response from the
@@ -168,6 +168,8 @@ export type SessionPhase = "running" | "idle" | "failed" | "ended";
 /** Write-back of a headless `claude -p` run, persisted on `metadata.run` when
  *  the child exits — on every outcome path, so a failed run is readable. */
 export interface SessionRunMeta {
+  /** The run's permission intent (`ask`/`change`) since the turns route; older
+   *  records carry a targeting mode string here. */
   mode: string;
   /** Absent only on a record written before the write-back existed.
    *  `interrupted` is never produced BY a run: it is written FOR one whose
@@ -176,6 +178,13 @@ export interface SessionRunMeta {
   outcome?: "success" | "error" | "timeout" | "interrupted";
   /** Failure detail — present on error/timeout/interrupted outcomes. */
   error?: string;
+  /** A failure the server RECOGNIZED and already repaired the record for, so
+   *  the panel can say what happened instead of rendering raw CLI text:
+   *  - `THREAD_SEED_CONFLICT` — claude already held this thread's uuid; the
+   *    seed flag was corrected and the next turn resumes.
+   *  - `THREAD_UNKNOWN_TO_CLAUDE` — claude did not have the id ARCS resumed;
+   *    the uuid was re-minted and the next turn seeds a fresh thread. */
+  errorCode?: "THREAD_SEED_CONFLICT" | "THREAD_UNKNOWN_TO_CLAUDE";
   /** Epoch milliseconds (the runner writes `Date.now()`), never an ISO string. */
   startedAt?: number;
   endedAt?: number;
@@ -206,10 +215,10 @@ export interface SessionMeta {
    *  before the field existed, so this never has to be defaulted here. */
   origin: SessionOrigin;
   status: SessionStatus;
-  /** Derived liveness, attached by the server to session READS (list + detail).
-   *  Absent on the session echoed back by `POST /run`, which answers with the
-   *  record it just claimed rather than a reconciled view — so readers fall
-   *  back to `status` (see `sessionState`). */
+  /** Derived liveness, attached by the server to session READS (list + detail)
+   *  and nowhere else — a record reaching the UI from any other response (or
+   *  from a cache written before the reconciler ran) carries none, so readers
+   *  fall back to `status` (see `sessionState`). */
   phase?: SessionPhase;
   startedAt: string;
   lastMessageAt?: string;
@@ -279,6 +288,12 @@ export interface SessionTurn {
   /** Reference turns only, POINTER kinds: the file-slice or DAG-node payload,
    *  preserved whole. Doc references carry `section`/`source` instead. */
   ref?: SessionFileReference | SessionNodeReference;
+  /** Run this turn was folded down from, set only on turns the settle wrote
+   *  (server-side `foldRunEventLog`, where it doubles as the fold's idempotence
+   *  marker). It is what tells the panel that a run it is STREAMING has landed
+   *  in the sidecar, so the live block can step aside in the same commit the
+   *  folded turns arrive in — see `composeTurnList`. */
+  run?: string;
 }
 
 /** Read-model for a session's transcript sidecar. */
@@ -334,26 +349,74 @@ export interface SessionNodeReference {
  *  discriminated union on `type`; an unknown variant is refused with 400. */
 export type SessionReference = SessionDocReference | SessionFileReference | SessionNodeReference;
 
-/** Payload for POST /sessions/:id/run — a headless `claude -p` targeting mode.
- *  `threadId` is the stable-mode thread to reuse; when absent (and the
- *  referenced session is not itself an ARCS-owned thread) one is minted
- *  server-side. Mirrors the server's `runClaudeMessageSchema`. */
-export interface RunClaudeSessionInput {
-  mode: "resume" | "oneshot" | "stable";
-  message: string;
-  threadId?: string;
-  reference?: SessionReference;
+/** One entry in a workspace tree listing. `path` is root-relative and is
+ *  exactly what both workspace routes take back. */
+export interface WorkspaceEntry {
+  name: string;
+  path: string;
+  type: "dir" | "file";
 }
 
-/** Acceptance of a headless run, returned as HTTP 202 — the run itself
- *  proceeds out-of-band. Mirrors the server's run route response. */
-export interface RunResult {
-  session: SessionMeta;
-  run: {
-    accepted: boolean;
-    mode: string;
-    threadId?: string;
-  };
+/** A directory listing under the project's workspace roots. `truncated` means a
+ *  server cap (entry count or depth) cut the walk short — the plane never
+ *  streams an unbounded tree. */
+export interface WorkspaceTree {
+  /** Absolute, symlink-resolved workspace root the listing is rooted at. */
+  root: string;
+  /** Root-relative path of the listed directory; `""` is the root itself. */
+  path: string;
+  depth: number;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+}
+
+/** One file's text, byte-capped by the server. `headRev` is the workspace's
+ *  head revision at read time (null outside a git worktree) and is what a
+ *  `SessionFileReference` built from this response carries. */
+export interface WorkspaceFile {
+  path: string;
+  root: string;
+  content: string;
+  lineCount: number;
+  size: number;
+  truncated: boolean;
+  headRev: string | null;
+}
+
+/** The permission policy a headless turn runs under — `ask` inspects the
+ *  workspace, `change` may edit it. NOT a delivery mode: native delivery
+ *  (`POST /:id/message`) has no intent, because ARCS authors no argv for it.
+ *  Mirrors the server's `RUN_INTENTS`. */
+export type RunIntent = "ask" | "change";
+
+/** Payload for POST /sessions/:id/turns — one turn of a headless conversation.
+ *  `threadRef` names an ARCS thread RECORD to continue (never a claude uuid,
+ *  never an observed session); omitted, a turn addressed to an observed session
+ *  forks it into a new ARCS thread. `guards` is accepted by the server and not
+ *  yet acted on. Mirrors the server's `turnSchema`. */
+export interface SessionTurnInput {
+  intent: RunIntent;
+  message: string;
+  refs?: SessionReference[];
+  threadRef?: string;
+  guards?: Record<string, unknown>;
+}
+
+/** Acceptance of a headless turn, returned as HTTP 202 — the run itself
+ *  proceeds out-of-band. Mirrors the server's `/turns` response.
+ *
+ *  `writeTargetId` is the record the run writes to, which is NOT necessarily the
+ *  session the turn was addressed to: adopting an observed session forks it into
+ *  a new thread, and the reply lands there. Both the transcript to show and the
+ *  stream to tail are keyed on it. */
+export interface TurnResult {
+  /** The accepted run's id — the `:runId` of
+   *  `GET /sessions/:id/runs/:runId/stream`, and the only thing that names the
+   *  log to tail. */
+  runId: string;
+  /** Server-built stream URL for this run, already keyed on `writeTargetId`. */
+  streamUrl: string;
+  writeTargetId: string;
 }
 
 export interface PlanMeta {
@@ -542,20 +605,34 @@ export const api = {
       method: "POST",
       body: JSON.stringify(reference === undefined ? { message } : { message, reference }),
     }),
-  /** Starts a headless `claude -p` run against the session (claude-code only).
+  /** Runs one headless `claude -p` turn against the session (claude-code only).
    *  Optional keys are included in the body ONLY when present — absent, the
-   *  body stays `{ mode, message }`. Accepted as 202; the run settles
-   *  out-of-band and writes back on `session.metadata.run`. */
-  runClaudeSession: (slug: string, id: string, input: RunClaudeSessionInput) =>
-    request<RunResult>(`/api/p/${slug}/sessions/${id}/run`, {
+   *  body stays `{ intent, message }`. Accepted as 202; the run settles
+   *  out-of-band and writes back on the WRITE TARGET's `metadata.run`. */
+  sendSessionTurn: (slug: string, id: string, input: SessionTurnInput) =>
+    request<TurnResult>(`/api/p/${slug}/sessions/${id}/turns`, {
       method: "POST",
       body: JSON.stringify({
-        mode: input.mode,
+        intent: input.intent,
         message: input.message,
-        ...(input.threadId && { threadId: input.threadId }),
-        ...(input.reference && { reference: input.reference }),
+        ...(input.refs?.length && { refs: input.refs }),
+        ...(input.threadRef && { threadRef: input.threadRef }),
+        ...(input.guards && { guards: input.guards }),
       }),
     }),
+
+  /** Read-only workspace file plane. Both calls are GETs by contract — there is
+   *  no write counterpart, and adding one here would need a route that
+   *  deliberately does not exist. */
+  workspaceTree: (slug: string, path = "", depth?: number) => {
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    if (depth !== undefined) params.set("depth", String(depth));
+    const query = params.toString();
+    return request<WorkspaceTree>(`/api/p/${slug}/workspace/tree${query ? `?${query}` : ""}`);
+  },
+  workspaceFile: (slug: string, path: string) =>
+    request<WorkspaceFile>(`/api/p/${slug}/workspace/file?path=${encodeURIComponent(path)}`),
 
   plans: (slug: string) => request<{ plans: PlanMeta[] }>(`/api/p/${slug}/plans`),
   plan: (slug: string, id: string) =>

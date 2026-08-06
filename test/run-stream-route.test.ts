@@ -10,12 +10,20 @@
  * same GET with the same bytes.
  */
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   beginSessionRun,
   createSession,
+  deleteSession,
   getSession,
   settleSessionRun,
   updateSession,
@@ -133,6 +141,73 @@ function streamUrl(base: string, sessionId: string, query = "", runId = RUN_ID):
   return `${base}/api/p/demo/sessions/${sessionId}/runs/${runId}/stream${query}`;
 }
 
+/**
+ * Makes the session index unreadable, and readable again, WITHOUT the path ever
+ * being absent.
+ *
+ * The absence matters: an absent index IS a settle (the record the session would
+ * have to be in is gone), so a harness that renames or unlinks the file has a
+ * window in which the `end` frame these tests assert away is the correct answer
+ * — a test that can fail for the reason it exists to disprove. `chmod` has no
+ * such window.
+ *
+ * The mode bits are CHECKED rather than assumed, because they do nothing at all
+ * when the suite runs as root; if the file is still readable afterwards, the
+ * fallback overwrites it in place with bytes no reader can parse. Both land in
+ * the same place — `readJsonSafe` folds the failure into an EMPTY index, so
+ * `getSession` raises the SAME `ITEM_NOT_FOUND` a genuinely deleted session
+ * raises, which is precisely why the route may not settle on that code alone —
+ * and neither one ever takes the file away.
+ */
+interface SessionIndexBlind {
+  /** Present, still holding the session, and unreadable. */
+  hide(): void;
+  /** Byte-identical to how it started, at its original mode. */
+  show(): void;
+}
+
+function blindSessionIndex(projectDir: string): SessionIndexBlind {
+  const indexPath = resolve(projectDir, "sessions", "index.json");
+  const original = readFileSync(indexPath);
+  const mode = statSync(indexPath).mode & 0o777;
+  let corrupted = false;
+  return {
+    hide(): void {
+      chmodSync(indexPath, 0o000);
+      try {
+        readFileSync(indexPath);
+      } catch {
+        return; // EACCES: the mode bits held, and the bytes are untouched.
+      }
+      // Root, for which 000 is advisory. A prefix of a JSON object is never
+      // itself valid JSON, so even a reader that catches this mid-write sees a
+      // parse failure — never an index that parses without the session in it.
+      writeFileSync(indexPath, "{ not json");
+      corrupted = true;
+    },
+    show(): void {
+      chmodSync(indexPath, mode);
+      if (!corrupted) return;
+      writeFileSync(indexPath, original);
+      corrupted = false;
+    },
+  };
+}
+
+/** The transient IO failure the tail must not read as a settle. */
+async function withUnreadableSessionIndex(
+  projectDir: string,
+  during: () => Promise<void>,
+): Promise<void> {
+  const blind = blindSessionIndex(projectDir);
+  blind.hide();
+  try {
+    await during();
+  } finally {
+    blind.show();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SSE reading
 // ---------------------------------------------------------------------------
@@ -146,6 +221,8 @@ interface SseFrame {
 const FRAME_TIMEOUT_MS = 4_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+/** One event-loop turn — the finest interleaving a test can drive from outside. */
+const tick = (): Promise<void> => new Promise((done) => setImmediate(done));
 
 function parseFrame(block: string): SseFrame {
   let event = "message";
@@ -391,6 +468,145 @@ describe("GET .../runs/:runId/stream — live tail", () => {
     });
   });
 
+  it("keeps a live tail open across a transient index read failure, delivering the line written after it", async () => {
+    await withStreamCtx(async ({ projectDir, base }) => {
+      const sessionId = await seedClaimedRun(projectDir);
+      appendLines(projectDir, sessionId, RUN_ID, [eventLine("before the outage")]);
+
+      const res = await fetch(streamUrl(base, sessionId));
+      expect(res.status).toBe(200);
+      const reader = frameReader(res);
+      try {
+        await reader.until("the first line", (seen) => lineFrames(seen).length === 1);
+
+        // The probe: the run still holds its claim, but for several polls the
+        // route cannot look at the record that says so.
+        await withUnreadableSessionIndex(projectDir, async () => {
+          expect(await reader.idle(350)).toBe(0);
+        });
+        // Absent evidence is not evidence of silence: no end frame, no close.
+        expect(reader.frames.some((f) => f.event === "end")).toBe(false);
+
+        // Recovery — and the line written after it still reaches the consumer,
+        // which a stream terminated during the outage could never deliver.
+        appendLines(projectDir, sessionId, RUN_ID, [eventLine("after recovery")]);
+        const live = await reader.until(
+          "the post-recovery line",
+          (seen) => lineFrames(seen).length === 2,
+        );
+        expect(texts(live)).toEqual([eventLine("before the outage"), eventLine("after recovery")]);
+        expect(live.some((f) => f.event === "end")).toBe(false);
+
+        // Still the same stream, and it still ends on the real settle.
+        await settle(projectDir, sessionId);
+        const frames = await reader.until("the end frame", (seen) =>
+          seen.some((f) => f.event === "end"),
+        );
+        expect(frames[frames.length - 1]?.data).toEqual({
+          offset: 2,
+          outcome: "success",
+          truncated: false,
+        });
+      } finally {
+        await reader.cancel();
+      }
+    });
+  });
+
+  it("never settles a claimed run on an index that FLAPS unreadable while never being absent", async () => {
+    await withStreamCtx(async ({ projectDir, base }) => {
+      const sessionId = await seedClaimedRun(projectDir);
+      appendLines(projectDir, sessionId, RUN_ID, [eventLine("before the flap")]);
+
+      const res = await fetch(streamUrl(base, sessionId));
+      expect(res.status).toBe(200);
+      const reader = frameReader(res);
+      const blind = blindSessionIndex(projectDir);
+      let flapping = true;
+      // Alternates on every event-loop TURN, not on a timer. That rate is the
+      // point: it lands the transition BETWEEN the route's two reads of the
+      // index, so the failure the first read hit has already cleared when the
+      // second one arrives — the case an error-class check cannot see at all,
+      // and the one a "did the file parse" check answers backwards, because the
+      // file parses fine by then while the session was never out of it for an
+      // instant. The rate is measured, not assumed: a 15 ms timer loses the race
+      // on ~90 % of polls, where this wins it on ~14 % of them — so the window
+      // below is sized to make a regression reproduce, not to be quick.
+      const flap = (async () => {
+        while (flapping) {
+          blind.hide();
+          await tick();
+          blind.show();
+          await tick();
+        }
+      })();
+      try {
+        await reader.until("the first line", (seen) => lineFrames(seen).length === 1);
+
+        // Twenty poll cycles of pure flapping. The index is PRESENT the whole
+        // time and holds the session the whole time, so nothing here is a settle.
+        // Asserted as one object so a regression PRINTS the frame it emitted:
+        // an `end` carrying `offset` alone is the not-found branch, which is how
+        // this failure is told from a legitimate settle.
+        const arrived = await reader.idle(2_000);
+        expect({ arrived, ended: reader.frames.filter((f) => f.event === "end") }).toEqual({
+          arrived: 0,
+          ended: [],
+        });
+
+        flapping = false;
+        await flap;
+        blind.show();
+
+        // Same stream, still live, and it still ends on the REAL settle — with
+        // the outcome the not-found branch could never have carried.
+        appendLines(projectDir, sessionId, RUN_ID, [eventLine("after the flap")]);
+        await reader.until("the post-flap line", (seen) => lineFrames(seen).length === 2);
+        await settle(projectDir, sessionId);
+        const frames = await reader.until("the end frame", (seen) =>
+          seen.some((f) => f.event === "end"),
+        );
+        expect(texts(frames)).toEqual([eventLine("before the flap"), eventLine("after the flap")]);
+        expect(frames[frames.length - 1]?.data).toEqual({
+          offset: 2,
+          outcome: "success",
+          truncated: false,
+        });
+      } finally {
+        flapping = false;
+        await flap;
+        blind.show();
+        await reader.cancel();
+      }
+    });
+  });
+
+  it("ends the tail when the index ANSWERS that the session is gone", async () => {
+    await withStreamCtx(async ({ projectDir, base }) => {
+      const sessionId = await seedClaimedRun(projectDir);
+      appendLines(projectDir, sessionId, RUN_ID, [eventLine("one")]);
+
+      const res = await fetch(streamUrl(base, sessionId));
+      const reader = frameReader(res);
+      try {
+        await reader.until("the first line", (seen) => lineFrames(seen).length === 1);
+
+        // A readable index that no longer holds the session: nothing will ever
+        // append to that log again, so this one IS a settle.
+        await deleteSession(projectDir, sessionId);
+        const frames = await reader.until("the end frame", (seen) =>
+          seen.some((f) => f.event === "end"),
+        );
+
+        // Outcome and completeness are unknowable with the record gone, so the
+        // end frame carries neither rather than manufacturing them.
+        expect(frames[frames.length - 1]).toEqual({ event: "end", id: "1", data: { offset: 1 } });
+      } finally {
+        await reader.cancel();
+      }
+    });
+  });
+
   it("never emits a trailing partial line, and emits it exactly once when it completes", async () => {
     await withStreamCtx(async ({ projectDir, base }) => {
       const sessionId = await seedClaimedRun(projectDir);
@@ -502,6 +718,48 @@ describe("GET .../runs/:runId/stream — offset idempotence", () => {
           code: "INVALID_RUN_STREAM_OFFSET",
         });
       }
+    });
+  });
+
+  it("refuses every offset that is not literally digits, so the contract and the code agree", async () => {
+    await withStreamCtx(async ({ projectDir, base }) => {
+      const sessionId = await seedClaimedRun(projectDir);
+      appendLines(projectDir, sessionId, RUN_ID, [eventLine("one")]);
+      await settle(projectDir, sessionId);
+
+      // Each of these is a NUMBER `Number()` + `Number.isInteger` waves through,
+      // and none of them is the "non-negative integer" the contract states. The
+      // last two are the reason it matters: they answer with an end frame alone,
+      // which is exactly what a run that said nothing looks like.
+      const refused = [
+        "1e3", // exponent notation
+        "0x2", // hex literal
+        "%202", // whitespace-padded (" 2")
+        "2%20", // trailing whitespace ("2 ")
+        "%2B2", // signed ("+2")
+        "1e21", // past MAX_SAFE_INTEGER, via exponent
+        "9007199254740993", // past MAX_SAFE_INTEGER, in digits
+      ];
+      for (const raw of refused) {
+        const res = await fetch(streamUrl(base, sessionId, `?from=${raw}`));
+        const body = (await res.json()) as { ok: boolean; code: string };
+        expect({ raw, status: res.status, code: body.code }).toEqual({
+          raw,
+          status: 400,
+          code: "INVALID_RUN_STREAM_OFFSET",
+        });
+      }
+
+      // The same contract on the header, which is the other source of an offset.
+      const header = await fetch(streamUrl(base, sessionId), {
+        headers: { "Last-Event-ID": "1e3" },
+      });
+      expect(header.status).toBe(400);
+      expect(((await header.json()) as { code: string }).code).toBe("INVALID_RUN_STREAM_OFFSET");
+
+      // Plain digits still parse — refusal is the shape, not the size.
+      expect(offsets(await readToEnd(streamUrl(base, sessionId, "?from=0")))).toEqual([0]);
+      expect(offsets(await readToEnd(streamUrl(base, sessionId, "?from=007")))).toEqual([]);
     });
   });
 });

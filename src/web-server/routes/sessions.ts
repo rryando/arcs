@@ -5,24 +5,24 @@
  * attached to a project. All mutations go through the locked session-store,
  * so the opencode discovery bridge and the web UI cannot clobber each other.
  *
- * `POST /sessions/:id/message` is the one route that reaches outside the store:
- * it proxies a prompt into the live runtime (opencode) or queues it for the
- * session to collect itself (claude-code). Every route here is browser-facing
- * and therefore already behind the global loopback-only `secureLocalRequest`
- * middleware — no per-route auth.
+ * Two routes reach outside the store, and they partition the session space
+ * rather than overlapping: `POST /sessions/:id/message` DELIVERS a prompt to a
+ * session something else drives (live injection for opencode, a queue the
+ * terminal drains for claude-code), while `POST /sessions/:id/turns` RUNS a
+ * headless `claude -p` turn against a thread ARCS owns. Every route here is
+ * browser-facing and therefore already behind the global loopback-only
+ * `secureLocalRequest` middleware — no per-route auth.
  */
 
 import { randomUUID } from "node:crypto";
-import { type FileHandle, open, stat, unlink } from "node:fs/promises";
+import { type FileHandle, open, readFile, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { isSessionAttached } from "../../shared/session-vocabulary.js";
 import {
   appendReferenceTurn,
   appendSessionTurn,
-  mirrorSessionTranscript,
   readSessionTurns,
   referenceTurnText,
   type SessionReference,
@@ -50,6 +50,7 @@ import {
   updateSession,
   upsertSession,
 } from "../../utils/session-store.js";
+import { normalizeIdentifier } from "../../utils/slug.js";
 import {
   type ClaudeRunRecord,
   isRunLive,
@@ -62,7 +63,8 @@ import {
   readOpencodeConfig,
   sendOpencodeMessage,
 } from "../opencode-client.js";
-import { buildStagedEnvironment, planStageRefresh } from "../prompt-assembly.js";
+import { buildPermissionArgv, RUN_INTENTS, type RunIntent } from "../permission-policy.js";
+import { buildStagedEnvironment, planStageRefresh, renderReferences } from "../prompt-assembly.js";
 import { fail, parseBody, requireProjectDir, respond } from "../respond.js";
 import {
   foldRunEventLog,
@@ -147,7 +149,7 @@ const nodeReferenceSchema = z.object({
  * Something the caller is pointing the session at. When present, the delivery
  * call is followed by an ARCS-authored reference turn in the session's
  * transcript sidecar (see `appendReference`). Shared by POST /message and POST
- * /run so both routes accept byte-identical reference payloads.
+ * /turns so both routes accept byte-identical reference payloads.
  *
  * A discriminated union on `type`, so an unknown variant is REJECTED (400
  * INVALID_BODY naming the three tags) rather than coerced into the nearest
@@ -183,14 +185,28 @@ const sendMessageSchema = z.object({
   reference: sessionReferenceSchema.optional(),
 });
 
-/** Payload for POST /sessions/:id/run — a headless `claude -p` targeting mode.
- *  `threadId` is the stable-mode thread to reuse; when absent (and the
- *  referenced session is not itself an ARCS-owned thread) one is minted. */
-const runClaudeMessageSchema = z.object({
-  mode: z.enum(["resume", "oneshot", "stable"]),
+/**
+ * Payload for POST /sessions/:id/turns — one turn of a headless conversation.
+ *
+ * `intent` is a PERMISSION POLICY, not a delivery mode: it selects the tool set
+ * and permission mode `buildPermissionArgv` emits (`ask` → read-only + plan,
+ * `change` → the edit surface + acceptEdits) and decides nothing else. Native
+ * delivery (`POST /:id/message`) has no intent at all — ARCS authors no argv
+ * there, so the two are orthogonal and never collapse into one enum.
+ *
+ * `threadRef` names an ARCS thread RECORD to continue — never a claude uuid,
+ * and never an observed session (that is what adoption is for). `refs` are the
+ * turn's references: they render into the user-facing prompt AND land on the
+ * sidecar. `guards` is validated and then deliberately ignored here; the
+ * change-intent preflight that reads it is a separate task, and accepting the
+ * key now keeps that task from being a breaking payload change.
+ */
+const turnSchema = z.object({
+  intent: z.enum(RUN_INTENTS),
   message: z.string().min(1),
-  threadId: z.string().optional(),
-  reference: sessionReferenceSchema.optional(),
+  refs: z.array(sessionReferenceSchema).optional(),
+  threadRef: z.string().min(1).optional(),
+  guards: z.record(z.unknown()).optional(),
 });
 
 const createOpencodeSessionSchema = z.object({
@@ -199,7 +215,7 @@ const createOpencodeSessionSchema = z.object({
 
 /**
  * Records a delivered reference on the session's transcript sidecar. Shared by
- * POST /message and POST /run so both write the same record for the same
+ * POST /message and POST /turns so both write the same record for the same
  * payload.
  *
  * A `doc` reference writes exactly the fields this route has always written —
@@ -264,27 +280,10 @@ async function primaryWorkspacePath(projectDir: string, slug: string): Promise<s
   return directory;
 }
 
-/**
- * The claude-facing session uuid for an ARCS stable thread.
- *
- * The ARCS thread id (`arcs-thread-<slug>-<uuid4>`) is deliberately
- * human-readable — it labels the session picker and names the transcript
- * sidecar — so it can never be handed to claude: `--session-id`/`--resume` on
- * claude >= 2.x accept a bare RFC-4122 uuid only and exit 1 with "Invalid
- * session ID. Must be a valid UUID." on anything else. Each thread therefore
- * carries its own uuid on `metadata.claudeSessionId`, minted once and reused
- * for every later turn: re-seeding an id claude already knows fails with
- * "already in use", so the mint must not repeat.
- */
-async function threadClaudeSessionId(projectDir: string, thread: string): Promise<string> {
-  try {
-    const existing = await getSession(projectDir, thread);
-    const persisted = existing.metadata?.claudeSessionId;
-    if (typeof persisted === "string" && persisted !== "") return persisted;
-  } catch {
-    // No record for this thread yet — mint its first uuid below.
-  }
-  return randomUUID();
+/** A metadata slot read back as a real string, or `undefined`. A hand-edited
+ *  index (and a cleared key, written as `""`) can carry anything here. */
+function metadataString(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 function parseFilters(status: string | undefined, runtimeType: string | undefined): SessionFilters {
@@ -393,9 +392,13 @@ async function withPhases(projectDir: string, sessions: SessionMeta[]): Promise<
 // ---------------------------------------------------------------------------
 
 interface RunWriteBackContext {
-  mode: "resume" | "oneshot" | "stable";
+  /**
+   * The turn's permission intent. Persisted onto `metadata.run.mode` — the
+   * field survives (three readers) and now carries the only "how was this run
+   * shaped" fact there is left to carry, the targeting modes having gone.
+   */
+  intent: RunIntent;
   writeTarget: SessionMeta;
-  firstStableSpawn: boolean;
   /** Id of the run this write-back settles — the claim it is allowed to release. */
   runId: string;
   /**
@@ -417,26 +420,81 @@ function runMetadata(session: SessionMeta): Record<string, unknown> {
 }
 
 /**
- * Mode-1 write-back (T005): the callback the route registers on runClaudeJob,
- * invoked by the runner after the headless child fully exits — on every outcome
- * (success/error/timeout/killed).
+ * Claude's own words for the two ways a thread's seed decision can be wrong,
+ * observed on claude 2.1.223's flag validation (exit 1, before any network
+ * call): `--session-id <id>` on an id it already knows, and `--resume <id>` on
+ * one it does not.
  *
- * - resume: mirrors the resumed session's runtime transcript into its sidecar
- *   via the persisted metadata.transcriptPath (hook-events T004 persists it at
- *   its checkpoints). The path is re-read fresh from the store — it may have
- *   been updated between the 202 and the run's exit. An absent path is a no-op;
- *   mirrorSessionTranscript is offset-idempotent and never throws, so repeated
- *   write-backs never duplicate and failures are inert.
- * - oneshot/stable: never mirror — their sidecars are appendSessionTurn-owned.
- *   The run's own event log folds down first (assistant text plus one turn per
- *   tool_use, every turn tagged with the run id so a second fold is a no-op).
- *   Only when that fold produced no assistant text — no log, an empty log, a
- *   child that spoke only through the terminal `result` envelope — does the
- *   captured reply get appended as an assistant turn on a success outcome;
- *   error/timeout outcomes still append nothing. The fold is deliberately NOT
- *   run for resume mode: that sidecar is owned by the transcript mirror above,
- *   which already carries the same turns with their transcript line ids, so
- *   folding there would double every turn.
+ * FRAGILE BY CONSTRUCTION, and stated as such rather than hidden: these are a
+ * CLI's human-facing stderr strings, not a stable contract, and a claude patch
+ * release can reword either without notice. Each branch is therefore pinned by
+ * a test driving the literal message, and each is a REPAIR rather than a
+ * behaviour: a message that stops matching costs the self-heal, never the run.
+ */
+const THREAD_SEED_CONFLICT_PATTERN = /already in use/i;
+const THREAD_UNKNOWN_PATTERN = /No conversation found with session ID/i;
+
+/** Typed failure the panel can act on, plus the metadata that unwedges it. */
+interface ThreadSeedRepair {
+  errorCode?: "THREAD_SEED_CONFLICT" | "THREAD_UNKNOWN_TO_CLAUDE";
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Reads the child's error text as EVIDENCE about the thread's seed decision and
+ * repairs the record from it.
+ *
+ * `metadata.threadInitialized` is persisted at SPAWN — its honest meaning is
+ * "ARCS has already handed this uuid to `--session-id`", which the route knows
+ * with certainty the moment it builds argv and which survives a server crash
+ * where the settle never runs. That alone closes the wedge (a run that times
+ * out after claude registered the uuid no longer re-seeds forever). These two
+ * branches close the remainder, where the flag and claude disagree:
+ *
+ *  - "already in use" — claude HAS the id ARCS thought it had not handed over.
+ *    The flag was a false negative; set it and the next turn resumes.
+ *  - "No conversation found with session ID" — claude does NOT have the id ARCS
+ *    resumed. Clearing the flag alone would re-seed the SAME uuid, so the uuid
+ *    is re-minted with it. `adoptedClaudeSessionId` is cleared in the same
+ *    write: it is the id claude could not find, and keeping it would re-issue
+ *    the identical doomed `--resume` on every later turn — the exact wedge this
+ *    repair exists to prevent. `adoptedFrom` stays, because the record's
+ *    provenance is still true and never reaches argv.
+ */
+function repairThreadSeed(record: ClaudeRunRecord): ThreadSeedRepair {
+  const error = typeof record.error === "string" ? record.error : "";
+  if (error === "") return { metadata: {} };
+  if (THREAD_SEED_CONFLICT_PATTERN.test(error)) {
+    return { errorCode: "THREAD_SEED_CONFLICT", metadata: { threadInitialized: true } };
+  }
+  if (THREAD_UNKNOWN_PATTERN.test(error)) {
+    return {
+      errorCode: "THREAD_UNKNOWN_TO_CLAUDE",
+      metadata: {
+        threadInitialized: false,
+        claudeSessionId: randomUUID(),
+        adoptedClaudeSessionId: "",
+      },
+    };
+  }
+  return { metadata: {} };
+}
+
+/**
+ * The write-back the route registers on runClaudeJob, invoked by the runner
+ * after the headless child fully exits — on every outcome (success / error /
+ * timeout / killed).
+ *
+ * Every write target is an ARCS-owned thread, so there is exactly one sidecar
+ * discipline: `appendSessionTurn`-owned, never mirrored. The run's own event log
+ * folds down first (assistant text plus one turn per tool_use, every turn tagged
+ * with the run id so a second fold is a no-op). Only when that fold produced no
+ * assistant text — no log, an empty log, a child that spoke only through the
+ * terminal `result` envelope — does the captured reply get appended as an
+ * assistant turn on a success outcome; error/timeout outcomes append nothing.
+ *
+ * The observed session an adopted thread was forked from is never touched here:
+ * `ctx.writeTarget` is the fork, and the fork's transcript is its own.
  *
  * Every path finalizes metadata.run with the settled record (pid/startedAt/
  * mode plus endedAt/outcome/error/replyChars) so the panel shows the true
@@ -457,43 +515,26 @@ async function writeBackRun(
   // Never settle a claim that is still being written (see ctx.claimed).
   await ctx.claimed;
 
-  if (ctx.mode === "resume") {
-    let target = ctx.writeTarget;
-    try {
-      target = await getSession(projectDir, ctx.writeTarget.normalizedId);
-    } catch {
-      // Session deleted mid-run — fall back to the write-target captured at 202.
-    }
-    const transcriptPath = target.metadata?.transcriptPath;
-    if (typeof transcriptPath === "string" && transcriptPath !== "") {
-      await mirrorSessionTranscript(projectDir, ctx.writeTarget.normalizedId, transcriptPath);
-    }
-  } else {
-    // Modes 2/3: fold the run's durable event log down into the sidecar first.
-    // Idempotent by its own output — every folded turn carries the run id, and
-    // a run already represented there folds to nothing.
-    const fold = await foldRunEventLog(projectDir, ctx.writeTarget.normalizedId, ctx.runId);
-    if (
-      !fold.assistantTextFolded &&
-      record.outcome === "success" &&
-      record.replyText !== undefined
-    ) {
-      // Nothing in the log spoke for this run (no log at all, or only tool
-      // turns): the captured reply lands in the sidecar as an assistant turn,
-      // minted in the shared negative id space after the user turn and any
-      // reference. Tagged with the run id too, so it is covered by the same
-      // no-second-fold guard. Error/timeout outcomes append nothing.
-      await appendSessionTurn(projectDir, ctx.writeTarget.normalizedId, {
-        type: "assistant",
-        text: record.replyText,
-        run: ctx.runId,
-      });
-    }
+  // Fold the run's durable event log down into the sidecar first. Idempotent by
+  // its own output — every folded turn carries the run id, and a run already
+  // represented there folds to nothing.
+  const fold = await foldRunEventLog(projectDir, ctx.writeTarget.normalizedId, ctx.runId);
+  if (!fold.assistantTextFolded && record.outcome === "success" && record.replyText !== undefined) {
+    // Nothing in the log spoke for this run (no log at all, or only tool
+    // turns): the captured reply lands in the sidecar as an assistant turn,
+    // minted in the shared negative id space after the user turn and any
+    // reference. Tagged with the run id too, so it is covered by the same
+    // no-second-fold guard. Error/timeout outcomes append nothing.
+    await appendSessionTurn(projectDir, ctx.writeTarget.normalizedId, {
+      type: "assistant",
+      text: record.replyText,
+      run: ctx.runId,
+    });
   }
 
-  // Bounded retention, every mode: the log that just settled is the newest, so
-  // it always survives and the sessions dir stays capped at
-  // RUN_EVENT_LOG_RETENTION logs per session however many runs it accumulates.
+  // Bounded retention: the log that just settled is the newest, so it always
+  // survives and the sessions dir stays capped at RUN_EVENT_LOG_RETENTION logs
+  // per session however many runs it accumulates.
   await pruneRunEventLogs(projectDir, ctx.writeTarget.normalizedId);
 
   // Outcome + claim release, atomically. `endedAt` rides the record so the run
@@ -506,7 +547,7 @@ async function writeBackRun(
   });
 
   // Everything the RUNNER measured, which no claim could have known at spawn:
-  // the pid/startedAt the child actually reported, the targeting mode, and the
+  // the pid/startedAt the child actually reported, the run's intent, and the
   // stream observations — time-to-first-token and wire-format drift are only
   // readable after the fact if they reach disk. `settleSessionRun` takes the
   // outcome alone (a settle must not be a place where arbitrary run fields can
@@ -515,12 +556,20 @@ async function writeBackRun(
   // A newer run already owns the record — the settle above refused it, and this
   // merge must not overwrite the new run's numbers with this one's either.
   if (run.runId !== ctx.runId) return;
+  const repair = repairThreadSeed(record);
   const metadata: Record<string, unknown> = {
+    // Seed-decision repair rides the SAME write as the outcome, so a record can
+    // never be readable as "this run failed" while still carrying the seed
+    // state that failed it.
+    ...repair.metadata,
     run: {
       ...run,
       pid: record.pid,
       startedAt: record.startedAt,
-      mode: ctx.mode,
+      mode: ctx.intent,
+      // Typed, so the panel can act on the failure rather than render opaque
+      // CLI text at the user.
+      ...(repair.errorCode !== undefined && { errorCode: repair.errorCode }),
       ...(record.replyChars !== undefined && { replyChars: record.replyChars }),
       ...(record.firstTokenAt !== undefined && { firstTokenAt: record.firstTokenAt }),
       ...(record.skippedLines !== undefined && { skippedLines: record.skippedLines }),
@@ -537,9 +586,6 @@ async function writeBackRun(
       ...(record.eventLogError !== undefined && { eventLogError: record.eventLogError }),
     },
   };
-  if (ctx.mode === "stable" && ctx.firstStableSpawn && record.outcome === "success") {
-    metadata.threadInitialized = true;
-  }
   await updateSession(projectDir, { id: ctx.writeTarget.normalizedId, metadata });
 }
 
@@ -636,7 +682,13 @@ sessionsRoute.patch("/api/p/:slug/sessions/:id", async (c) =>
  * `arcs`-origin thread has nothing attached that would ever read the queue:
  * accepting the message would make this route a black hole that answers 200 and
  * silently drops the prompt, so it is refused outright and the caller is sent to
- * `POST /run`, which actually drives such a thread.
+ * `POST /turns`, which actually drives such a thread.
+ *
+ * The refusal holds by CONSTRUCTION rather than by a second check: `canQueue`
+ * reads `origin`, and every record `POST /turns` writes to is `arcs`-origin.
+ * The two routes therefore partition the session space — native delivery serves
+ * exactly the observed sessions the headless path refuses to write to, which is
+ * why `native` is a delivery channel and not a run intent.
  *
  * A `reference` body field appends an ARCS-authored reference turn to the
  * session's transcript sidecar, but only after delivery has succeeded — a
@@ -656,7 +708,7 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
           "SESSION_QUEUE_UNSUPPORTED",
           `cannot queue a message for session "${session.normalizedId}": it is an ARCS-owned ` +
             `thread with no terminal session attached, so nothing would ever drain the queue — ` +
-            `drive it with POST /api/p/<slug>/sessions/${session.normalizedId}/run instead.`,
+            `drive it with POST /api/p/<slug>/sessions/${session.normalizedId}/turns instead.`,
         );
       }
       // Queued, not sent: `lastMessageAt` stays untouched until the session
@@ -689,134 +741,280 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
   }),
 );
 
+// ---------------------------------------------------------------------------
+// Turn targeting — which record a turn writes to, and what claude is told
+// ---------------------------------------------------------------------------
+
 /**
- * Starts a headless `claude -p` job in one of three targeting modes and answers
- * 202 with the write-target session — the record the run's transcript and reply
- * land on. The 202 is the acceptance: the run proceeds out-of-band in the
- * runner, whose exit-time write-back (T005) then settles the run — finalizing
- * `metadata.run` with the outcome on every path and, for resume mode, mirroring
- * the resumed session's transcript into its sidecar.
+ * The three identities one turn juggles, deliberately kept apart:
  *
- * - resume: the referenced session must be a claude-code session with no process
- *   attached to it — the DERIVED phase decides, not the persisted status (see
- *   `isSessionAttached`); the run resumes its runtime thread in the session's own
- *   directory.
- * - oneshot: the run targets a deterministic ARCS-owned session
- *   (`arcs-oneshot-<slug>`) recreated idempotently on every call, in the
- *   project's primary workspace.
- * - stable: the run targets a persistent ARCS-owned thread (`arcs-thread-<slug>-
- *   <uuid4>` minted once then reused) so a conversation accumulates in one
- *   sidecar; the first successful spawn seeds the thread's claude-facing uuid
- *   (`--session-id`), later spawns continue it (`--resume` alone).
+ *  - `writeTarget.normalizedId` — the ARCS THREAD id (`arcs-thread-<slug>-<uuid4>`).
+ *    A record NAME: it labels the session picker and names the transcript
+ *    sidecar, and it never appears in argv — `--session-id`/`--resume` on
+ *    claude >= 2.x take a bare RFC-4122 uuid only and exit 1 with "Invalid
+ *    session ID. Must be a valid UUID." on anything else.
+ *  - `claudeSessionId` — the bare uuid THIS thread speaks to claude with. It
+ *    rides `--session-id` on the spawn that claims it and `--resume` on every
+ *    spawn after.
+ *  - `forkFrom` — the OBSERVED session's own uuid, present only on the spawn
+ *    that adopts it. It appears exactly once, next to `--fork-session`, and
+ *    never anywhere else.
+ */
+interface TurnTarget {
+  writeTarget: SessionMeta;
+  claudeSessionId: string;
+  forkFrom?: string;
+  /** This spawn hands `claudeSessionId` to `--session-id` — it CLAIMS the id. */
+  seeding: boolean;
+  /** Directory the child actually runs in (spawn options.cwd, never argv). */
+  dir: string;
+}
+
+/**
+ * The thread record `threadRef` names, or `undefined` when the index answers
+ * that there is no such record.
  *
- * Modes 2/3 append the user turn (and optional reference) to the write-target
- * sidecar immediately — the panel shows the prompt before the run ends, with
- * delivery-first ordering (user turn before reference). Mode 1 never appends:
- * its transcript write-back happens at exit (T005).
+ * `getSession`'s `ITEM_NOT_FOUND` is NOT evidence of absence: `readSessionIndex`
+ * folds an unreadable index into an empty one (`readJsonSafe` swallows every
+ * error class), so an EACCES or an EISDIR on a live index arrives wearing the
+ * deleted record's code. Minting on that answer would upsert a fresh ARCS
+ * thread over a name that already belongs to something else — and worse, would
+ * seed a uuid onto a thread claude already knows. So a not-found is believed
+ * only when a DIRECT read of the index says this record is not listed (or that
+ * there is no index at all); anything else is reported as unavailable and the
+ * caller retries.
+ */
+async function readThreadRecord(
+  projectDir: string,
+  threadRef: string,
+): Promise<SessionMeta | undefined> {
+  try {
+    return await getSession(projectDir, threadRef);
+  } catch (err) {
+    if (!(err instanceof DagError) || err.code !== "ITEM_NOT_FOUND") throw err;
+  }
+  if (await sessionIndexAnswered(projectDir, normalizeIdentifier(threadRef))) return undefined;
+  throw new DagError(
+    "SESSION_INDEX_UNAVAILABLE",
+    `cannot tell whether thread "${threadRef}" exists — the session index did not answer for ` +
+      `it, and minting a second record over that name would re-seed a uuid claude may already ` +
+      `hold. Retry once the index reads.`,
+  );
+}
+
+/**
+ * Resolves the record this turn writes to, the uuid claude is told, and whether
+ * this spawn claims that uuid or continues it.
  *
- * Staged environment (W2): every spawn carries the write-target's stable context
- * block on `--append-system-prompt` when there is one to carry — always for a
- * spawn that STARTS a conversation, and only on a restage for one that continues
- * it. The returned record is persisted at `metadata.stage` exactly when
- * `planStageRefresh` asks for it, and is the next turn's freshness baseline.
+ * Three branches, and only these three:
+ *
+ *  1. `threadRef` — the caller names an ARCS thread RECORD to continue. It may
+ *     name one that does not exist yet (a fresh thread is minted for it), but
+ *     never an observed session: that is refused rather than quietly claimed,
+ *     because ARCS writing run state onto a record with a live terminal behind
+ *     it is exactly what adoption exists to avoid.
+ *  2. the referenced session IS an ARCS thread — continue it.
+ *  3. ADOPTION — the referenced session is one ARCS merely observes, so a NEW
+ *     thread is minted and its first spawn forks the observed session:
+ *     `--resume <observed uuid> --session-id <fresh uuid> --fork-session`.
+ *     Probed on claude 2.1.223: the fork inherits the observed context and
+ *     writes a SEPARATE transcript, leaving the original untouched — so
+ *     adoption preserves continuity without needing to read a claude-chosen id
+ *     back off the stream.
+ *
+ * Adoption is deliberately NOT idempotent: every turn addressed to the observed
+ * session forks it again, from whatever state the human has left it in. The
+ * 202 names the write target, and continuing THAT thread (by id, or by
+ * `threadRef`) is how a conversation accumulates in one sidecar.
+ */
+async function resolveTurnTarget(
+  projectDir: string,
+  slug: string,
+  session: SessionMeta,
+  threadRef: string | undefined,
+): Promise<TurnTarget> {
+  let existing: SessionMeta | undefined;
+  let threadId: string;
+  /** Provenance, written only on the upsert that MINTS an adopted thread. */
+  let adoptedFrom: string | undefined;
+  let adoptedClaudeSessionId: string | undefined;
+
+  if (threadRef !== undefined) {
+    threadId = threadRef;
+    existing = await readThreadRecord(projectDir, threadRef);
+    if (existing !== undefined && existing.origin !== "arcs") {
+      throw new DagError(
+        "TURN_THREAD_NOT_OWNED",
+        `cannot continue thread "${existing.normalizedId}": it is a session ARCS observes, not ` +
+          `an ARCS-owned thread — omit threadRef to fork it into one instead`,
+      );
+    }
+  } else if (session.origin === "arcs") {
+    threadId = session.runtimeSessionId;
+    existing = session;
+  } else {
+    if (session.runtimeType !== "claude-code") {
+      throw new DagError(
+        "CLAUDE_RUN_TARGET_INVALID",
+        `cannot drive session "${session.normalizedId}" headlessly: only a claude-code session ` +
+          `carries a claude thread to fork`,
+      );
+    }
+    threadId = `arcs-thread-${slug}-${randomUUID()}`;
+    adoptedFrom = session.normalizedId;
+    adoptedClaudeSessionId = session.runtimeSessionId;
+  }
+
+  const meta = existing?.metadata;
+  const persistedUuid = metadataString(meta?.claudeSessionId);
+  // The SEED DECISION. `threadInitialized` means "ARCS has already handed this
+  // uuid to --session-id" and is persisted at spawn, so a thread whose first
+  // run timed out (or whose server died) resumes on the next turn instead of
+  // re-seeding an id claude has already registered.
+  const seeding = meta?.threadInitialized !== true || persistedUuid === undefined;
+  const claudeSessionId = persistedUuid ?? randomUUID();
+  // A fork is only ever the spawn that CLAIMS the new id; once the thread is
+  // seeded it continues on its own uuid and the observed session is done with.
+  const forkFrom = seeding
+    ? (adoptedClaudeSessionId ?? metadataString(meta?.adoptedClaudeSessionId))
+    : undefined;
+
+  // HARD SAFETY ASSERTION. `--resume A --session-id A --fork-session` is
+  // ACCEPTED by claude 2.1.223 — exit 0, empty stderr — and appends to the
+  // ORIGINAL transcript, hijacking the human's live terminal thread (measured:
+  // the source grew 11 -> 20 lines). There is no error to notice it by, so the
+  // only thing standing between a corrupt record and a hijacked session is this
+  // check. Unreachable from a freshly minted uuid; reachable from a hand-edited
+  // or half-repaired index, which is precisely why it is enforced here.
+  if (forkFrom !== undefined && forkFrom === claudeSessionId) {
+    throw new DagError(
+      "CLAUDE_FORK_ID_COLLISION",
+      `refusing to fork thread "${threadId}": its claude session id and the session it would ` +
+        `fork are the same id ("${forkFrom}"), which claude accepts silently and appends to the ` +
+        `ORIGINAL session — re-mint metadata.claudeSessionId before running this thread again`,
+    );
+  }
+
+  const dir =
+    sessionDirectory(existing ?? session) ?? (await primaryWorkspacePath(projectDir, slug));
+
+  const writeTarget = await upsertSession(projectDir, {
+    runtimeType: "claude-code",
+    runtimeSessionId: threadId,
+    // Create-only in the store: an upsert never rewrites provenance, so this
+    // marks a freshly minted thread and is inert on one that already exists.
+    origin: "arcs",
+    metadata: {
+      control: "arcs-owned",
+      directory: dir,
+      claudeSessionId,
+      ...(adoptedFrom !== undefined && { adoptedFrom, adoptedClaudeSessionId }),
+    },
+  });
+
+  return {
+    writeTarget,
+    claudeSessionId,
+    ...(forkFrom !== undefined && { forkFrom }),
+    seeding,
+    dir,
+  };
+}
+
+/**
+ * The turn's user-facing prompt: the message, then its rendered reference block.
+ *
+ * References ride the PROMPT, never `--append-system-prompt`. The system tier is
+ * the STABLE one — byte-identical across turns is what makes the prompt cache
+ * pay — while a reference belongs to the turn that sent it and to no other.
+ * Staging them would break the cache on every send and leave the pointer in the
+ * conversation long after the turn it was meant for.
+ */
+function turnPrompt(message: string, refs: SessionReference[] | undefined): string {
+  const block = renderReferences(refs ?? []);
+  return block === "" ? message : `${message}\n\n${block}`;
+}
+
+/**
+ * Targeting tokens for one spawn — everything before the permission segment.
+ *
+ * Exactly three shapes, and the fork's ORDER is the probed one:
+ *  - fresh thread seed:  -p <prompt> --session-id <new> --output-format json
+ *  - thread resume:      -p <prompt> --resume <own> --output-format json
+ *  - observed adoption:  -p <prompt> --resume <observed> --session-id <new>
+ *                        --fork-session --output-format json
+ *
+ * `--session-id` alongside `--resume` without `--fork-session` exits 1 at flag
+ * validation ("--session-id can only be used with --continue or --resume if
+ * --fork-session is also specified"), so the three tokens are never split.
+ */
+function turnTargetingArgv(prompt: string, target: TurnTarget): string[] {
+  const argv = ["-p", prompt];
+  if (target.seeding && target.forkFrom !== undefined) {
+    argv.push(
+      "--resume",
+      target.forkFrom,
+      "--session-id",
+      target.claudeSessionId,
+      "--fork-session",
+    );
+  } else if (target.seeding) {
+    argv.push("--session-id", target.claudeSessionId);
+  } else {
+    argv.push("--resume", target.claudeSessionId);
+  }
+  argv.push("--output-format", "json");
+  return argv;
+}
+
+/**
+ * One turn of a headless `claude -p` conversation. Answers 202 with the run's
+ * id, the stream to tail it on, and the record it writes to — the acceptance,
+ * not the result: the run proceeds out-of-band in the runner, whose exit-time
+ * write-back settles it.
+ *
+ * WHAT THE CALLER CHOOSES is an INTENT (`ask` | `change`), never a targeting
+ * mode. Where the turn lands is derived from the record it is addressed to (see
+ * `resolveTurnTarget`): an ARCS thread continues, an observed session is forked
+ * into a new one. Delivery is the orthogonal axis and lives on the other route —
+ * `POST /:id/message` queues into a terminal session, for which ARCS authors no
+ * argv and an intent would mean nothing.
+ *
+ * ARGV OWNERSHIP, which is the safety property: every tool and permission token
+ * comes from `buildPermissionArgv` and this route builds none. It keeps only
+ * the targeting tokens above, and the permission segment is appended LAST —
+ * `--tools` is variadic (it eats following tokens until the next dash-leading
+ * one) and `--append-system-prompt` consumes exactly one following token, so a
+ * segment placed before `-p` would swallow the prompt or the staged text. The
+ * staged environment reaches the child through that segment's
+ * `stagedSystemPrompt` slot and nowhere else; a second direct push would emit
+ * the flag twice.
+ *
+ * The user turn (and one reference turn per `refs` entry) is appended to the
+ * write target's sidecar immediately, so the panel shows the prompt before the
+ * run ends, with delivery-first ordering.
+ *
+ * Staged environment (W2): a spawn that STARTS a conversation — a fresh seed and
+ * an adoption fork alike, since the forked context has never seen ARCS's block —
+ * always carries it; a spawn that CONTINUES one carries it only on a restage.
  *
  * Concurrency: one live run per write-target. The runner's beginRun is the
  * atomic claim; the read-only isRunLive probe here answers the common
- * overlapping case with a proper 409 before anything is appended or spawned
- * (a rare race between probe and claim is still refused by the runner itself).
+ * overlapping case with a proper 409 before anything is appended or spawned.
  */
-sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
+sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
   respond(
     c,
     async () => {
       const slug = c.req.param("slug");
       const projectDir = requireProjectDir(slug);
-      const { mode, message, threadId, reference } = await parseBody(c, runClaudeMessageSchema);
+      // `guards` is validated by the schema and deliberately not read here —
+      // the change-intent preflight that consumes it is a separate task.
+      const { intent, message, refs, threadRef } = await parseBody(c, turnSchema);
       const session = await getSession(projectDir, c.req.param("id"));
 
-      let writeTarget: SessionMeta;
-      let dir: string;
-      let runThreadId: string | undefined;
-      /** Stable mode only — the uuid claude itself keys the thread on. */
-      let runClaudeSessionId: string | undefined;
-      let firstStableSpawn = false;
-
-      if (mode === "resume") {
-        if (session.runtimeType !== "claude-code") {
-          throw new DagError(
-            "CLAUDE_RUN_TARGET_INVALID",
-            `cannot resume session "${session.normalizedId}": only claude-code sessions can be run headlessly`,
-          );
-        }
-        // Gated on the DERIVED phase, never on the persisted status. `buildSession`
-        // defaults `status` to "active", so nearly every observed claude-code
-        // record sits at persisted `active` forever — a status gate therefore
-        // refused a headless resume for effectively all of them, including the
-        // dead-terminal session the feature exists for, while offering nothing to
-        // a live `running` session stored `idle`. Wrong in both directions, and
-        // read through the same `withPhases` the sessions list serves the client
-        // from, so the option the UI enables and the answer this route gives are
-        // one derivation.
-        //
-        // CAVEAT, accepted deliberately: `reconcilePhase` is DEMOTE-ONLY, so
-        // `idle` means "no fresh evidence that anything is attached", NOT
-        // "provably unattached" — a live terminal session whose last checkpoint
-        // aged past CHECKPOINT_TTL_MS (5 min) reads `idle` too, and this gate lets
-        // a resume through for it. That trade is the point: the alternative is the
-        // status gate, which refused every such session forever.
-        const [view] = await withPhases(projectDir, [session]);
-        if (isSessionAttached(view)) {
-          throw new DagError(
-            "CLAUDE_SESSION_ACTIVE",
-            `cannot resume session "${session.normalizedId}": a process is attached to it ` +
-              `(phase "${view.phase}"), so its runtime thread is not free for a headless run`,
-          );
-        }
-        writeTarget = session;
-        dir = sessionDirectory(session) ?? (await primaryWorkspacePath(projectDir, slug));
-      } else {
-        dir = await primaryWorkspacePath(projectDir, slug);
-        if (mode === "oneshot") {
-          writeTarget = await upsertSession(projectDir, {
-            runtimeType: "claude-code",
-            runtimeSessionId: `arcs-oneshot-${slug}`,
-            // `origin: "arcs"` is what makes this record unqueueable; the
-            // `control` marker is kept for readers that still render it.
-            origin: "arcs",
-            metadata: { control: "arcs-owned", directory: dir },
-          });
-        } else {
-          // stable — reuse the referenced session's own thread when ARCS owns
-          // it (its persisted origin says so; no metadata string is consulted),
-          // otherwise take the payload threadId or mint a fresh one. A payload
-          // threadId names the ARCS thread record only and gets its own minted
-          // claude uuid: attaching to an external session's real claude thread
-          // is mode=resume's job, never stable's.
-          const thread =
-            (session.origin === "arcs" && session.runtimeSessionId) ||
-            threadId ||
-            `arcs-thread-${slug}-${randomUUID()}`;
-          runThreadId = thread;
-          // Read before the upsert: metadata merges shallowly, so writing an
-          // unconditionally minted uuid would clobber the thread's own one.
-          runClaudeSessionId = await threadClaudeSessionId(projectDir, thread);
-          writeTarget = await upsertSession(projectDir, {
-            runtimeType: "claude-code",
-            runtimeSessionId: thread,
-            // Create-only: a freshly minted thread is ARCS-owned, while a
-            // payload threadId naming a session ARCS merely observes keeps its
-            // own origin (a terminal is attached there, so its queue still
-            // works) — the store never rewrites provenance on an upsert.
-            origin: "arcs",
-            metadata: {
-              control: "arcs-owned",
-              directory: dir,
-              claudeSessionId: runClaudeSessionId,
-            },
-          });
-          firstStableSpawn = writeTarget.metadata?.threadInitialized !== true;
-        }
-      }
+      const target = await resolveTurnTarget(projectDir, slug, session, threadRef);
+      const { writeTarget, dir, seeding } = target;
 
       // One live run per write-target — refuse before appending anything.
       if (isRunLive(writeTarget.normalizedId)) {
@@ -826,36 +1024,18 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
         );
       }
 
-      if (mode !== "resume") {
-        await appendSessionTurn(projectDir, writeTarget.normalizedId, {
-          type: "user",
-          text: message,
-        });
-        if (reference !== undefined) {
-          await appendReference(projectDir, writeTarget.normalizedId, reference);
-        }
+      await appendSessionTurn(projectDir, writeTarget.normalizedId, {
+        type: "user",
+        text: message,
+      });
+      for (const reference of refs ?? []) {
+        await appendReference(projectDir, writeTarget.normalizedId, reference);
       }
 
       // NOTE: no "--cwd" flag — claude >= 2.x rejects it ("error: unknown
       // option '--cwd'"), settling every headless run as outcome:error. The
       // spawn applies the working directory via options.cwd below instead.
-      let argv: string[];
-      if (mode === "resume") {
-        argv = ["-p", message, "--resume", session.runtimeSessionId, "--output-format", "json"];
-      } else if (mode === "oneshot") {
-        argv = ["-p", message, "--output-format", "json"];
-      } else {
-        // Stable threads speak claude's uuid, never the ARCS thread id. The
-        // seed spawn claims the uuid with --session-id; every later turn
-        // continues it with --resume ALONE — claude >= 2.x refuses the two
-        // flags together unless --fork-session is set, and --fork-session is
-        // deliberately unused because it mints a new id per turn, which would
-        // scatter one conversation across a new thread every send.
-        const claudeThread = runClaudeSessionId as string;
-        argv = firstStableSpawn
-          ? ["-p", message, "--session-id", claudeThread, "--output-format", "json"]
-          : ["-p", message, "--resume", claudeThread, "--output-format", "json"];
-      }
+      const argv = turnTargetingArgv(turnPrompt(message, refs), target);
 
       // --- Staged environment (W2) -----------------------------------------
       //
@@ -863,25 +1043,11 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       // target is the record the run lands on and the record `metadata.stage`
       // is persisted to, so the fingerprint compared next turn describes the
       // same node the text was built from.
-      //
-      // `workspaceRoot` is the directory the child will ACTUALLY run in — which
-      // is `primaryWorkspacePath(projectDir, slug)` for oneshot/stable, and the
-      // resumed session's own directory when it has one. Staging the project's
-      // primary path there regardless would state a root the child is not in.
       const stageOpts = { workspaceRoot: dir };
       const refresh = await planStageRefresh(projectDir, slug, writeTarget, stageOpts);
-      // A spawn that CONTINUES a conversation (resume, and every stable spawn
-      // after the seed) already carries the block from the turn that staged it,
-      // so a fresh stage needs no re-injection — that is what the cheap exit
-      // buys, and what manual predicate P1 rests on. A spawn that STARTS one
-      // (oneshot always; the stable seed once) has no history at all, so "it is
-      // already in the conversation" is false for it by construction and it must
-      // carry the block even on a fresh stage. That is the only path paying for
-      // a second assembly, and only on a turn the cheap exit fired.
-      const startsNewConversation = mode === "oneshot" || firstStableSpawn;
       const staged =
         refresh.staged ??
-        (startsNewConversation
+        (seeding
           ? await buildStagedEnvironment(projectDir, slug, writeTarget, {
               ...stageOpts,
               // The same watermark planStageRefresh stamps with, so this record
@@ -889,19 +1055,16 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
               now: refresh.probedAt,
             })
           : undefined);
-      // The pair is appended DIRECTLY rather than built by `buildPermissionArgv`.
-      // That module owns this flag, but it returns a WHOLE tool/permission
-      // segment keyed on an `intent` (ask|change) this route does not have —
-      // /run takes a MODE, and intents arrive with POST /turns — so emitting the
-      // segment here would newly restrict what tools today's runs may use, a
-      // behaviour change well beyond wiring the staging. The seam for /turns:
-      // build the segment there and pass this same text as its
-      // `stagedSystemPrompt`, replacing this push.
-      //
-      // The value can never be flag-shaped: the staged text always opens with
-      // the envelope delimiter, so permission-policy's `asValueToken` guard —
-      // which exists for caller-authored text — has nothing to do here.
-      if (staged) argv.push("--append-system-prompt", staged.text);
+
+      // LAST, and the only source of tool/permission tokens. The staged text is
+      // handed over as this segment's value slot rather than pushed directly —
+      // one flag, one emitter.
+      argv.push(
+        ...buildPermissionArgv({
+          intent,
+          ...(staged !== undefined && { stagedSystemPrompt: staged.text }),
+        }),
+      );
 
       // The run's own ceiling, resolved HERE so the deadline persisted with the
       // claim is the same number the runner arms its kill timer with (it
@@ -909,15 +1072,18 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       const runId = randomUUID();
       const timeoutMs = resolveTimeoutMs(undefined, process.env);
       // Persisted next to the claim rather than inside metadata.run, which
-      // `beginSessionRun` replaces wholesale: as a sibling key the deadline
-      // cannot be clobbered by the claim, nor the claim by it. The stage record
-      // rides the SAME write — one more sibling key, no extra store round trip,
-      // and it lands before the claim that would otherwise replace metadata.run
-      // underneath it.
+      // `beginSessionRun` replaces wholesale: as sibling keys these cannot be
+      // clobbered by the claim, nor the claim by them.
       await updateSession(projectDir, {
         id: writeTarget.normalizedId,
         metadata: {
           runDeadlineAt: Date.now() + timeoutMs,
+          // AT SPAWN, not at settle. The uuid is in argv from this point on, so
+          // "ARCS has handed it over" is true now and stays true through a
+          // timeout, an error, or a server that dies before the settle runs —
+          // the three ways the old settle-time write left a thread re-seeding
+          // forever into "Session ID … is already in use".
+          ...(seeding && { threadInitialized: true }),
           // Written EXACTLY when the refresh asks for it. On the cheap exit
           // nothing was rebuilt, so re-stamping the record would move the very
           // watermark the next turn's freshness decision is made against.
@@ -939,8 +1105,8 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       // Fire-and-forget: the run proceeds out-of-band. The runner invokes the
       // registered write-back after the child fully exits (it resolves on
       // `close`) on every outcome path; write-back failures are swallowed by
-      // the runner, so a failed mirror/finalize never surfaces on the accepted
-      // 202. The trailing catch is defensive — the runner never rejects.
+      // the runner, so a failed finalize never surfaces on the accepted 202.
+      // The trailing catch is defensive — the runner never rejects.
       runClaudeJob({
         argv,
         cwd: dir,
@@ -950,7 +1116,7 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
         // filename and the session record can never name different runs.
         eventLog: { projectDir, sessionId: writeTarget.normalizedId, runId },
         onSettled: (record) =>
-          writeBackRun(projectDir, { mode, writeTarget, firstStableSpawn, runId, claimed }, record),
+          writeBackRun(projectDir, { intent, writeTarget, runId, claimed }, record),
       }).catch(() => {
         // Best-effort — the write-back lives inside the runner's onSettled.
       });
@@ -974,12 +1140,13 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       }
 
       return {
-        session: writeTarget,
-        run: {
-          accepted: true,
-          mode,
-          ...(mode === "stable" && { threadId: runThreadId }),
-        },
+        runId,
+        // Keyed on the WRITE TARGET's id, never on the path `:id`: under
+        // adoption they are different records, and a stream URL built from the
+        // path id answers 200 and then emits nothing — indistinguishable from a
+        // child that never spoke.
+        streamUrl: `/api/p/${slug}/sessions/${writeTarget.normalizedId}/runs/${runId}/stream`,
+        writeTargetId: writeTarget.normalizedId,
       };
     },
     202,
@@ -1070,6 +1237,44 @@ interface RunTailState {
 }
 
 /**
+ * Whether the index, read DIRECTLY, answers that THIS SESSION is not in it —
+ * the only thing that turns `getSession`'s not-found into "the session is gone".
+ *
+ * `ITEM_NOT_FOUND` is not by itself evidence of deletion: `readSessionIndex`
+ * folds an unreadable index into an EMPTY one (`readJsonSafe` swallows every
+ * error class), so an `EACCES`, an `EISDIR` or a malformed index on a live
+ * session arrives wearing the deleted session's code.
+ *
+ * The question asked here is about the SESSION, never about the file. "The
+ * index parses" is NOT the same answer: this is a second, later read, so a
+ * failure that CLEARS between the two makes the file parse while the session is
+ * still listed in it — settling a live run on nothing but a flicker. Only a
+ * parse that completes AND does not list `sessionId` answers, plus `ENOENT`,
+ * where the record the session would have to be in is not there at all.
+ *
+ * Deliberate trade: an index that is readable but MALFORMED (`sessions` present
+ * and not an array), or that only the store's JSONC-tolerant reader accepts and
+ * this plain parse does not, never answers at all — so a tail whose session
+ * really was deleted keeps polling for the life of the connection rather than
+ * ending. That is the intended direction — absent evidence must not look like
+ * evidence of silence — and it is unbounded on purpose. The repair for a broken
+ * index is to repair the index; do not "fix" this back into a settle.
+ *
+ * Re-deriving the index path here (rather than asking the store) is the whole
+ * point: the store's own reader is the thing that cannot distinguish these.
+ */
+async function sessionIndexAnswered(projectDir: string, sessionId: string): Promise<boolean> {
+  try {
+    const raw = await readFile(resolve(projectDir, "sessions", "index.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { sessions?: { normalizedId?: string }[] };
+    if (!Array.isArray(parsed.sessions)) return false;
+    return !parsed.sessions.some((s) => s?.normalizedId === sessionId);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/**
  * Whether the run is still live, read from the SESSION RECORD rather than from
  * the runner's in-memory `liveRuns` map.
  *
@@ -1088,13 +1293,18 @@ async function readRunTailState(
   let session: SessionMeta;
   try {
     session = await getSession(projectDir, sessionId);
-  } catch {
-    // Deleted under the tail — nothing will ever append to that log again.
-    // A transient read failure lands here too and ends the stream early, which
-    // is the cheap direction precisely because of the offset contract: the
-    // client reconnects at the offset it holds and loses not one line. Guessing
-    // "still live" instead would keep a stream open on a session that is gone.
-    return { settled: true };
+  } catch (err) {
+    // Two reads, and only their AGREEMENT settles: `getSession` raised
+    // not-found AND a direct read of the index answers that this session is not
+    // in it (or that there is no index at all). Everything else — another error
+    // class, or an index that cannot answer for this session — keeps the tail
+    // polling, because absent evidence must not look like evidence of silence:
+    // the `end` frame a transient read failure would emit here is byte-identical
+    // to the legitimate superseded-run one, the client contract below is to
+    // `close()` on `end`, and so a live run's remaining lines would never reach
+    // that consumer at all. Staying open costs one more poll and nothing else.
+    if (!(err instanceof DagError) || err.code !== "ITEM_NOT_FOUND") return { settled: false };
+    return { settled: await sessionIndexAnswered(projectDir, sessionId) };
   }
   if (sessionRunClaim(session) === runId) return { settled: false };
 
@@ -1149,10 +1359,14 @@ async function readRunLogLines(path: string, byteOffset: number): Promise<RunTai
   }
   try {
     const { size } = await handle.stat();
-    // Clamped exactly as `foldRunEventLog` clamps: the writer can never take the
-    // file past this ceiling, so bytes beyond it were not written by the log and
-    // are not tailed as if they were. It bounds this allocation too — the read
-    // region can never exceed the log's own maximum size.
+    // Bounded by the same ceiling `foldRunEventLog` reads against — the same
+    // ceiling, NOT the same handling: the fold refuses an oversized file whole
+    // where this clamps to the ceiling and tails what fits. The writer cannot
+    // produce such a file (`push` refuses the crossing chunk and reserves the
+    // byte `terminate` may add), so the two never disagree on a log this server
+    // wrote. The clamp stands for what that leaves: bytes past a ceiling the log
+    // never wrote are not tailed as if the log had written them, and this
+    // allocation can never exceed the log's own maximum size.
     const end = Math.min(size, RUN_EVENT_LOG_MAX_BYTES);
     // Nothing new. `<` rather than `===` covers the file shrinking under us,
     // which an append-only log cannot do — but reading a negative length could.
@@ -1181,6 +1395,15 @@ async function readRunLogLines(path: string, byteOffset: number): Promise<RunTai
 }
 
 /**
+ * Digits and nothing else — no sign, no exponent, no whitespace, no separators.
+ *
+ * Leading zeros ARE accepted (`?from=007` is offset 7), because they are the one
+ * decoration that cannot change the value in base 10: every shape refused above
+ * either names a different number than it reads as, or names none at all.
+ */
+const RUN_TAIL_OFFSET_PATTERN = /^\d+$/;
+
+/**
  * Where the tail starts, as an ABSOLUTE line offset into the log.
  *
  * The same contract `mirrorOffset` implements for transcript mirroring
@@ -1196,21 +1419,34 @@ async function readRunLogLines(path: string, byteOffset: number): Promise<RunTai
  * max is the only value that satisfies both — honouring `from` alone would make
  * every automatic reconnect re-deliver the whole run.
  *
+ * The consequence, which is what a client author actually needs: a request that
+ * carries `Last-Event-ID` CANNOT REWIND below it, whatever `?from=` says. That
+ * is the right trade rather than a limitation to work around — a browser only
+ * replays the header on an automatic reconnect of the same `EventSource`, so a
+ * deliberate rewind is a fresh `EventSource` (or a plain GET), neither of which
+ * sends the header at all.
+ *
  * Garbage is REFUSED rather than clamped: the only clamp available is 0, which
  * silently replays the entire log — precisely the duplicate storm the offset
- * exists to prevent.
+ * exists to prevent. Refusal is DIGITS ONLY plus a `MAX_SAFE_INTEGER` bound,
+ * because `Number()` + `Number.isInteger` is not refusal: it admits `1e3`,
+ * `0x2`, whitespace-padded values and results past `MAX_SAFE_INTEGER`. Every
+ * one of those is fail-safe in direction — they only move the tail forward —
+ * but none of them is the "non-negative integer" this documents, and `1e21`
+ * buys an end-frame-only stream indistinguishable from a run that said nothing.
+ * A doc stricter than its code is a defect on its own.
  */
 function parseRunTailOffset(from: string | undefined, lastEventId: string | undefined): number {
   const parse = (raw: string | undefined, label: string): number => {
     if (raw === undefined || raw === "") return 0;
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value < 0) {
+    if (!RUN_TAIL_OFFSET_PATTERN.test(raw) || Number(raw) > Number.MAX_SAFE_INTEGER) {
       throw new DagError(
         "INVALID_RUN_STREAM_OFFSET",
-        `${label} must be a non-negative integer line offset, got "${raw}"`,
+        `${label} must be a non-negative integer line offset no greater than ` +
+          `${Number.MAX_SAFE_INTEGER}, got "${raw}"`,
       );
     }
-    return value;
+    return Number(raw);
   };
   return Math.max(parse(from, "from"), parse(lastEventId, "Last-Event-ID"));
 }
@@ -1255,7 +1491,9 @@ function runStreamFailure(c: Context, err: unknown): Response {
  * arithmetic. Note that an `EventSource` reconnects on ANY stream end, `end`
  * frame included — the client is expected to `close()` on `end`; the reconnect
  * is harmless (it replays nothing and closes again) but it is the client's job
- * to stop it.
+ * to stop it. The header it replays merges as `max(from, Last-Event-ID)`, so a
+ * request carrying it CANNOT REWIND below it — a deliberate rewind is a fresh
+ * `EventSource` (or a plain GET), which sends no header at all.
  *
  * Ordering that carries the whole live/settled distinction: the settle is
  * observed BEFORE the read, never after. A run settled at that instant appends

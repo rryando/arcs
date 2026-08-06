@@ -1,6 +1,12 @@
 /**
- * SSE subscription: invalidates TanStack Query caches when the server
- * reports data-dir changes (CLI writes, other agents, external edits).
+ * The web client's two SSE channels, which are deliberately NOT one channel.
+ *
+ *  - `useServerEvents` — the DAG watcher. Debounced server-side (250ms) and
+ *    consumed as cache invalidation: aggregate state for a graph repaint.
+ *  - `useRunStream` — a stateless tail of ONE headless run's event log, polled
+ *    server-side an order faster and consumed as text. A quarter second of
+ *    coalescing is invisible on a repaint and unusable on tokens arriving word
+ *    by word, so the two have different budgets and stay separate connections.
  */
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -64,4 +70,338 @@ export function useServerEvents(): SseState {
   }, [qc]);
 
   return { connected, lastEvent };
+}
+
+// ---------------------------------------------------------------------------
+// Run event stream — the second channel
+// ---------------------------------------------------------------------------
+
+/** One tool call, as the ticker shows it: what ran, and on what.
+ *
+ *  A ticker, never a transcript — the call's arguments collapse to a single
+ *  TARGET (the first identifying field it carries), so a run that reads twenty
+ *  files reads as twenty short rows instead of twenty argument objects. */
+export interface RunToolTick {
+  /** Stable within a run: `<line offset>:<content block index>`. The log is
+   *  append-only, so a tick's line offset never names a different tick. */
+  id: string;
+  name: string;
+  /** Absent when the call carries no field this recognizes as its subject. */
+  target?: string;
+}
+
+/**
+ * Where the tail is.
+ *  - `idle`        — nothing to tail (no run selected).
+ *  - `connecting`  — attaching, or the browser is retrying a dropped socket.
+ *  - `open`        — attached.
+ *  - `ended`       — the run SETTLED (an `end` frame), which is the only
+ *                    status that means the text is final.
+ *  - `failed`      — the browser gave up, i.e. the route REFUSED (a pruned or
+ *                    unknown run answers 404 and an `EventSource` does not
+ *                    retry that). Distinct from `ended`: nothing settled.
+ */
+export type RunStreamStatus = "idle" | "connecting" | "open" | "ended" | "failed";
+
+/** Live view of one run, folded from its event log's lines. */
+export interface RunStreamState {
+  /** The run this state describes; `null` while nothing is being tailed. Every
+   *  consumer keys on it, so state from a previous run can never be read as
+   *  this one's. */
+  runId: string | null;
+  status: RunStreamStatus;
+  /** Text of COMPLETED `assistant` messages. */
+  text: string;
+  /** Partial deltas since the last completed message. Held apart from `text`
+   *  because the completed message REPEATS them — see `foldRunLine`. */
+  partial: string;
+  tools: RunToolTick[];
+  /**
+   * The resume cursor: the `?from=` a fresh connection would pass, which is
+   * exactly the route's contract — last seen line offset + 1, read off the
+   * frame's OWN offset rather than counted here. An absolute line index into an
+   * append-only log means the same thing to every connection, so resuming at it
+   * can neither duplicate nor skip.
+   */
+  nextOffset: number;
+  /** `metadata.run.outcome`, when the end frame could still read it. */
+  outcome?: string;
+  /** The log is NOT the whole stream — a hole, not an ending. Only ever known
+   *  at settle, and absent (never `false`) when unknowable. */
+  truncated?: boolean;
+}
+
+export const EMPTY_RUN_STREAM: RunStreamState = {
+  runId: null,
+  status: "idle",
+  text: "",
+  partial: "",
+  tools: [],
+  nextOffset: 0,
+};
+
+/** `line` frame payload — the log's line at `offset`, verbatim. */
+export interface RunLineFrame {
+  offset: number;
+  line: string;
+}
+
+/** `end` frame payload — the run settled and the log is drained. */
+export interface RunEndFrame {
+  offset: number;
+  outcome?: string;
+  truncated?: boolean;
+}
+
+/** Everything the run has said so far: completed messages plus the deltas of
+ *  the message still being written. */
+export function runStreamText(state: RunStreamState): string {
+  return state.text + state.partial;
+}
+
+/** Ceiling on one ticker target — the ticker is compact by contract. */
+const RUN_TOOL_TARGET_MAX = 72;
+
+/** Fields a `tool_use` may carry that name what it acted on, most specific
+ *  first. Deliberately short: a tool this does not recognize ticks by NAME
+ *  alone rather than spilling its argument object into the panel. */
+const TOOL_TARGET_KEYS = [
+  "file_path",
+  "notebook_path",
+  "path",
+  "pattern",
+  "command",
+  "url",
+  "query",
+];
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** Text carried by a partial-message event (`content_block_delta` and kin).
+ *  Mirrors the runner's own reader — a `thinking` or `input_json_delta` delta
+ *  carries no `text` and therefore contributes nothing. */
+function partialDeltaText(inner: unknown): string {
+  for (const key of ["delta", "content_block"]) {
+    const text = asObject(inner)?.[key];
+    const value = asObject(text)?.text;
+    if (typeof value === "string" && value !== "") return value;
+  }
+  return "";
+}
+
+/** The subject of a tool call, capped — the first recognized field, in order. */
+function toolTarget(input: unknown): string | undefined {
+  const args = asObject(input);
+  if (!args) return undefined;
+  for (const key of TOOL_TARGET_KEYS) {
+    const value = args[key];
+    if (typeof value === "string" && value !== "") {
+      return value.length > RUN_TOOL_TARGET_MAX
+        ? `${value.slice(0, RUN_TOOL_TARGET_MAX - 1)}…`
+        : value;
+    }
+  }
+  return undefined;
+}
+
+/** Text and tool calls of ONE completed `assistant` message, in block order —
+ *  the same content blocks the server's settle-time fold walks, so the ticker
+ *  and the folded turns that replace it describe the same calls.
+ *
+ *  SHORTCUT: the ticker shows what the model REQUESTED, never what came back —
+ *  the `user` events carrying `tool_result` are folded to nothing, so a call
+ *  that failed ticks the same as one that succeeded. Upgrade when the panel
+ *  needs to show a failing tool without waiting for the run to settle. */
+function foldAssistantMessage(
+  message: unknown,
+  offset: number,
+): { text: string; tools: RunToolTick[] } {
+  const content = asObject(message)?.content;
+  if (typeof content === "string") return { text: content, tools: [] };
+  if (!Array.isArray(content)) return { text: "", tools: [] };
+
+  let text = "";
+  const tools: RunToolTick[] = [];
+  content.forEach((raw, index) => {
+    const block = asObject(raw);
+    if (!block) return;
+    if (block.type === "text" && typeof block.text === "string") {
+      text += block.text;
+      return;
+    }
+    if (block.type === "tool_use" && typeof block.name === "string") {
+      const target = toolTarget(block.input);
+      tools.push({ id: `${offset}:${index}`, name: block.name, ...(target && { target }) });
+    }
+  });
+  return { text, tools };
+}
+
+/**
+ * Folds one `line` frame into the view.
+ *
+ * The cursor advances off the FRAME's offset, never off a count of frames this
+ * client rendered: the two agree only until something is skipped, and the log's
+ * absolute index is the one the route resumes on.
+ *
+ * The text rule is where a naive fold doubles every reply. A completed
+ * `assistant` message REPEATS the deltas that streamed it, so the two are never
+ * added: deltas accumulate in `partial`, and the completed message supersedes
+ * them (`partial` back to empty, its text appended to `text`). That is also why
+ * nothing here dedupes — a client-side dedupe would paper over exactly the
+ * resume bugs the offset contract exists to make impossible.
+ *
+ * Unparsable and unknown lines fold to nothing, deliberately: the log holds
+ * every byte the child wrote, wire drift included, and a view of it must not
+ * fail on a line it has never seen before.
+ */
+export function foldRunLine(state: RunStreamState, frame: RunLineFrame): RunStreamState {
+  const next: RunStreamState = {
+    ...state,
+    nextOffset: Math.max(state.nextOffset, frame.offset + 1),
+  };
+  const event = asObject(safeParse(frame.line));
+  if (!event) return next;
+
+  if (event.type === "stream_event") {
+    const text = partialDeltaText(event.event);
+    return text === "" ? next : { ...next, partial: next.partial + text };
+  }
+  if (event.type === "assistant") {
+    const { text, tools } = foldAssistantMessage(event.message, frame.offset);
+    return {
+      ...next,
+      text: next.text + text,
+      partial: "",
+      tools: tools.length === 0 ? next.tools : [...next.tools, ...tools],
+    };
+  }
+  return next;
+}
+
+/** Folds the `end` frame: the run settled and the log is drained. Its offset is
+ *  the log's total line count — the `from` that would now return nothing. */
+export function foldRunEnd(state: RunStreamState, frame: RunEndFrame): RunStreamState {
+  return {
+    ...state,
+    status: "ended",
+    nextOffset: Math.max(state.nextOffset, frame.offset),
+    ...(frame.outcome !== undefined && { outcome: frame.outcome }),
+    ...(frame.truncated !== undefined && { truncated: frame.truncated }),
+  };
+}
+
+function safeParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function parseLineFrame(data: string): RunLineFrame | null {
+  const frame = asObject(safeParse(data));
+  if (!frame || typeof frame.line !== "string") return null;
+  if (typeof frame.offset !== "number" || !Number.isInteger(frame.offset)) return null;
+  return { offset: frame.offset, line: frame.line };
+}
+
+function parseEndFrame(data: string): RunEndFrame | null {
+  const frame = asObject(safeParse(data));
+  if (!frame || typeof frame.offset !== "number" || !Number.isInteger(frame.offset)) return null;
+  return {
+    offset: frame.offset,
+    ...(typeof frame.outcome === "string" && { outcome: frame.outcome }),
+    ...(typeof frame.truncated === "boolean" && { truncated: frame.truncated }),
+  };
+}
+
+/**
+ * Tails one headless run's event log for as long as `runId` names one.
+ *
+ * A SEPARATE `EventSource` from `useServerEvents`, with no retry logic of its
+ * own — and that absence is the design, not a gap. On a dropped socket the
+ * browser reconnects by itself and replays the last `id` it saw as
+ * `Last-Event-ID`; the route's `id` IS the resume cursor (`offset + 1`) and
+ * merges as `max(from, Last-Event-ID)`, so the reconnection resumes at the
+ * first line this client has not seen. Nothing is duplicated, nothing is
+ * skipped, and no client-side dedupe is involved.
+ *
+ * `?from=` covers the case the header cannot: a request carrying
+ * `Last-Event-ID` can never rewind below it, and a browser only replays that
+ * header on an automatic reconnect of the SAME instance. Any connection this
+ * effect BUILDS is a fresh `EventSource` that sends no header at all (a
+ * re-mount, or StrictMode's double invoke), so it carries the cursor in the URL
+ * instead — which is why the cursor is a ref: it is read when a connection is
+ * constructed, not when the panel renders.
+ *
+ * `close()` on `end` is the client's half of the contract: an `EventSource`
+ * reconnects on ANY stream end, the settled one included.
+ */
+export function useRunStream(
+  slug: string,
+  sessionId: string | null,
+  runId: string | null,
+): RunStreamState {
+  const [state, setState] = useState<RunStreamState>(EMPTY_RUN_STREAM);
+  const cursorRef = useRef<{ runId: string | null; from: number }>({ runId: null, from: 0 });
+
+  useEffect(() => {
+    if (sessionId === null || runId === null) {
+      setState(EMPTY_RUN_STREAM);
+      return;
+    }
+    // A different run is a different log: an absolute line index is only stable
+    // within one, so the cursor never carries across runs.
+    if (cursorRef.current.runId !== runId) cursorRef.current = { runId, from: 0 };
+    const from = cursorRef.current.from;
+    setState((prev) =>
+      prev.runId === runId
+        ? { ...prev, status: prev.status === "ended" ? prev.status : "connecting" }
+        : { ...EMPTY_RUN_STREAM, runId, status: "connecting" },
+    );
+
+    const source = new EventSource(
+      `/api/p/${slug}/sessions/${encodeURIComponent(sessionId)}` +
+        `/runs/${encodeURIComponent(runId)}/stream?from=${from}`,
+    );
+    // `ended` is terminal for this run — a late frame or a socket teardown must
+    // never walk a settled run back to "connecting".
+    const settle = (fold: (prev: RunStreamState) => RunStreamState) =>
+      setState((prev) => (prev.status === "ended" ? prev : fold(prev)));
+
+    source.onopen = () => settle((prev) => ({ ...prev, status: "open" }));
+
+    source.addEventListener("line", (raw) => {
+      const frame = parseLineFrame((raw as MessageEvent).data);
+      if (!frame) return;
+      cursorRef.current = { runId, from: Math.max(cursorRef.current.from, frame.offset + 1) };
+      settle((prev) => foldRunLine({ ...prev, status: "open" }, frame));
+    });
+
+    source.addEventListener("end", (raw) => {
+      const frame = parseEndFrame((raw as MessageEvent).data);
+      if (frame) {
+        cursorRef.current = { runId, from: Math.max(cursorRef.current.from, frame.offset) };
+        settle((prev) => foldRunEnd(prev, frame));
+      }
+      source.close();
+    });
+
+    source.onerror = () =>
+      // CONNECTING is the browser's own retry, already in flight with the
+      // resume cursor on it. CLOSED means it gave up, which for this route is a
+      // refusal (404 on a pruned or unknown run) rather than a drop.
+      settle((prev) => ({
+        ...prev,
+        status: source.readyState === EventSource.CLOSED ? "failed" : "connecting",
+      }));
+
+    return () => source.close();
+  }, [slug, sessionId, runId]);
+
+  return state;
 }

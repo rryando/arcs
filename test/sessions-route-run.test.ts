@@ -1,14 +1,18 @@
 /**
- * POST /api/p/:slug/sessions/:id/run — headless `claude -p` targeting modes.
+ * POST /api/p/:slug/sessions/:id/turns — one turn of a headless conversation.
  *
  * The runner module is faked with a vitest module mock (the route has no
  * injection point of its own) the same way the opencode tests fake the runtime
  * with a stub server: the mock records the exact argv/cwd/writeTargetKey handed
  * to runClaudeJob, fires the registered onSettled write-back with a canned run
  * record (simulating the runner's post-close settle), and resolves that record,
- * so the contract under test is what ARCS puts on the wire (mode selection,
- * write-targets, guards, sidecar ordering, mode-1 write-back) rather than the
- * runner's own lifecycle (covered by test/claude-runner.test.ts).
+ * so the contract under test is what ARCS puts on the wire (targeting, argv
+ * ownership, write-target selection, sidecar ordering, seed-decision repair)
+ * rather than the runner's own lifecycle (covered by test/claude-runner.test.ts).
+ *
+ * The canned record is also what makes the seed-decision repairs testable: a
+ * test that sets `runRecord.error` to claude's literal stderr drives the exact
+ * branch a real failure would, with no claude in sight.
  */
 
 import { existsSync, mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -88,6 +92,11 @@ const WORKSPACE = "/work/demo";
 /** A bare RFC-4122 v4 uuid — the only shape claude >= 2.x accepts on
  *  `--session-id`/`--resume` (the human-readable ARCS thread id is rejected). */
 const BARE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** An ARCS thread id: a record NAME, and never a token in argv. */
+const ARCS_THREAD_ID =
+  /^arcs-thread-demo-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** A caller-named thread, so a test has a deterministic write target to poll. */
+const THREAD = "arcs-thread-demo-fixed";
 const RUN_RECORD: ClaudeRunRecord = {
   pid: 4242,
   startedAt: 1_700_000_000_000,
@@ -96,11 +105,11 @@ const RUN_RECORD: ClaudeRunRecord = {
   replyText: "reply",
 };
 
-/** A valid `reference` body for POST /run, per runClaudeMessageSchema. */
+/** A valid `refs` entry for POST /turns, per sessionReferenceSchema. */
 const REFERENCE = {
   section: {
     depth: 1,
-    text: "The headless run appends the user turn before the reference.",
+    text: "The headless turn appends the user turn before the reference.",
     id: "sec_1",
     startOffset: 120,
     endOffset: 220,
@@ -208,12 +217,9 @@ async function withRunRouteCtx(run: (ctx: RunCtx) => Promise<void>): Promise<voi
   });
 }
 
-interface RunEnvelope {
+interface TurnEnvelope {
   ok: boolean;
-  data?: {
-    session?: SessionMeta;
-    run?: { accepted: boolean; mode: string; threadId?: string };
-  };
+  data?: { runId?: string; streamUrl?: string; writeTargetId?: string };
   code?: string;
   message?: string;
 }
@@ -227,17 +233,34 @@ interface SessionView extends SessionMeta {
 const STAGE_OPEN = "<<<ARCS_STAGED_ENVIRONMENT>>>";
 
 /**
- * The run route's argv: the mode-selected tokens, then the staged-environment
- * pair when one was injected.
+ * The permission segment each intent produces, hardcoded rather than imported.
  *
- * Asserted in two halves rather than as one literal because the staged text is
- * ~3.5 KB of assembled context — pinning it whole would assert prompt-assembly's
- * output from here. `staged` says whether the pair is expected AT ALL, which is
- * the route's actual decision: a spawn that starts a new conversation always
- * carries the block, a spawn that continues one carries it only on a restage.
+ * Importing `buildPermissionArgv` here would only prove the module agrees with
+ * itself; the point of asserting it from the route's side is that a policy
+ * change shows up as a wire change in the test that owns the wire.
  */
-function expectRunArgv(job: ClaudeJobInput, base: string[], staged: boolean): void {
-  if (!staged) {
+const INTENT_ARGV = {
+  ask: ["--tools", "Read,Grep,Glob", "--permission-mode", "plan"],
+  change: ["--tools", "Read,Grep,Glob,Edit,Write,TodoWrite", "--permission-mode", "acceptEdits"],
+} as const;
+
+/**
+ * The turn route's argv, in full: the targeting tokens, then the permission
+ * segment, then the staged-environment pair when one was injected.
+ *
+ * The staged text is asserted by SHAPE rather than by value — it is ~3.5 KB of
+ * assembled context and pinning it whole would assert prompt-assembly's output
+ * from here. `staged` says whether the pair is expected AT ALL, which is the
+ * route's own decision: a spawn that starts a conversation always carries the
+ * block, a spawn that continues one carries it only on a restage.
+ */
+function expectTurnArgv(
+  job: ClaudeJobInput,
+  targeting: string[],
+  opts: { intent: keyof typeof INTENT_ARGV; staged: boolean },
+): void {
+  const base = [...targeting, ...INTENT_ARGV[opts.intent]];
+  if (!opts.staged) {
     expect(job.argv).toEqual(base);
     return;
   }
@@ -265,14 +288,28 @@ async function getSessionView(base: string, id: string): Promise<SessionView> {
   return envelope.data as SessionView;
 }
 
-async function postRun(base: string, id: string, body: unknown) {
-  const res = await fetch(`${base}/api/p/demo/sessions/${id}/run`, {
+async function postTurn(base: string, id: string, body: unknown) {
+  const res = await fetch(`${base}/api/p/demo/sessions/${id}/turns`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
     body: JSON.stringify(body),
   });
-  const envelope = (await res.json()) as RunEnvelope;
+  const envelope = (await res.json()) as TurnEnvelope;
   return { status: res.status, envelope };
+}
+
+/** An observed claude-code record — the class a turn ADOPTS by forking. */
+async function seedObserved(
+  projectDir: string,
+  runtimeSessionId: string,
+  metadata: Record<string, unknown> = { directory: WORKSPACE },
+): Promise<SessionMeta> {
+  return createSession(projectDir, { runtimeType: "claude-code", runtimeSessionId, metadata });
+}
+
+/** The thread's claude-facing uuid as the store holds it. */
+async function claudeUuid(projectDir: string, threadId: string): Promise<string> {
+  return (await getSession(projectDir, threadId)).metadata?.claudeSessionId as string;
 }
 
 /** Waits until the out-of-band metadata.run registration lands on the session. */
@@ -283,302 +320,71 @@ async function expectRunRegistered(projectDir: string, normalizedId: string, mod
   });
 }
 
-describe("POST /api/p/:slug/sessions/:id/run — resume", () => {
-  it("resumes an idle claude-code session in its own directory, answering 202", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_idle_1",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
-      });
+/** Waits until the run has settled and released its claim. */
+async function expectSettled(projectDir: string, normalizedId: string): Promise<void> {
+  await vi.waitFor(async () => {
+    expect((await getSession(projectDir, normalizedId)).currentRunId).toBeUndefined();
+  });
+}
 
-      const { status, envelope } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
+describe("POST /api/p/:slug/sessions/:id/turns — fresh thread seed", () => {
+  it("mints the named thread, seeds it with --session-id, and answers 202 naming the run", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_seed_1");
+
+      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "start the thread",
+        threadRef: THREAD,
       });
 
       expect(status).toBe(202);
       expect(envelope.ok).toBe(true);
-      expect(envelope.data?.session).toMatchObject({
-        normalizedId: session.normalizedId,
-        runtimeType: "claude-code",
-      });
-      expect(envelope.data?.run).toEqual({ accepted: true, mode: "resume" });
+      const runId = envelope.data?.runId as string;
+      expect(runId).toEqual(expect.any(String));
+      expect(envelope.data?.writeTargetId).toBe(THREAD);
+      expect(envelope.data?.streamUrl).toBe(`/api/p/demo/sessions/${THREAD}/runs/${runId}/stream`);
+
+      // The ARCS thread id names the RECORD (picker label + sidecar filename);
+      // claude only ever sees the bare uuid minted onto its metadata.
+      const uuid = await claudeUuid(projectDir, THREAD);
+      expect(uuid).toMatch(BARE_UUID);
+      expect(uuid).not.toBe(THREAD);
 
       expect(capturedJobs).toHaveLength(1);
-      // toMatchObject: the job also carries the route-registered onSettled
-      // write-back (T005 seam) alongside argv/cwd/writeTargetKey.
-      expect(capturedJobs[0]).toMatchObject({
-        cwd: WORKSPACE,
-        writeTargetKey: session.normalizedId,
-      });
-      // First run on this record: nothing was staged yet, so the block goes out
-      // with it whatever the mode.
-      expectRunArgv(
+      expect(capturedJobs[0]).toMatchObject({ cwd: WORKSPACE, writeTargetKey: THREAD });
+      expectTurnArgv(
         capturedJobs[0],
-        ["-p", "carry on", "--resume", "cc_idle_1", "--output-format", "json"],
-        true,
+        ["-p", "start the thread", "--session-id", uuid, "--output-format", "json"],
+        { intent: "ask", staged: true },
       );
+      // The record NAME is never a token — claude >= 2.x rejects anything that
+      // is not a bare uuid on --session-id/--resume.
+      expect(capturedJobs[0].argv).not.toContain(THREAD);
 
-      await expectRunRegistered(projectDir, session.normalizedId, "resume");
-      // Mode 1 never appends — the exit-time write-back (T005) owns the sidecar.
-      expect(await readSessionTurns(projectDir, session.normalizedId)).toEqual([]);
+      // The seed decision lands at SPAWN, not at settle.
+      expect((await getSession(projectDir, THREAD)).metadata?.threadInitialized).toBe(true);
+      await expectRunRegistered(projectDir, THREAD, "ask");
     });
   });
 
-  it("404s for a session the project does not have", async () => {
-    await withRunRouteCtx(async ({ base }) => {
-      const { status, envelope } = await postRun(base, "missing-session", {
-        mode: "resume",
-        message: "hi",
-      });
-
-      expect(status).toBe(404);
-      expect(envelope.code).toBe("ITEM_NOT_FOUND");
-      expect(capturedJobs).toHaveLength(0);
-    });
-  });
-
-  it("400s when the referenced session is not a claude-code session", async () => {
+  it("records the write target as an ARCS-owned thread, so nothing queues into it", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "opencode",
-        runtimeSessionId: "ses_live",
+      const seed = await seedObserved(projectDir, "cc_seed_2");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "own it",
+        threadRef: THREAD,
       });
 
-      const { status, envelope } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "resume me",
-      });
-
-      expect(status).toBe(400);
-      expect(envelope.code).toBe("CLAUDE_RUN_TARGET_INVALID");
-      expect(capturedJobs).toHaveLength(0);
-    });
-  });
-
-  it("409s when a process is attached — stored idle, derived phase running", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_attached_1",
-        // Persisted `idle`: the field the old gate read, and the one that would
-        // wave this resume straight through into a session a terminal is driving.
-        status: "idle",
-      });
-      // A fresh checkpoint derives `running`, and the agent list confirms the
-      // terminal is still there, so the demote-only reconciler leaves it there.
-      await updateSession(projectDir, {
-        id: session.normalizedId,
-        lastCheckpointAt: new Date().toISOString(),
-      });
-      agentsProbe.stdout = JSON.stringify([{ pid: 4141, sessionId: "cc_attached_1" }]);
-
-      const view = await getSessionView(base, session.normalizedId);
-      expect(view.status).toBe("idle");
-      expect(view.phase).toBe("running");
-
-      const { status, envelope } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "resume me",
-      });
-
-      expect(status).toBe(409);
-      expect(envelope.code).toBe("CLAUDE_SESSION_ACTIVE");
-      expect(capturedJobs).toHaveLength(0);
-    });
-  });
-
-  it("resumes a default-constructed observed record — stored active, derived phase idle", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      // No `status` supplied: buildSession defaults it to "active", which is
-      // where nearly every observed claude-code record sits forever — so this is
-      // the record the status gate made headless resume dead UI-wide for. No
-      // checkpoint, so nothing attests to a live process and the phase derives
-      // `idle`: the session a headless resume is FOR.
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_default_1",
-        metadata: { directory: WORKSPACE },
-      });
-      expect(session.status).toBe("active");
-
-      const view = await getSessionView(base, session.normalizedId);
-      expect(view.status).toBe("active");
-      expect(view.phase).toBe("idle");
-
-      const { status, envelope } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
-      });
-
-      expect(status).toBe(202);
-      expect(envelope.ok).toBe(true);
-      expect(envelope.data?.run).toEqual({ accepted: true, mode: "resume" });
-      expect(capturedJobs).toHaveLength(1);
-      expect(capturedJobs[0]).toMatchObject({
-        cwd: WORKSPACE,
-        writeTargetKey: session.normalizedId,
-      });
-      expectRunArgv(
-        capturedJobs[0],
-        ["-p", "carry on", "--resume", "cc_default_1", "--output-format", "json"],
-        true,
-      );
-    });
-  });
-
-  it("gates on the RECONCILED phase — a fresh checkpoint no agent reports is resumable", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_stale_1",
-        status: "active",
-        metadata: { directory: WORKSPACE },
-      });
-      // The store alone derives `running` off this checkpoint; the agent list
-      // answers "nobody is driving it" (a closed terminal), and the reconciler
-      // demotes to `idle`. Gating on deriveSessionPhase without the reconciler
-      // would refuse this resume.
-      await updateSession(projectDir, {
-        id: session.normalizedId,
-        lastCheckpointAt: new Date().toISOString(),
-      });
-      agentsProbe.stdout = "[]";
-
-      expect((await getSessionView(base, session.normalizedId)).phase).toBe("idle");
-
-      const { status, envelope } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "the terminal is gone",
-      });
-
-      expect(status).toBe(202);
-      expect(envelope.ok).toBe(true);
-      expect(capturedJobs).toHaveLength(1);
-    });
-  });
-
-  it("falls back to the primary workspace when the session has no directory", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_nodir_1",
-        status: "idle",
-      });
-
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "from the workspace",
-      });
-
-      expect(status).toBe(202);
-      expect(capturedJobs[0].cwd).toBe(WORKSPACE);
-    });
-  });
-});
-
-describe("POST /api/p/:slug/sessions/:id/run — oneshot", () => {
-  it("targets the deterministic arcs-oneshot-<slug> session, recreated idempotently", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_1",
-      });
-
-      const first = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "summarize",
-      });
-      expect(first.status).toBe(202);
-      expect(first.envelope.ok).toBe(true);
-      expect(first.envelope.data?.session?.normalizedId).toBe("arcs-oneshot-demo");
-      expect(first.envelope.data?.session?.runtimeSessionId).toBe("arcs-oneshot-demo");
-      expect(first.envelope.data?.session?.metadata).toMatchObject({
-        control: "arcs-owned",
-        directory: WORKSPACE,
-      });
-      expect(first.envelope.data?.run).toEqual({ accepted: true, mode: "oneshot" });
-
-      expect(capturedJobs[0]).toMatchObject({
-        cwd: WORKSPACE,
-        writeTargetKey: "arcs-oneshot-demo",
-      });
-      expectRunArgv(capturedJobs[0], ["-p", "summarize", "--output-format", "json"], true);
-      await expectRunRegistered(projectDir, "arcs-oneshot-demo", "oneshot");
-
-      // A second call re-creates the same deterministic record — never a dup.
-      const second = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "again",
-      });
-      expect(second.status).toBe(202);
-      expect(second.envelope.data?.session?.normalizedId).toBe("arcs-oneshot-demo");
-      expect(capturedJobs).toHaveLength(2);
-      // Oneshot ALWAYS starts a fresh conversation, so the block rides every
-      // spawn — even the one whose stage the probe called fresh.
-      expectRunArgv(capturedJobs[1], ["-p", "again", "--output-format", "json"], true);
-
-      const all = await listSessions(projectDir);
-      expect(all.filter((s) => s.runtimeSessionId === "arcs-oneshot-demo")).toHaveLength(1);
-    });
-  });
-
-  it("appends the user turn then the reference to the sidecar (shared negative id space)", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_2",
-      });
-
-      const { status, envelope } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "point me at the doc",
-        reference: REFERENCE,
-      });
-
-      expect(status).toBe(202);
-      expect(envelope.ok).toBe(true);
-
-      // Delivery-first ordering: the user turn lands before the reference, both
-      // in the shared negative id space minted by T002; the success settle then
-      // appends the captured reply as the assistant turn after the reference.
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, "arcs-oneshot-demo");
-        expect(turns).toHaveLength(3);
-        expect(turns[0]).toMatchObject({ id: -1, type: "user", text: "point me at the doc" });
-        expect(turns[1]).toMatchObject({
-          id: -2,
-          type: "reference",
-          text: REFERENCE.text,
-          section: REFERENCE.section,
-          source: REFERENCE.source,
-        });
-        expect(turns[2]).toMatchObject({ id: -3, type: "assistant", text: "reply" });
-      });
-    });
-  });
-
-  it("appends the user turn and the success reply when no reference is supplied", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_3",
-      });
-
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "plain",
-      });
-      expect(status).toBe(202);
-
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, "arcs-oneshot-demo");
-        expect(turns).toHaveLength(2);
-        expect(turns[0]).toMatchObject({ id: -1, type: "user", text: "plain" });
-        expect(turns[1]).toMatchObject({ id: -2, type: "assistant", text: "reply" });
-      });
+      const thread = await getSession(projectDir, THREAD);
+      expect(thread.origin).toBe("arcs");
+      expect(thread.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
+      // Exactly one record for the name, however many turns it takes.
+      expect(
+        (await listSessions(projectDir)).filter((s) => s.normalizedId === THREAD),
+      ).toHaveLength(1);
     });
   });
 
@@ -597,12 +403,13 @@ describe("POST /api/p/:slug/sessions/:id/run — oneshot", () => {
       );
       const seed = await createSession(projectDir, {
         runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_4",
+        runtimeSessionId: "cc_seed_nodir",
       });
 
-      const { status, envelope } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "where do I run?",
+        threadRef: THREAD,
       });
 
       expect(status).toBe(400);
@@ -612,78 +419,62 @@ describe("POST /api/p/:slug/sessions/:id/run — oneshot", () => {
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
-  it("mints arcs-thread-<slug>-<uuid4> once, then resumes it on later spawns", async () => {
+describe("POST /api/p/:slug/sessions/:id/turns — thread resume", () => {
+  it("continues a seeded thread with --resume ALONE, minting the uuid exactly once", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_5",
+      const seed = await seedObserved(projectDir, "cc_seed_3");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
       });
+      const uuid = await claudeUuid(projectDir, THREAD);
 
-      const first = await postRun(base, seed.normalizedId, {
-        mode: "stable",
-        message: "start the thread",
-      });
-      expect(first.status).toBe(202);
-      expect(first.envelope.ok).toBe(true);
-
-      const threadId = first.envelope.data?.run?.threadId;
-      expect(threadId).toMatch(
-        /^arcs-thread-demo-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-      );
-      expect(first.envelope.data?.session?.runtimeSessionId).toBe(threadId);
-      expect(first.envelope.data?.session?.metadata).toMatchObject({
-        control: "arcs-owned",
-        directory: WORKSPACE,
-      });
-      expect(first.envelope.data?.run).toEqual({ accepted: true, mode: "stable", threadId });
-
-      // The ARCS thread id names the record (picker label + sidecar filename);
-      // claude only ever sees the bare uuid minted onto metadata.
-      const threadSession = (await listSessions(projectDir)).find(
-        (s) => s.runtimeSessionId === threadId,
-      );
-      expect(threadSession).toBeDefined();
-      const claudeSessionId = threadSession?.metadata?.claudeSessionId as string;
-      expect(claudeSessionId).toMatch(BARE_UUID);
-
-      // First spawn seeds the thread with --session-id <bare uuid> only.
-      expectRunArgv(
-        capturedJobs[0],
-        ["-p", "start the thread", "--session-id", claudeSessionId, "--output-format", "json"],
-        true,
-      );
-      expect(capturedJobs[0].writeTargetKey).toBe(threadId);
-
-      // The first successful spawn marks the thread initialized.
-      await vi.waitFor(async () => {
-        const stored = await getSession(projectDir, threadSession?.normalizedId ?? "");
-        expect(stored.metadata?.threadInitialized).toBe(true);
-      });
-
-      // A second run against the SAME arcs-owned thread reuses it and resumes.
-      const second = await postRun(base, threadSession?.normalizedId ?? "", {
-        mode: "stable",
-        message: "continue",
-      });
+      // Addressed to the THREAD itself this time — an arcs-origin record
+      // continues itself with no threadRef needed.
+      const second = await postTurn(base, THREAD, { intent: "ask", message: "two" });
       expect(second.status).toBe(202);
-      expect(second.envelope.data?.run?.threadId).toBe(threadId);
-      // Later spawns continue the same uuid with --resume ALONE: claude >= 2.x
-      // refuses --session-id alongside --resume. They also continue the seeded
-      // CONVERSATION, which already carries the block, so a fresh stage is not
-      // re-injected.
-      expectRunArgv(
-        capturedJobs[1],
-        ["-p", "continue", "--resume", claudeSessionId, "--output-format", "json"],
-        false,
-      );
-      expect(capturedJobs[1].argv).not.toContain("--session-id");
+      expect(second.envelope.data?.writeTargetId).toBe(THREAD);
 
-      // The conversation accumulates in the one sidecar, in order: each run's
-      // user turn (request-time append) followed by the success assistant reply
-      // (T006 write-back), both in the shared negative id space.
+      // claude >= 2.x refuses --session-id alongside --resume unless
+      // --fork-session is set, and a re-seed answers "already in use". The
+      // continued CONVERSATION already carries the staged block, so a fresh
+      // stage is not re-injected either.
+      expectTurnArgv(capturedJobs[1], ["-p", "two", "--resume", uuid, "--output-format", "json"], {
+        intent: "ask",
+        staged: false,
+      });
+      expect(capturedJobs[1].argv).not.toContain("--session-id");
+      expect(capturedJobs[1].argv).not.toContain("--fork-session");
+
+      const third = await postTurn(base, THREAD, { intent: "ask", message: "three" });
+      expect(third.status).toBe(202);
+      expectTurnArgv(
+        capturedJobs[2],
+        ["-p", "three", "--resume", uuid, "--output-format", "json"],
+        {
+          intent: "ask",
+          staged: false,
+        },
+      );
+      expect(await claudeUuid(projectDir, THREAD)).toBe(uuid);
+    });
+  });
+
+  it("accumulates the conversation in one sidecar, user turn then reply, in order", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_seed_4");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "start the thread",
+        threadRef: THREAD,
+      });
+      await postTurn(base, THREAD, { intent: "ask", message: "continue" });
+
       await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, threadSession?.normalizedId ?? "");
+        const turns = await readSessionTurns(projectDir, THREAD);
         expect(turns.map((t) => t.text)).toEqual([
           "start the thread",
           "reply",
@@ -695,172 +486,629 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
     });
   });
 
-  it("honors a payload threadId for a non-arcs-owned referenced session", async () => {
+  it("refuses a threadRef naming a session ARCS merely observes", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const external = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_ext_1",
+      const observed = await seedObserved(projectDir, "cc_observed_ref");
+
+      const { status, envelope } = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "claim it",
+        threadRef: observed.normalizedId,
       });
 
-      const { status, envelope } = await postRun(base, external.normalizedId, {
-        mode: "stable",
-        message: "use this thread",
-        threadId: "cc_ext_1",
-      });
-
-      expect(status).toBe(202);
-      expect(envelope.data?.run?.threadId).toBe("cc_ext_1");
-
-      // The referenced session becomes the ARCS-owned write-target.
-      const claimed = await getSession(projectDir, external.normalizedId);
-      expect(claimed.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
-
-      // A payload threadId names the ARCS thread record only — it gets its own
-      // minted claude uuid rather than being passed through as a session id
-      // (attaching to an external session's real thread is mode=resume's job).
-      const claudeSessionId = claimed.metadata?.claudeSessionId as string;
-      expect(claudeSessionId).toMatch(BARE_UUID);
-      expect(claudeSessionId).not.toBe("cc_ext_1");
-      expectRunArgv(
-        capturedJobs[0],
-        ["-p", "use this thread", "--session-id", claudeSessionId, "--output-format", "json"],
-        true,
-      );
-    });
-  });
-
-  it("mints the claude uuid once, persists it on metadata, and reuses it on later sends", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_uuid",
-      });
-
-      const first = await postRun(base, seed.normalizedId, { mode: "stable", message: "one" });
-      expect(first.status).toBe(202);
-      const threadId = first.envelope.data?.run?.threadId as string;
-
-      const seeded = await getSession(projectDir, threadId);
-      const claudeSessionId = seeded.metadata?.claudeSessionId as string;
-      expect(claudeSessionId).toMatch(BARE_UUID);
-      // Two independent identities: the ARCS thread id carries its own uuid.
-      expect(claudeSessionId).not.toBe(threadId);
-      expect(threadId).not.toContain(claudeSessionId);
-
-      await vi.waitFor(async () => {
-        const stored = await getSession(projectDir, threadId);
-        expect(stored.metadata?.threadInitialized).toBe(true);
-      });
-
-      const second = await postRun(base, threadId, { mode: "stable", message: "two" });
-      expect(second.status).toBe(202);
-      expect(second.envelope.data?.run?.threadId).toBe(threadId);
-
-      // The uuid is minted exactly once: the re-upsert merges shallowly, so the
-      // persisted claudeSessionId (and threadInitialized) survive untouched.
-      const afterSecond = await getSession(projectDir, threadId);
-      expect(afterSecond.metadata?.claudeSessionId).toBe(claudeSessionId);
-      expect(afterSecond.metadata?.threadInitialized).toBe(true);
-      expectRunArgv(
-        capturedJobs[1],
-        ["-p", "two", "--resume", claudeSessionId, "--output-format", "json"],
-        false,
-      );
-
-      // A third send keeps resuming the same uuid — never re-seeding it
-      // (claude answers "already in use" when --session-id names a known id).
-      const third = await postRun(base, threadId, { mode: "stable", message: "three" });
-      expect(third.status).toBe(202);
-      expectRunArgv(
-        capturedJobs[2],
-        ["-p", "three", "--resume", claudeSessionId, "--output-format", "json"],
-        false,
-      );
-      const afterThird = await getSession(projectDir, threadId);
-      expect(afterThird.metadata?.claudeSessionId).toBe(claudeSessionId);
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("TURN_THREAD_NOT_OWNED");
+      expect(capturedJobs).toHaveLength(0);
+      // Nothing was written onto the observed record — no ARCS metadata, no run.
+      const stored = await getSession(projectDir, observed.normalizedId);
+      expect(stored.origin).toBe("observed");
+      expect(stored.metadata?.claudeSessionId).toBeUndefined();
     });
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/run — guards & validation", () => {
+describe("POST /api/p/:slug/sessions/:id/turns — observed adoption (fork)", () => {
+  /** The observed terminal session's own claude uuid. */
+  const OBSERVED_UUID = "11111111-1111-4111-8111-111111111111";
+
+  it("forks the observed session into a NEW ARCS thread, naming the fork itself", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const observed = await seedObserved(projectDir, OBSERVED_UUID);
+
+      const { status, envelope } = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "adopt me",
+      });
+
+      expect(status).toBe(202);
+      const writeTargetId = envelope.data?.writeTargetId as string;
+      expect(writeTargetId).toMatch(ARCS_THREAD_ID);
+      expect(writeTargetId).not.toBe(observed.normalizedId);
+      // The stream is keyed on the WRITE TARGET, never on the path `:id` — the
+      // two differ here, and a URL built from the path id would answer 200 and
+      // then emit nothing at all.
+      expect(envelope.data?.streamUrl).toBe(
+        `/api/p/demo/sessions/${writeTargetId}/runs/${envelope.data?.runId}/stream`,
+      );
+
+      const fork = await getSession(projectDir, writeTargetId);
+      expect(fork.origin).toBe("arcs");
+      expect(fork.metadata?.adoptedFrom).toBe(observed.normalizedId);
+      expect(fork.metadata?.adoptedClaudeSessionId).toBe(OBSERVED_UUID);
+      const forkUuid = fork.metadata?.claudeSessionId as string;
+      expect(forkUuid).toMatch(BARE_UUID);
+
+      // THE SPAWN SHAPE. --session-id names the NEW session and is honoured
+      // verbatim; the fork inherits the observed context and writes a SEPARATE
+      // transcript (probed, claude 2.1.223).
+      expectTurnArgv(
+        capturedJobs[0],
+        [
+          "-p",
+          "adopt me",
+          "--resume",
+          OBSERVED_UUID,
+          "--session-id",
+          forkUuid,
+          "--fork-session",
+          "--output-format",
+          "json",
+        ],
+        { intent: "ask", staged: true },
+      );
+      // THE HIJACK THIS PREVENTS: passing the two equal is silently accepted
+      // (exit 0, empty stderr) and appends to the human's live transcript.
+      expect(forkUuid).not.toBe(OBSERVED_UUID);
+      // The observed uuid appears exactly once, next to --fork-session.
+      expect(capturedJobs[0].argv.filter((token) => token === OBSERVED_UUID)).toHaveLength(1);
+      expect(capturedJobs[0].writeTargetKey).toBe(writeTargetId);
+    });
+  });
+
+  it("READS the observed record and never writes it — no claim, no pid, no deadline, no run", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const observed = await seedObserved(projectDir, OBSERVED_UUID);
+      const before = await getSession(projectDir, observed.normalizedId);
+
+      const { envelope } = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "adopt me",
+      });
+      await expectSettled(projectDir, envelope.data?.writeTargetId as string);
+
+      const after = await getSession(projectDir, observed.normalizedId);
+      expect(after.currentRunId).toBeUndefined();
+      expect(after.currentRunPid).toBeUndefined();
+      expect(after.heartbeatAt).toBeUndefined();
+      expect(after.metadata?.runDeadlineAt).toBeUndefined();
+      expect(after.metadata?.run).toBeUndefined();
+      expect(after.metadata?.threadInitialized).toBeUndefined();
+      // Byte-for-byte the record it was, so the human's session is untouched.
+      expect(after).toEqual(before);
+      // And its sidecar is untouched too — the fork's turns land on the fork.
+      expect(await readSessionTurns(projectDir, observed.normalizedId)).toEqual([]);
+    });
+  });
+
+  it("a later turn on the ADOPTED thread resumes its own uuid, never the observed one", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const observed = await seedObserved(projectDir, OBSERVED_UUID);
+
+      const first = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "adopt me",
+      });
+      const fork = first.envelope.data?.writeTargetId as string;
+      const forkUuid = await claudeUuid(projectDir, fork);
+
+      const second = await postTurn(base, fork, { intent: "ask", message: "carry on" });
+      expect(second.status).toBe(202);
+      expect(second.envelope.data?.writeTargetId).toBe(fork);
+      expectTurnArgv(
+        capturedJobs[1],
+        ["-p", "carry on", "--resume", forkUuid, "--output-format", "json"],
+        { intent: "ask", staged: false },
+      );
+      expect(capturedJobs[1].argv).not.toContain("--fork-session");
+      expect(capturedJobs[1].argv).not.toContain(OBSERVED_UUID);
+    });
+  });
+
+  it("REFUSES to spawn when the fork id equals the session it would fork", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      // A corrupt (hand-edited, or half-repaired) thread record: the id it
+      // would claim and the id it would fork are the same. claude ACCEPTS this
+      // — exit 0, empty stderr — and appends to the ORIGINAL session, so there
+      // is no error downstream to notice it by. This assertion is the only
+      // thing standing between such a record and a hijacked terminal thread.
+      await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: THREAD,
+        origin: "arcs",
+        metadata: {
+          control: "arcs-owned",
+          directory: WORKSPACE,
+          claudeSessionId: OBSERVED_UUID,
+          adoptedFrom: "cc_observed",
+          adoptedClaudeSessionId: OBSERVED_UUID,
+        },
+      });
+
+      const { status, envelope } = await postTurn(base, THREAD, {
+        intent: "ask",
+        message: "would hijack",
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("CLAUDE_FORK_ID_COLLISION");
+      expect(envelope.message).toContain(OBSERVED_UUID);
+      // Nothing spawned, nothing appended, nothing claimed.
+      expect(capturedJobs).toHaveLength(0);
+      expect(await readSessionTurns(projectDir, THREAD)).toEqual([]);
+      expect((await getSession(projectDir, THREAD)).currentRunId).toBeUndefined();
+    });
+  });
+
+  it("400s when the session to adopt is not a claude-code session", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const session = await createSession(projectDir, {
+        runtimeType: "opencode",
+        runtimeSessionId: "ses_live",
+      });
+
+      const { status, envelope } = await postTurn(base, session.normalizedId, {
+        intent: "ask",
+        message: "adopt me",
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("CLAUDE_RUN_TARGET_INVALID");
+      expect(capturedJobs).toHaveLength(0);
+    });
+  });
+
+  it("drives a session a terminal is actively driving — the fork makes the attachment gate moot", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const observed = await seedObserved(projectDir, OBSERVED_UUID);
+      // A fresh checkpoint plus an agent list that confirms the terminal: the
+      // record derives `running`, which the old resume path refused outright.
+      await updateSession(projectDir, {
+        id: observed.normalizedId,
+        lastCheckpointAt: new Date().toISOString(),
+      });
+      agentsProbe.stdout = JSON.stringify([{ pid: 4141, sessionId: OBSERVED_UUID }]);
+      expect((await getSessionView(base, observed.normalizedId)).phase).toBe("running");
+
+      const { status, envelope } = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "fork the live one",
+      });
+
+      // Safe by construction: the fork writes its own transcript, so a live
+      // terminal is no longer a reason to refuse.
+      expect(status).toBe(202);
+      expect(envelope.data?.writeTargetId).toMatch(ARCS_THREAD_ID);
+      expect(capturedJobs[0].argv).toContain("--fork-session");
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/turns — argv is owned by the permission policy", () => {
+  it("emits the policy segment LAST, with the staged text in its slot and nowhere else", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_policy_1");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "policy",
+        threadRef: THREAD,
+      });
+
+      const argv = capturedJobs[0].argv;
+      // Ordering is load-bearing: --tools is variadic and consumes following
+      // tokens until the next dash-leading one, and --append-system-prompt
+      // consumes exactly one — so the segment cannot precede -p or the
+      // targeting tokens.
+      expect(argv.indexOf("--tools")).toBeGreaterThan(argv.indexOf("-p"));
+      expect(argv.indexOf("--tools")).toBeGreaterThan(argv.indexOf("--session-id"));
+      expect(argv.indexOf("--append-system-prompt")).toBe(argv.length - 2);
+      // Exactly ONE staged flag: the old direct push alongside the policy
+      // segment emitted it twice.
+      expect(argv.filter((token) => token === "--append-system-prompt")).toHaveLength(1);
+      expect(argv[argv.length - 1]).toContain(STAGE_OPEN);
+    });
+  });
+
+  it("widens the tool set and the permission mode for intent=change, and nothing else", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_policy_2");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "change",
+        message: "edit something",
+        threadRef: THREAD,
+      });
+
+      const uuid = await claudeUuid(projectDir, THREAD);
+      expectTurnArgv(
+        capturedJobs[0],
+        ["-p", "edit something", "--session-id", uuid, "--output-format", "json"],
+        { intent: "change", staged: true },
+      );
+      // Bash stays out until a guard opts into it (a separate task owns that).
+      expect(capturedJobs[0].argv).not.toContain("Bash");
+      await expectRunRegistered(projectDir, THREAD, "change");
+    });
+  });
+
+  it("accepts guards opaquely — validated, and contributing no token", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_policy_3");
+
+      const withGuards = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "guarded",
+        threadRef: THREAD,
+        guards: { allowBash: true, cwd: "/etc", nonsense: ["x"] },
+      });
+      expect(withGuards.status).toBe(202);
+
+      // Nothing in the payload widened the run: the tool list is the ask set,
+      // and no guard value reached argv.
+      expectTurnArgv(
+        capturedJobs[0],
+        [
+          "-p",
+          "guarded",
+          "--session-id",
+          await claudeUuid(projectDir, THREAD),
+          "--output-format",
+          "json",
+        ],
+        { intent: "ask", staged: true },
+      );
+      expect(capturedJobs[0].argv).not.toContain("/etc");
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt", () => {
+  it("renders refs into the -p prompt, not into the staged system tier", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_refs_1");
+
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "point me at the doc",
+        threadRef: THREAD,
+        refs: [REFERENCE],
+      });
+      expect(status).toBe(202);
+
+      const argv = capturedJobs[0].argv;
+      const prompt = argv[argv.indexOf("-p") + 1];
+      expect(prompt.startsWith("point me at the doc")).toBe(true);
+      expect(prompt).toContain("## REFERENCES");
+      expect(prompt).toContain(REFERENCE.source.label);
+      expect(prompt).toContain(REFERENCE.text);
+      // The system tier is the STABLE one — a per-turn pointer there would
+      // break the prompt cache on every send and outlive its own turn.
+      const staged = argv[argv.length - 1];
+      expect(staged).toContain(STAGE_OPEN);
+      expect(staged).not.toContain(REFERENCE.text);
+    });
+  });
+
+  it("keeps the sidecar append as it was: user turn first, then one turn per ref", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_refs_2");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "point me at the doc",
+        threadRef: THREAD,
+        refs: [REFERENCE],
+      });
+
+      // Delivery-first ordering, in the shared negative id space; the success
+      // settle then appends the captured reply after the reference.
+      await vi.waitFor(async () => {
+        const turns = await readSessionTurns(projectDir, THREAD);
+        expect(turns).toHaveLength(3);
+        expect(turns[0]).toMatchObject({ id: -1, type: "user", text: "point me at the doc" });
+        expect(turns[1]).toMatchObject({
+          id: -2,
+          type: "reference",
+          text: REFERENCE.text,
+          section: REFERENCE.section,
+          source: REFERENCE.source,
+        });
+        expect(turns[2]).toMatchObject({ id: -3, type: "assistant", text: "reply" });
+      });
+    });
+  });
+
+  it("adds no bytes at all when refs is absent", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_refs_3");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "plain",
+        threadRef: THREAD,
+      });
+
+      const argv = capturedJobs[0].argv;
+      expect(argv[argv.indexOf("-p") + 1]).toBe("plain");
+      await vi.waitFor(async () => {
+        const turns = await readSessionTurns(projectDir, THREAD);
+        expect(turns.map((t) => [t.id, t.type, t.text])).toEqual([
+          [-1, "user", "plain"],
+          [-2, "assistant", "reply"],
+        ]);
+      });
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedge", () => {
+  /** Claude's literal flag-validation stderr, pinned so a reword fails here. */
+  const SEED_CONFLICT = (uuid: string) => `Error: Session ID ${uuid} is already in use.`;
+  const NO_CONVERSATION = (uuid: string) => `No conversation found with session ID: ${uuid}`;
+
+  it("a first turn that TIMES OUT still resumes next time — the flag lands at spawn", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_wedge_1");
+      // The exact wedge: claude registered the uuid, then the run was killed
+      // before anything could be written back. A settle-time flag would leave
+      // this thread re-seeding forever into "already in use", with no UI escape.
+      runRecord = {
+        ...RUN_RECORD,
+        outcome: "timeout",
+        error: "claude run timed out after 600000ms",
+      };
+
+      const first = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
+      });
+      expect(first.status).toBe(202);
+      const uuid = await claudeUuid(projectDir, THREAD);
+      await expectSettled(projectDir, THREAD);
+      expect((await getSession(projectDir, THREAD)).metadata?.threadInitialized).toBe(true);
+
+      runRecord = RUN_RECORD;
+      const second = await postTurn(base, THREAD, { intent: "ask", message: "two" });
+      expect(second.status).toBe(202);
+      // RESUMES the same uuid rather than re-seeding it.
+      expectTurnArgv(capturedJobs[1], ["-p", "two", "--resume", uuid, "--output-format", "json"], {
+        intent: "ask",
+        staged: false,
+      });
+      expect(await claudeUuid(projectDir, THREAD)).toBe(uuid);
+    });
+  });
+
+  it("an 'already in use' error SETS the flag, so the next turn resumes", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_wedge_2");
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
+      });
+      const uuid = await claudeUuid(projectDir, THREAD);
+      await expectSettled(projectDir, THREAD);
+
+      // The false-negative state two live records sit in today: claude holds
+      // the uuid, the record says it does not. The next turn re-seeds and
+      // claude refuses it.
+      await updateSession(projectDir, { id: THREAD, metadata: { threadInitialized: false } });
+      runRecord = { ...RUN_RECORD, outcome: "error", error: SEED_CONFLICT(uuid) };
+
+      const second = await postTurn(base, THREAD, { intent: "ask", message: "two" });
+      expect(second.status).toBe(202);
+      expect(capturedJobs[1].argv).toContain("--session-id");
+      await expectSettled(projectDir, THREAD);
+
+      const repaired = await getSession(projectDir, THREAD);
+      expect(repaired.metadata?.threadInitialized).toBe(true);
+      expect(repaired.metadata?.claudeSessionId).toBe(uuid);
+      expect(repaired.metadata?.run).toMatchObject({
+        outcome: "error",
+        errorCode: "THREAD_SEED_CONFLICT",
+      });
+
+      // Self-healed: the third turn resumes instead of re-seeding forever.
+      runRecord = RUN_RECORD;
+      await postTurn(base, THREAD, { intent: "ask", message: "three" });
+      expectTurnArgv(
+        capturedJobs[2],
+        ["-p", "three", "--resume", uuid, "--output-format", "json"],
+        {
+          intent: "ask",
+          staged: false,
+        },
+      );
+    });
+  });
+
+  it("a 'No conversation found' error CLEARS the flag and re-mints the uuid", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_wedge_3");
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
+      });
+      const uuid = await claudeUuid(projectDir, THREAD);
+      await expectSettled(projectDir, THREAD);
+
+      // The opposite disagreement: ARCS resumes an id claude does not have
+      // (the transcript was pruned, or the seed never actually landed).
+      runRecord = { ...RUN_RECORD, outcome: "error", error: NO_CONVERSATION(uuid) };
+      await postTurn(base, THREAD, { intent: "ask", message: "two" });
+      await expectSettled(projectDir, THREAD);
+
+      const repaired = await getSession(projectDir, THREAD);
+      expect(repaired.metadata?.threadInitialized).toBe(false);
+      const reminted = repaired.metadata?.claudeSessionId as string;
+      expect(reminted).toMatch(BARE_UUID);
+      // Re-minted, not reused: clearing the flag alone would re-seed the very
+      // id claude just refused to find.
+      expect(reminted).not.toBe(uuid);
+      expect(repaired.metadata?.run).toMatchObject({
+        outcome: "error",
+        errorCode: "THREAD_UNKNOWN_TO_CLAUDE",
+      });
+
+      // A re-seed STARTS a conversation, so the staged block rides it again —
+      // the fresh session has no history that already carries one.
+      runRecord = RUN_RECORD;
+      await postTurn(base, THREAD, { intent: "ask", message: "three" });
+      expectTurnArgv(
+        capturedJobs[2],
+        ["-p", "three", "--session-id", reminted, "--output-format", "json"],
+        { intent: "ask", staged: true },
+      );
+    });
+  });
+
+  it("that repair also drops a fork source claude cannot find, so an adopted thread reseeds instead of re-forking", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const observed = await seedObserved(projectDir, "22222222-2222-4222-8222-222222222222");
+      runRecord = {
+        ...RUN_RECORD,
+        outcome: "error",
+        error: NO_CONVERSATION("22222222-2222-4222-8222-222222222222"),
+      };
+
+      const first = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "adopt a session claude forgot",
+      });
+      const fork = first.envelope.data?.writeTargetId as string;
+      expect(capturedJobs[0].argv).toContain("--fork-session");
+      await expectSettled(projectDir, fork);
+
+      const repaired = await getSession(projectDir, fork);
+      expect(repaired.metadata?.adoptedClaudeSessionId).toBe("");
+      // Provenance survives — it records where the thread came from and never
+      // reaches argv.
+      expect(repaired.metadata?.adoptedFrom).toBe(observed.normalizedId);
+
+      // Without the drop this turn would re-issue the identical doomed
+      // --resume on every send, forever.
+      runRecord = RUN_RECORD;
+      await postTurn(base, fork, { intent: "ask", message: "try again" });
+      expectTurnArgv(
+        capturedJobs[1],
+        [
+          "-p",
+          "try again",
+          "--session-id",
+          repaired.metadata?.claudeSessionId as string,
+          "--output-format",
+          "json",
+        ],
+        { intent: "ask", staged: true },
+      );
+      expect(capturedJobs[1].argv).not.toContain("--fork-session");
+    });
+  });
+
+  it("leaves the seed decision alone for an error it does not recognize", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_wedge_5");
+      runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
+      });
+      await expectSettled(projectDir, THREAD);
+
+      const stored = await getSession(projectDir, THREAD);
+      expect(stored.metadata?.threadInitialized).toBe(true);
+      expect(stored.metadata?.run).not.toHaveProperty("errorCode");
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/turns — guards & validation", () => {
   it("409s an overlapping run on the same write-target before appending or spawning", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_6",
-      });
+      const seed = await seedObserved(projectDir, "cc_guard_1");
       vi.mocked(isRunLive).mockReturnValue(true);
 
-      const { status, envelope } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "busy?",
+        threadRef: THREAD,
       });
 
       expect(status).toBe(409);
       expect(envelope.code).toBe("CLAUDE_RUN_IN_PROGRESS");
       expect(capturedJobs).toHaveLength(0);
-      expect(await readSessionTurns(projectDir, "arcs-oneshot-demo")).toEqual([]);
+      expect(await readSessionTurns(projectDir, THREAD)).toEqual([]);
     });
   });
 
-  it("rejects an empty message and an unknown mode with 400 INVALID_BODY", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_7",
-      });
-
-      const empty = await postRun(base, seed.normalizedId, { mode: "oneshot", message: "" });
-      expect(empty.status).toBe(400);
-      expect(empty.envelope.code).toBe("INVALID_BODY");
-
-      const badMode = await postRun(base, seed.normalizedId, {
-        mode: "interactive",
+  it("404s for a session the project does not have", async () => {
+    await withRunRouteCtx(async ({ base }) => {
+      const { status, envelope } = await postTurn(base, "missing-session", {
+        intent: "ask",
         message: "hi",
       });
-      expect(badMode.status).toBe(400);
-      expect(badMode.envelope.code).toBe("INVALID_BODY");
 
+      expect(status).toBe(404);
+      expect(envelope.code).toBe("ITEM_NOT_FOUND");
+      expect(capturedJobs).toHaveLength(0);
+    });
+  });
+
+  it("rejects an empty message, a missing intent and an unknown intent with 400 INVALID_BODY", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_guard_2");
+
+      for (const body of [
+        { intent: "ask", message: "" },
+        { message: "no intent at all" },
+        { intent: "native", message: "not an intent" },
+        { intent: "bypass", message: "definitely not an intent" },
+      ]) {
+        const { status, envelope } = await postTurn(base, seed.normalizedId, body);
+        expect({ body, status, code: envelope.code }).toEqual({
+          body,
+          status: 400,
+          code: "INVALID_BODY",
+        });
+      }
+
+      expect(capturedJobs).toHaveLength(0);
+    });
+  });
+
+  it("rejects an unknown reference variant rather than coercing it", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_guard_3");
+
+      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "bad ref",
+        refs: [{ type: "screenshot", data: "…" }],
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("INVALID_BODY");
       expect(capturedJobs).toHaveLength(0);
     });
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/run — mode-1 write-back (T005)", () => {
-  /** Writes a Claude Code JSONL transcript with a noise line at index 2, so the
-   *  mirrored ids prove they are absolute line indices, not sequential turns. */
-  function writeFakeTranscript(projectDir: string): string {
-    const transcriptPath = resolve(projectDir, "fake-transcript.jsonl");
-    writeFileSync(
-      transcriptPath,
-      [
-        JSON.stringify({
-          type: "user",
-          message: { content: "first prompt" },
-          timestamp: "2026-08-04T00:00:00.000Z",
-        }),
-        JSON.stringify({
-          type: "assistant",
-          message: { content: [{ type: "text", text: "first reply" }] },
-          timestamp: "2026-08-04T00:00:01.000Z",
-        }),
-        JSON.stringify({
-          type: "mode",
-          message: { mode: "plan" },
-          timestamp: "2026-08-04T00:00:02.000Z",
-        }),
-        JSON.stringify({
-          type: "user",
-          message: { content: "second prompt" },
-          timestamp: "2026-08-04T00:00:03.000Z",
-        }),
-        "",
-      ].join("\n"),
-      "utf-8",
-    );
-    return transcriptPath;
-  }
-
+describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
   async function expectRunFinalized(
     projectDir: string,
     normalizedId: string,
@@ -872,118 +1120,42 @@ describe("POST /api/p/:slug/sessions/:id/run — mode-1 write-back (T005)", () =
     });
   }
 
-  it("resume: mirrors the persisted transcript after the run settles (ids = line indices)", async () => {
+  it("finalizes metadata.run with the intent as its mode", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const transcriptPath = writeFakeTranscript(projectDir);
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_resume_1",
-        status: "idle",
-        metadata: { directory: WORKSPACE, transcriptPath },
-      });
+      const seed = await seedObserved(projectDir, "cc_wb_1");
 
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "change",
+        message: "settle me",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
 
-      // The exit-time write-back mirrors transcript lines by absolute index —
-      // the noise line at index 2 is skipped, ids stay 0/1/3.
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, session.normalizedId);
-        expect(turns.map((t) => t.id)).toEqual([0, 1, 3]);
-        expect(turns.map((t) => t.text)).toEqual(["first prompt", "first reply", "second prompt"]);
-      });
-
-      await expectRunFinalized(projectDir, session.normalizedId, {
+      await expectRunFinalized(projectDir, THREAD, {
         pid: 4242,
         startedAt: 1_700_000_000_000,
-        mode: "resume",
+        mode: "change",
         endedAt: 1_700_000_060_000,
         outcome: "success",
-      });
-    });
-  });
-
-  it("resume with an absent transcriptPath is a no-op — no sidecar, run still finalized", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_resume_2",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
-      });
-
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
-      });
-      expect(status).toBe(202);
-
-      await expectRunFinalized(projectDir, session.normalizedId, {
-        mode: "resume",
-        endedAt: 1_700_000_060_000,
-        outcome: "success",
-      });
-      expect(await readSessionTurns(projectDir, session.normalizedId)).toEqual([]);
-    });
-  });
-
-  it("resume on an error exit still mirrors the partial transcript and finalizes the error", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const transcriptPath = writeFakeTranscript(projectDir);
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_resume_3",
-        status: "idle",
-        metadata: { directory: WORKSPACE, transcriptPath },
-      });
-
-      runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
-
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
-      });
-      expect(status).toBe(202);
-
-      // The mirror must run even on error — the runtime transcript may hold
-      // partial lines and they still land in the sidecar.
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, session.normalizedId);
-        expect(turns.map((t) => t.id)).toEqual([0, 1, 3]);
-      });
-      await expectRunFinalized(projectDir, session.normalizedId, {
-        mode: "resume",
-        outcome: "error",
-        error: "model refused",
-        endedAt: 1_700_000_060_000,
       });
     });
   });
 
   it("persists the runner's firstTokenAt and skippedLines onto metadata.run", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_ttft_1",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
-      });
-
+      const seed = await seedObserved(projectDir, "cc_wb_2");
       // The write-back allowlist has to carry these through: time-to-first-token
       // (firstTokenAt - startedAt) and the wire-format drift counter are only
       // measurable after the fact if they reach disk.
       runRecord = { ...RUN_RECORD, firstTokenAt: 1_700_000_002_500, skippedLines: 3 };
 
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "measure me",
+        threadRef: THREAD,
       });
-      expect(status).toBe(202);
 
-      await expectRunFinalized(projectDir, session.normalizedId, {
+      await expectRunFinalized(projectDir, THREAD, {
         startedAt: 1_700_000_000_000,
         firstTokenAt: 1_700_000_002_500,
         skippedLines: 3,
@@ -993,103 +1165,58 @@ describe("POST /api/p/:slug/sessions/:id/run — mode-1 write-back (T005)", () =
 
   it("omits firstTokenAt and skippedLines when the runner did not report them", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_ttft_2",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
+      const seed = await seedObserved(projectDir, "cc_wb_3");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "quiet",
+        threadRef: THREAD,
       });
 
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
-      });
-      expect(status).toBe(202);
-
-      await expectRunFinalized(projectDir, session.normalizedId, { outcome: "success" });
-      const stored = await getSession(projectDir, session.normalizedId);
+      await expectRunFinalized(projectDir, THREAD, { outcome: "success" });
+      const stored = await getSession(projectDir, THREAD);
       expect(stored.metadata?.run).not.toHaveProperty("firstTokenAt");
       expect(stored.metadata?.run).not.toHaveProperty("skippedLines");
     });
   });
 
-  it("repeated write-backs never duplicate — the mirror is offset-idempotent", async () => {
+  it("appends the captured reply on success, and nothing at all on error or timeout", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const transcriptPath = writeFakeTranscript(projectDir);
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_resume_4",
-        status: "idle",
-        metadata: { directory: WORKSPACE, transcriptPath },
-      });
+      const seed = await seedObserved(projectDir, "cc_wb_4");
 
-      const first = await postRun(base, session.normalizedId, { mode: "resume", message: "one" });
-      expect(first.status).toBe(202);
-      const second = await postRun(base, session.normalizedId, { mode: "resume", message: "two" });
-      expect(second.status).toBe(202);
-
-      // Both write-backs mirror the same transcript — the second must no-op.
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, session.normalizedId);
-        expect(turns.map((t) => t.id)).toEqual([0, 1, 3]);
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "ok",
+        threadRef: THREAD,
       });
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      const turns = await readSessionTurns(projectDir, session.normalizedId);
-      expect(turns.map((t) => t.id)).toEqual([0, 1, 3]);
-    });
-  });
+      await expectSettled(projectDir, THREAD);
 
-  it("oneshot never mirrors — user turn plus success assistant reply, metadata.run finalized only", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_oneshot_5",
-      });
+      for (const outcome of ["error", "timeout"] as const) {
+        runRecord = {
+          ...RUN_RECORD,
+          outcome,
+          ...(outcome === "error" ? { error: "model refused" } : {}),
+        };
+        const { status } = await postTurn(base, THREAD, {
+          intent: "ask",
+          message: `fail as ${outcome}`,
+        });
+        expect(status).toBe(202);
+        await expectSettled(projectDir, THREAD);
+      }
 
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "summarize",
-      });
-      expect(status).toBe(202);
-
-      await expectRunFinalized(projectDir, "arcs-oneshot-demo", {
-        mode: "oneshot",
-        endedAt: 1_700_000_060_000,
-        outcome: "success",
-      });
-      // No mirrored lines — the negative-id user turn and the success assistant
-      // reply are both appendSessionTurn-owned (T006).
-      const turns = await readSessionTurns(projectDir, "arcs-oneshot-demo");
-      expect(turns.map((t) => t.id)).toEqual([-1, -2]);
-    });
-  });
-
-  it("stable never mirrors — user turn plus success assistant reply, metadata.run finalized only", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_wb_stable_6",
-      });
-
-      const { status, envelope } = await postRun(base, seed.normalizedId, {
-        mode: "stable",
-        message: "start the thread",
-      });
-      expect(status).toBe(202);
-      const threadId = envelope.data?.run?.threadId as string;
-
-      await expectRunFinalized(projectDir, threadId, {
-        mode: "stable",
-        endedAt: 1_700_000_060_000,
-        outcome: "success",
-      });
-      const turns = await readSessionTurns(projectDir, threadId);
-      expect(turns.map((t) => t.id)).toEqual([-1, -2]);
+      const turns = await readSessionTurns(projectDir, THREAD);
+      expect(turns.map((t) => [t.type, t.text])).toEqual([
+        ["user", "ok"],
+        ["assistant", "reply"],
+        ["user", "fail as error"],
+        ["user", "fail as timeout"],
+      ]);
     });
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/run — run claim + derived phase (W1)", () => {
+describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1)", () => {
   /** A pid above every Linux/macOS pid_max — guaranteed not to be a process. */
   const DEAD_PID = 2_147_483_646;
   /** A pid that IS alive: the phase the route derives probes the claim's pid
@@ -1111,22 +1238,20 @@ describe("POST /api/p/:slug/sessions/:id/run — run claim + derived phase (W1)"
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
       vi.mocked(liveRunPid).mockReturnValue(LIVE_PID);
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_claim_1",
-      });
+      const seed = await seedObserved(projectDir, "cc_claim_1");
       const before = Date.now();
 
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "claim me",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
 
       // The claim is what survives the server process that made it: without a
       // persisted run id + pid, a run interrupted by a restart would leave the
       // session reading running forever with nothing able to settle it.
-      const claimed = await getSession(projectDir, "arcs-oneshot-demo");
+      const claimed = await getSession(projectDir, THREAD);
       expect(claimed.currentRunId).toEqual(expect.any(String));
       expect(claimed.currentRunPid).toBe(LIVE_PID);
       expect(Date.parse(claimed.heartbeatAt ?? "")).toBeGreaterThanOrEqual(before);
@@ -1136,26 +1261,24 @@ describe("POST /api/p/:slug/sessions/:id/run — run claim + derived phase (W1)"
       // exactly the same number.
       expect(claimed.metadata?.runDeadlineAt).toBeGreaterThanOrEqual(before + TIMEOUT_MS);
       expect(capturedJobs[0].timeoutMs).toBe(TIMEOUT_MS);
-      expect((await getSessionView(base, "arcs-oneshot-demo")).phase).toBe("running");
+      expect((await getSessionView(base, THREAD)).phase).toBe("running");
     });
   });
 
   it("releases the claim at settle, keeping firstTokenAt/skippedLines on the run", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_claim_2",
-      });
+      const seed = await seedObserved(projectDir, "cc_claim_2");
       runRecord = { ...RUN_RECORD, firstTokenAt: 1_700_000_002_500, skippedLines: 3 };
 
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "settle me",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
 
       await vi.waitFor(async () => {
-        const stored = await getSession(projectDir, "arcs-oneshot-demo");
+        const stored = await getSession(projectDir, THREAD);
         // settleSessionRun drops the claim and its proof of life together — a
         // heartbeat left behind would be evidence for a dead process.
         expect(stored.currentRunId).toBeUndefined();
@@ -1163,7 +1286,7 @@ describe("POST /api/p/:slug/sessions/:id/run — run claim + derived phase (W1)"
         expect(stored.heartbeatAt).toBeUndefined();
         expect(stored.metadata?.run).toMatchObject({
           runId: expect.any(String),
-          mode: "oneshot",
+          mode: "ask",
           pid: 4242,
           startedAt: 1_700_000_000_000,
           endedAt: 1_700_000_060_000,
@@ -1175,45 +1298,40 @@ describe("POST /api/p/:slug/sessions/:id/run — run claim + derived phase (W1)"
 
       // A settled record holds no claim, so it reads idle — not running.
       const listed = await getSessions(base);
-      expect(listed.find((s) => s.normalizedId === "arcs-oneshot-demo")?.phase).toBe("idle");
+      expect(listed.find((s) => s.normalizedId === THREAD)?.phase).toBe("idle");
     });
   });
 
   it("derives idle for a live claim whose pid is gone, running while it is alive", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_claim_3",
-      });
+      const seed = await seedObserved(projectDir, "cc_claim_3");
 
       // The child died without the runner noticing (a killed pid, not an exit
       // the write-back saw): the claim still stands on disk, and only probing
       // its pid can tell that the run is gone.
       vi.mocked(liveRunPid).mockReturnValue(DEAD_PID);
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "kill me",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
 
-      const claimed = await getSession(projectDir, "arcs-oneshot-demo");
+      const claimed = await getSession(projectDir, THREAD);
       expect(claimed.currentRunId).toEqual(expect.any(String));
       expect(claimed.currentRunPid).toBe(DEAD_PID);
 
       const listed = await getSessions(base);
-      expect(listed.find((s) => s.normalizedId === "arcs-oneshot-demo")?.phase).toBe("idle");
-      expect((await getSessionView(base, "arcs-oneshot-demo")).phase).toBe("idle");
+      expect(listed.find((s) => s.normalizedId === THREAD)?.phase).toBe("idle");
+      expect((await getSessionView(base, THREAD)).phase).toBe("idle");
 
       // Same record, same claim, a pid that IS alive — the phase follows the
       // process, never the stored status.
       vi.mocked(liveRunPid).mockReturnValue(process.pid);
-      const second = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "keep me",
-      });
+      const second = await postTurn(base, THREAD, { intent: "ask", message: "keep me" });
       expect(second.status).toBe(202);
-      expect((await getSessionView(base, "arcs-oneshot-demo")).phase).toBe("running");
+      expect((await getSessionView(base, THREAD)).phase).toBe("running");
     });
   });
 
@@ -1221,26 +1339,24 @@ describe("POST /api/p/:slug/sessions/:id/run — run claim + derived phase (W1)"
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
       vi.mocked(liveRunPid).mockReturnValue(LIVE_PID);
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_claim_4",
-      });
+      const seed = await seedObserved(projectDir, "cc_claim_4");
 
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "run long",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
-      expect((await getSessionView(base, "arcs-oneshot-demo")).phase).toBe("running");
+      expect((await getSessionView(base, THREAD)).phase).toBe("running");
 
       // Past its own deadline the runner has already SIGTERMed then SIGKILLed
       // the child, so the claim is no longer evidence of anything — even with a
       // live pid on the record.
       await updateSession(projectDir, {
-        id: "arcs-oneshot-demo",
+        id: THREAD,
         metadata: { runDeadlineAt: Date.now() - 1_000 },
       });
-      expect((await getSessionView(base, "arcs-oneshot-demo")).phase).toBe("idle");
+      expect((await getSessionView(base, THREAD)).phase).toBe("idle");
     });
   });
 
@@ -1298,17 +1414,18 @@ describe("GET /api/p/:slug/sessions — what one read costs (W1)", () => {
       // A live ARCS run: its claim is checked against the pid, so the agent list
       // has nothing to say about it — and this is exactly the moment the UI
       // polls hardest.
-      const { status } = await postRun(base, quiet.normalizedId, {
-        mode: "oneshot",
+      const { status } = await postTurn(base, quiet.normalizedId, {
+        intent: "ask",
         message: "hold the claim",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
       agentsProbe.spawns = 0;
 
       const listed = await getSessions(base);
-      expect(listed.find((s) => s.normalizedId === "arcs-oneshot-demo")?.phase).toBe("running");
+      expect(listed.find((s) => s.normalizedId === THREAD)?.phase).toBe("running");
       expect((await getSessionView(base, "cc_cost_done")).phase).toBe("ended");
-      expect((await getSessionView(base, "arcs-oneshot-demo")).phase).toBe("running");
+      expect((await getSessionView(base, THREAD)).phase).toBe("running");
 
       // Three reads, zero subprocesses: `claude agents --json` costs ~0.35s of
       // wall clock and answers a question none of these records asked.
@@ -1356,85 +1473,7 @@ describe("GET /api/p/:slug/sessions — what one read costs (W1)", () => {
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/run — assistant reply write-back (T006)", () => {
-  it("oneshot success settles the captured reply as the assistant turn", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_reply_oneshot_success",
-      });
-
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
-        message: "reply to me",
-      });
-      expect(status).toBe(202);
-
-      // Every reply lands in the sidecar: user turn id -1, then the assistant
-      // reply minted at id -2 by the T002 shared negative-id helper.
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, "arcs-oneshot-demo");
-        expect(turns.map((t) => t.id)).toEqual([-1, -2]);
-        expect(turns.map((t) => t.type)).toEqual(["user", "assistant"]);
-        expect(turns[1]).toMatchObject({ type: "assistant", text: "reply" });
-      });
-    });
-  });
-
-  it("oneshot error and timeout outcomes never append the assistant turn", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_reply_oneshot_fail",
-      });
-
-      for (const outcome of ["error", "timeout"] as const) {
-        runRecord = {
-          ...RUN_RECORD,
-          outcome,
-          ...(outcome === "error" ? { error: "model refused" } : {}),
-        };
-        const { status } = await postRun(base, seed.normalizedId, {
-          mode: "oneshot",
-          message: `fail as ${outcome}`,
-        });
-        expect(status).toBe(202);
-      }
-
-      // Only the two request-time user turns land — failed runs append nothing.
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, "arcs-oneshot-demo");
-        expect(turns.map((t) => t.id)).toEqual([-1, -2]);
-        expect(turns.map((t) => t.type)).toEqual(["user", "user"]);
-      });
-    });
-  });
-
-  it("stable error outcome never appends the assistant turn", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_reply_stable_fail",
-      });
-
-      runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
-      const { status, envelope } = await postRun(base, seed.normalizedId, {
-        mode: "stable",
-        message: "start",
-      });
-      expect(status).toBe(202);
-      const threadId = envelope.data?.run?.threadId as string;
-
-      await vi.waitFor(async () => {
-        const turns = await readSessionTurns(projectDir, threadId);
-        expect(turns.map((t) => t.id)).toEqual([-1]);
-        expect(turns.map((t) => t.type)).toEqual(["user"]);
-      });
-    });
-  });
-});
-
-describe("POST /api/p/:slug/sessions/:id/run — staged environment (W2)", () => {
+describe("POST /api/p/:slug/sessions/:id/turns — staged environment (W2)", () => {
   const TASK_ID = "wire-the-staged-environment";
 
   /** A one-task DAG for the write target to be linked to. */
@@ -1447,11 +1486,11 @@ describe("POST /api/p/:slug/sessions/:id/run — staged environment (W2)", () =>
           {
             id: TASK_ID,
             normalizedId: TASK_ID,
-            title: "Wire the staged environment into the run route",
+            title: "Wire the staged environment into the turns route",
             status: "in_progress",
             priority: "high",
             scope: "src/web-server/routes/sessions.ts",
-            acceptance: "the run route stages, injects and persists",
+            acceptance: "the turns route stages, injects and persists",
             verify: "npm run typecheck",
             skill: "implementation",
             createdAt: "2026-01-01T00:00:00.000Z",
@@ -1490,37 +1529,30 @@ describe("POST /api/p/:slug/sessions/:id/run — staged environment (W2)", () =>
   it("appends the block, stating the write target's DAG position and the spawn cwd", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       seedTask(projectDir);
-      const session = await createSession(projectDir, {
+      // The thread exists and is LINKED before its first turn — the block
+      // describes the WRITE TARGET, so that is the record to link.
+      await createSession(projectDir, {
         runtimeType: "claude-code",
-        runtimeSessionId: "cc_stage_1",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
+        runtimeSessionId: THREAD,
+        origin: "arcs",
+        metadata: { control: "arcs-owned", directory: WORKSPACE },
       });
       await updateSession(projectDir, {
-        id: session.normalizedId,
+        id: THREAD,
         linkedNodeType: "task",
         linkedNodeId: TASK_ID,
       });
 
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
-        message: "carry on",
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "carry on" });
       expect(status).toBe(202);
 
       const text = stagedText(capturedJobs[0]) ?? "";
       expect(text.startsWith(STAGE_OPEN)).toBe(true);
       expect(text).toContain(`Linked node: task ${TASK_ID}`);
-      expect(text).toContain("Acceptance: the run route stages, injects and persists");
-      // The workspace root is the directory the child ACTUALLY runs in — the
-      // resumed session's own, not the project's primary path.
+      expect(text).toContain("Acceptance: the turns route stages, injects and persists");
+      // The workspace root is the directory the child ACTUALLY runs in.
       expect(text).toContain(`Workspace root: ${WORKSPACE}`);
       expect(capturedJobs[0].cwd).toBe(WORKSPACE);
-
-      // Staging must not narrow what a run may do: this task wires the context
-      // block only, so no tool/permission flag is emitted with it.
-      expect(capturedJobs[0].argv).not.toContain("--tools");
-      expect(capturedJobs[0].argv).not.toContain("--permission-mode");
     });
   });
 
@@ -1532,96 +1564,95 @@ describe("POST /api/p/:slug/sessions/:id/run — staged environment (W2)", () =>
       // cheap exit could never fire again.
       const ahead = new Date(Date.now() + 600_000);
       utimesSync(resolve(projectDir, "tasks", "index.json"), ahead, ahead);
+      const seed = await seedObserved(projectDir, "cc_stage_2");
 
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_stage_2",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
-      });
-
-      const { status } = await postRun(base, session.normalizedId, {
-        mode: "resume",
+      const { status } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "stage me",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
 
-      const stage = await storedStage(projectDir, session.normalizedId);
+      const stage = await storedStage(projectDir, THREAD);
       expect(stage?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
       expect(stage?.transport).toBe("system");
       expect(stage?.stagedAt).toBe(taskIndexMtimeMs(projectDir));
       expect(stage?.stagedAt).toBeGreaterThan(Date.now());
-      // The claim's own sibling key is untouched by the stage write.
-      const stored = await getSession(projectDir, session.normalizedId);
+      // The claim's own sibling keys are untouched by the stage write.
+      const stored = await getSession(projectDir, THREAD);
       expect(stored.metadata?.runDeadlineAt).toBeTypeOf("number");
+      expect(stored.metadata?.threadInitialized).toBe(true);
     });
   });
 
   it("writes metadata.stage ONLY when the refresh asks: a fresh stage is neither re-persisted nor re-injected", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       seedTask(projectDir);
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_stage_3",
-        status: "idle",
-        metadata: { directory: WORKSPACE },
-      });
+      const seed = await seedObserved(projectDir, "cc_stage_3");
 
-      await postRun(base, session.normalizedId, { mode: "resume", message: "one" });
-      const first = await storedStage(projectDir, session.normalizedId);
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
+      });
+      const first = await storedStage(projectDir, THREAD);
       expect(first?.stagedAt).toBeTypeOf("number");
       expect(stagedText(capturedJobs[0])).toContain(STAGE_OPEN);
 
-      // Nothing in the DAG moved, and resume CONTINUES the conversation that
+      // Nothing in the DAG moved, and a resume CONTINUES the conversation that
       // already carries the block: no re-injection, and no re-stamp of the
       // record the next freshness decision is made against.
-      await postRun(base, session.normalizedId, { mode: "resume", message: "two" });
+      await postTurn(base, THREAD, { intent: "ask", message: "two" });
       expect(stagedText(capturedJobs[1])).toBeUndefined();
-      expect(await storedStage(projectDir, session.normalizedId)).toEqual(first);
+      expect(await storedStage(projectDir, THREAD)).toEqual(first);
 
       // A DAG write does move it: the block is rebuilt, re-injected and
       // re-stamped in the same run.
       const later = new Date(Date.now() + 600_000);
       utimesSync(resolve(projectDir, "tasks", "index.json"), later, later);
-      await postRun(base, session.normalizedId, { mode: "resume", message: "three" });
+      await postTurn(base, THREAD, { intent: "ask", message: "three" });
       expect(stagedText(capturedJobs[2])).toContain(STAGE_OPEN);
-      const third = await storedStage(projectDir, session.normalizedId);
+      const third = await storedStage(projectDir, THREAD);
       expect(third?.stagedAt).toBe(taskIndexMtimeMs(projectDir));
       expect(third?.stagedAt).toBeGreaterThan(first?.stagedAt ?? 0);
       expect(third?.fingerprint).toBe(first?.fingerprint);
     });
   });
 
-  it("carries the block on every spawn that STARTS a conversation, fresh stage or not", async () => {
+  it("carries the block on an adoption FORK too — the inherited context never saw it", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       seedTask(projectDir);
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_stage_4",
+      const observed = await seedObserved(projectDir, "33333333-3333-4333-8333-333333333333");
+
+      const first = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "fork one",
       });
+      const forkA = first.envelope.data?.writeTargetId as string;
+      // A second adoption of the same session mints another thread whose stage
+      // is fresh from the first one's probe — and it must STILL be told where
+      // it is, because a fork inherits the human's context, not ARCS's block.
+      const second = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "fork two",
+      });
+      const forkB = second.envelope.data?.writeTargetId as string;
 
-      // Two oneshot runs against the same deterministic write target: the second
-      // takes the cheap exit, but its child is a brand-new `claude -p` with no
-      // history at all, so it must still be told where it is.
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "one" });
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "two" });
+      expect(forkB).not.toBe(forkA);
       expect(stagedText(capturedJobs[0])).toContain(STAGE_OPEN);
+      // The second fork's stage probe takes the cheap exit (nothing in the DAG
+      // moved), and it must STILL be told where it is — a fork inherits the
+      // human's context, never ARCS's block.
       expect(stagedText(capturedJobs[1])).toContain(STAGE_OPEN);
-      // Byte-identical across turns — that is the prompt-cache economics the
-      // stable tier exists for.
-      expect(stagedText(capturedJobs[1])).toBe(stagedText(capturedJobs[0]));
-
-      // The cheap exit still held: the second run re-assembled but persisted
-      // nothing, so the record is exactly the one the first run wrote.
-      const stage = await storedStage(projectDir, "arcs-oneshot-demo");
-      expect(stage?.stagedAt).toBeTypeOf("number");
+      // Each block names its OWN write target, which is what makes it the
+      // right block to cache against that thread.
+      expect(stagedText(capturedJobs[0])).toContain(forkA);
+      expect(stagedText(capturedJobs[1])).toContain(forkB);
     });
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (W2)", () => {
-  const ONESHOT = "arcs-oneshot-demo";
-
+describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down (W2)", () => {
   function eventLogNames(projectDir: string): string[] {
     const dir = resolve(projectDir, "sessions");
     if (!existsSync(dir)) return [];
@@ -1643,27 +1674,26 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
     return runId;
   }
 
-  it("logs under the SAME run id it persisted as the claim — name and record agree", async () => {
+  it("logs under the SAME run id it persisted as the claim, and answers with it", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("hello")));
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_runid",
-      });
+      const seed = await seedObserved(projectDir, "cc_w2_runid");
 
-      const { status } = await postRun(base, seed.normalizedId, {
-        mode: "oneshot",
+      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+        intent: "ask",
         message: "go",
+        threadRef: THREAD,
       });
       expect(status).toBe(202);
 
-      const runId = await settledRunId(projectDir, ONESHOT);
-      // The id handed to the runner, the id on the record and the id in the
-      // filename are one value — they cannot drift.
+      const runId = await settledRunId(projectDir, THREAD);
+      // The id handed to the runner, the id on the record, the id in the
+      // filename and the id in the 202 are one value — they cannot drift.
+      expect(envelope.data?.runId).toBe(runId);
       expect(capturedJobs[0].eventLog?.runId).toBe(runId);
-      expect(capturedJobs[0].eventLog?.sessionId).toBe(ONESHOT);
-      expect(eventLogNames(projectDir)).toEqual([`${ONESHOT}.run-${runId}.events.jsonl`]);
-      expect(existsSync(runEventLogPath(projectDir, ONESHOT, runId))).toBe(true);
+      expect(capturedJobs[0].eventLog?.sessionId).toBe(THREAD);
+      expect(eventLogNames(projectDir)).toEqual([`${THREAD}.run-${runId}.events.jsonl`]);
+      expect(existsSync(runEventLogPath(projectDir, THREAD, runId))).toBe(true);
     });
   });
 
@@ -1676,15 +1706,16 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
         assistantEvent(textBlock("Done.")),
         { type: "result", is_error: false, result: "Done." },
       );
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_fold",
+      const seed = await seedObserved(projectDir, "cc_w2_fold");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
       });
+      const runId = await settledRunId(projectDir, THREAD);
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      const runId = await settledRunId(projectDir, ONESHOT);
-
-      const turns = await readSessionTurns(projectDir, ONESHOT);
+      const turns = await readSessionTurns(projectDir, THREAD);
       expect(turns.map((t) => [t.id, t.type, t.text, t.tool?.name])).toEqual([
         [-1, "user", "go", undefined],
         [-2, "assistant", "Looking.", undefined],
@@ -1701,21 +1732,22 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
   it("folding the settled log again is a no-op", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("once"), toolBlock("Bash")));
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_idempotent",
-      });
+      const seed = await seedObserved(projectDir, "cc_w2_idempotent");
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      const runId = await settledRunId(projectDir, ONESHOT);
-      const afterRun = await readSessionTurns(projectDir, ONESHOT);
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
+      });
+      const runId = await settledRunId(projectDir, THREAD);
+      const afterRun = await readSessionTurns(projectDir, THREAD);
       expect(afterRun.map((t) => t.text)).toEqual(["go", "once", ""]);
 
       // A second settle for the same run (a retry, a restart's sweep) folds
       // nothing: the sidecar already carries the run's own id.
-      const again = await foldRunEventLog(projectDir, ONESHOT, runId);
+      const again = await foldRunEventLog(projectDir, THREAD, runId);
       expect(again).toEqual({ appended: 0, alreadyFolded: true, assistantTextFolded: true });
-      expect(await readSessionTurns(projectDir, ONESHOT)).toEqual(afterRun);
+      expect(await readSessionTurns(projectDir, THREAD)).toEqual(afterRun);
     });
   });
 
@@ -1723,22 +1755,23 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("got this far")));
       runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_error",
-      });
+      const seed = await seedObserved(projectDir, "cc_w2_error");
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      const runId = await settledRunId(projectDir, ONESHOT);
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
+      });
+      const runId = await settledRunId(projectDir, THREAD);
 
       // The log outlives the failure: what the child said is in the sidecar and
       // the raw log is still on disk for inspection.
-      const turns = await readSessionTurns(projectDir, ONESHOT);
+      const turns = await readSessionTurns(projectDir, THREAD);
       expect(turns.map((t) => [t.type, t.text])).toEqual([
         ["user", "go"],
         ["assistant", "got this far"],
       ]);
-      expect(existsSync(runEventLogPath(projectDir, ONESHOT, runId))).toBe(true);
+      expect(existsSync(runEventLogPath(projectDir, THREAD, runId))).toBe(true);
     });
   });
 
@@ -1746,17 +1779,18 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson({ type: "system", subtype: "init" });
       runRecord = { ...RUN_RECORD, outcome: "timeout", error: "timed out" };
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_timeout",
+      const seed = await seedObserved(projectDir, "cc_w2_timeout");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
       });
+      const runId = await settledRunId(projectDir, THREAD);
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      const runId = await settledRunId(projectDir, ONESHOT);
-
-      expect(existsSync(runEventLogPath(projectDir, ONESHOT, runId))).toBe(true);
+      expect(existsSync(runEventLogPath(projectDir, THREAD, runId))).toBe(true);
       // Nothing assistant-shaped in the log, and a failed run appends no reply.
-      const turns = await readSessionTurns(projectDir, ONESHOT);
+      const turns = await readSessionTurns(projectDir, THREAD);
       expect(turns.map((t) => t.type)).toEqual(["user"]);
     });
   });
@@ -1764,15 +1798,16 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
   it("without a log the captured-reply write-back is unchanged", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = "";
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_nolog",
+      const seed = await seedObserved(projectDir, "cc_w2_nolog");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
       });
+      await settledRunId(projectDir, THREAD);
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      await settledRunId(projectDir, ONESHOT);
-
-      const turns = await readSessionTurns(projectDir, ONESHOT);
+      const turns = await readSessionTurns(projectDir, THREAD);
       expect(turns.map((t) => [t.type, t.text])).toEqual([
         ["user", "go"],
         ["assistant", "reply"],
@@ -1783,32 +1818,28 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
 
   it("prunes at settle so a session's logs stay bounded", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_retention",
-      });
+      const seed = await seedObserved(projectDir, "cc_w2_retention");
 
       const runs = RUN_EVENT_LOG_RETENTION + 3;
       for (let i = 0; i < runs; i += 1) {
         runStdout = ndjson(assistantEvent(textBlock(`turn ${i}`)));
-        const { status } = await postRun(base, seed.normalizedId, {
-          mode: "oneshot",
+        const { status } = await postTurn(base, i === 0 ? seed.normalizedId : THREAD, {
+          intent: "ask",
           message: `run ${i}`,
+          ...(i === 0 ? { threadRef: THREAD } : {}),
         });
         expect(status).toBe(202);
         // The claim is released at settle — and settle is where the prune runs.
-        await vi.waitFor(async () => {
-          expect((await getSession(projectDir, ONESHOT)).currentRunId).toBeUndefined();
-        });
+        await expectSettled(projectDir, THREAD);
       }
 
       expect(capturedJobs).toHaveLength(runs);
       expect(eventLogNames(projectDir)).toHaveLength(RUN_EVENT_LOG_RETENTION);
       // The newest run's log is always one of the survivors.
       const newest = capturedJobs[runs - 1].eventLog?.runId as string;
-      expect(existsSync(runEventLogPath(projectDir, ONESHOT, newest))).toBe(true);
+      expect(existsSync(runEventLogPath(projectDir, THREAD, newest))).toBe(true);
       // Every turn still folded exactly once, oldest logs pruned or not.
-      const turns = await readSessionTurns(projectDir, ONESHOT);
+      const turns = await readSessionTurns(projectDir, THREAD);
       expect(turns.filter((t) => t.text.startsWith("turn "))).toHaveLength(runs);
     });
   });
@@ -1819,15 +1850,16 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
       // zero lines on disk — the same count a child that never spoke produces.
       runStdout = "";
       runRecord = { ...RUN_RECORD, eventLogLines: 0, eventLogTruncated: true };
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_truncated",
+      const seed = await seedObserved(projectDir, "cc_w2_truncated");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
       });
+      await settledRunId(projectDir, THREAD);
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      await settledRunId(projectDir, ONESHOT);
-
-      const run = (await getSession(projectDir, ONESHOT)).metadata?.run as Record<string, unknown>;
+      const run = (await getSession(projectDir, THREAD)).metadata?.run as Record<string, unknown>;
       expect(run.eventLogLines).toBe(0);
       // Without this the record says "0 lines" and nothing else, and a later
       // offset-based tail would read a capped log as the whole stream.
@@ -1839,15 +1871,16 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("all of it")));
       runRecord = { ...RUN_RECORD, eventLogLines: 1 };
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_whole",
+      const seed = await seedObserved(projectDir, "cc_w2_whole");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
       });
+      await settledRunId(projectDir, THREAD);
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      await settledRunId(projectDir, ONESHOT);
-
-      const run = (await getSession(projectDir, ONESHOT)).metadata?.run as Record<string, unknown>;
+      const run = (await getSession(projectDir, THREAD)).metadata?.run as Record<string, unknown>;
       expect(run.eventLogLines).toBe(1);
       expect("eventLogTruncated" in run).toBe(false);
     });
@@ -1856,59 +1889,23 @@ describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (
   it("DELETE takes the session's event logs with its sidecar", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("bye")));
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_delete",
-      });
+      const seed = await seedObserved(projectDir, "cc_w2_delete");
 
-      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
-      await settledRunId(projectDir, ONESHOT);
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "go",
+        threadRef: THREAD,
+      });
+      await settledRunId(projectDir, THREAD);
       expect(eventLogNames(projectDir)).toHaveLength(1);
 
-      const res = await fetch(`${base}/api/p/demo/sessions/${ONESHOT}`, {
+      const res = await fetch(`${base}/api/p/demo/sessions/${THREAD}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       expect(eventLogNames(projectDir)).toEqual([]);
-      expect(await readSessionTurns(projectDir, ONESHOT)).toEqual([]);
-    });
-  });
-
-  it("resume mode logs the run but never folds — the mirror owns that sidecar", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const transcriptPath = resolve(projectDir, "w2-transcript.jsonl");
-      writeFileSync(
-        transcriptPath,
-        `${[
-          JSON.stringify({ type: "user", message: { content: "prompt" } }),
-          JSON.stringify({
-            type: "assistant",
-            message: { content: [{ type: "text", text: "mirrored reply" }] },
-          }),
-        ].join("\n")}\n`,
-        "utf-8",
-      );
-      runStdout = ndjson(assistantEvent(textBlock("mirrored reply")));
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_w2_resume",
-        status: "idle",
-        metadata: { directory: WORKSPACE, transcriptPath },
-      });
-
-      await postRun(base, session.normalizedId, { mode: "resume", message: "carry on" });
-      const runId = await settledRunId(projectDir, session.normalizedId);
-
-      // The log exists (every run gets one) but the sidecar holds only the
-      // mirrored transcript lines — folding would have doubled them.
-      expect(existsSync(runEventLogPath(projectDir, session.normalizedId, runId))).toBe(true);
-      const turns = await readSessionTurns(projectDir, session.normalizedId);
-      expect(turns.map((t) => [t.id, t.text])).toEqual([
-        [0, "prompt"],
-        [1, "mirrored reply"],
-      ]);
-      expect(turns.every((t) => t.run === undefined)).toBe(true);
+      expect(await readSessionTurns(projectDir, THREAD)).toEqual([]);
     });
   });
 });

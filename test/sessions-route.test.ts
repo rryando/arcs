@@ -457,7 +457,7 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
       expect(status).toBe(400);
       expect(envelope.code).toBe("SESSION_QUEUE_UNSUPPORTED");
       // The refusal has to say what to do instead, or it is just a dead end.
-      expect(envelope.message).toMatch(/\/run/);
+      expect(envelope.message).toMatch(/\/turns/);
 
       // Nothing was accepted anywhere: no queue entry, no timestamp bump, and
       // no reference turn left dangling in the sidecar.
@@ -479,10 +479,10 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
         JSON.stringify({
           sessions: [
             {
-              id: "arcs-oneshot-demo",
-              normalizedId: "arcs-oneshot-demo",
+              id: "arcs-thread-demo-legacy",
+              normalizedId: "arcs-thread-demo-legacy",
               runtimeType: "claude-code",
-              runtimeSessionId: "arcs-oneshot-demo",
+              runtimeSessionId: "arcs-thread-demo-legacy",
               status: "active",
               startedAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
@@ -493,13 +493,15 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
         "utf-8",
       );
 
-      const { status, envelope } = await sendMessage(base, "arcs-oneshot-demo", {
+      const { status, envelope } = await sendMessage(base, "arcs-thread-demo-legacy", {
         message: "into the void",
       });
 
       expect(status).toBe(400);
       expect(envelope.code).toBe("SESSION_QUEUE_UNSUPPORTED");
-      expect((await getSession(projectDir, "arcs-oneshot-demo")).messageQueue).toBeUndefined();
+      expect(
+        (await getSession(projectDir, "arcs-thread-demo-legacy")).messageQueue,
+      ).toBeUndefined();
     });
   });
 

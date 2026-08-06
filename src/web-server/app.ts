@@ -15,6 +15,7 @@ import { eventsRoute } from "./routes/events.js";
 import { hookEventsRoute } from "./routes/hook-events.js";
 import { projectsRoute } from "./routes/projects.js";
 import { sessionsRoute } from "./routes/sessions.js";
+import { workspaceRoute } from "./routes/workspace.js";
 import { secureLocalRequest } from "./security.js";
 import { settleOrphanedRunsOnStartup } from "./session-reconciler.js";
 import { registerStaticServing } from "./static.js";
@@ -75,6 +76,8 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route("/", collectionsRoute);
   app.route("/", sessionsRoute);
   app.route("/", hookEventsRoute);
+  // Read-only file plane (two GETs, no writes) — see routes/workspace.ts.
+  app.route("/", workspaceRoute);
   app.route("/", discoveryRoute);
   app.route("/", eventsRoute);
 

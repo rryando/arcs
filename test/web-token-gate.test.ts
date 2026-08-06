@@ -22,6 +22,31 @@ import { withTempDataDir } from "./helpers/temp-data-dir.js";
 const HOOK_TOKEN = "test-hook-token-0123456789";
 const MUTATION_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
 
+/**
+ * The READ allowlist — routes that must answer without an X-ARCS-Token.
+ *
+ * Enumerated by hand on purpose. The mutating probe below walks the router, so
+ * a new POST is caught automatically; a new GET is caught by nothing, and a
+ * read-only route that nobody ever names here is indistinguishable from a route
+ * that quietly slipped past the gate's method check. Naming it here asserts the
+ * intent: this route is a READ, and it is open because reads are open.
+ *
+ * The two workspace file-plane routes are read-only by contract — the plane has
+ * no write route at all — so they are listed as reads rather than left absent
+ * from both this list and the mutating probe.
+ */
+const READ_ROUTES = [
+  "/api/health",
+  "/api/projects",
+  "/api/p/demo",
+  "/api/p/demo/tasks",
+  "/api/p/demo/workspace/tree",
+  "/api/p/demo/workspace/file?path=hello.txt",
+];
+
+/** The workspace plane's registered routes, as the composed router spells them. */
+const WORKSPACE_READ_ROUTE_PATHS = ["/api/p/:slug/workspace/file", "/api/p/:slug/workspace/tree"];
+
 interface Ctx {
   base: string;
   dir: string;
@@ -41,6 +66,13 @@ async function withServer(
       }),
       "utf-8",
     );
+    // A real workspace root: the read allowlist probes the workspace plane, and
+    // an unregistered workspace answers 400 (never 401), which would prove
+    // nothing about the token gate.
+    const workspace = resolve(dir, "workspace");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(resolve(workspace, "hello.txt"), "alpha\nbeta\n", "utf-8");
+
     const projectDir = resolve(dir, "projects", "demo");
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(
@@ -50,7 +82,7 @@ async function withServer(
         name: "Demo",
         description: "test project",
         createdAt: "2026-01-01T00:00:00.000Z",
-        workspacePaths: [],
+        workspacePaths: [workspace],
       }),
       "utf-8",
     );
@@ -134,7 +166,7 @@ describe("web token gate", () => {
 
   it("leaves reads open — GET routes and /api/events need no token", async () => {
     await withServer(async ({ base }) => {
-      for (const path of ["/api/health", "/api/projects", "/api/p/demo", "/api/p/demo/tasks"]) {
+      for (const path of READ_ROUTES) {
         const res = await fetch(`${base}${path}`);
         expect({ path, status: res.status }).toEqual({ path, status: 200 });
         await res.text();
@@ -222,8 +254,20 @@ describe("web token gate", () => {
       // Guard against a vacuous pass if `routes` ever stops exposing handlers.
       expect(mutating.length).toBeGreaterThan(0);
       const signatures = mutating.map((route) => `${route.method} ${route.path}`);
-      expect(signatures).toContain("POST /api/p/:slug/sessions/:id/run");
+      expect(signatures).toContain("POST /api/p/:slug/sessions/:id/turns");
       expect(signatures.filter((sig) => sig.startsWith("POST /api/hook/"))).not.toHaveLength(0);
+
+      // The workspace file plane is read-only: both routes exist, both are GET,
+      // and NEITHER may appear in the mutating set. A write route added there
+      // later lands in `mutating` and fails the second assertion — which is the
+      // point, because that plane is not allowed to grow one.
+      expect(
+        app.routes
+          .filter((route) => route.method === "GET" && route.path.includes("/workspace/"))
+          .map((route) => route.path)
+          .sort(),
+      ).toEqual(WORKSPACE_READ_ROUTE_PATHS);
+      expect(signatures.filter((sig) => sig.includes("/workspace/"))).toEqual([]);
 
       for (const route of mutating) {
         // `:param` → a concrete segment; the gate runs before the handler, so

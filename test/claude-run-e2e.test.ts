@@ -1,28 +1,27 @@
 /**
- * Env-gated end-to-end test for the headless `claude -p` run path (the session
- * panel's "deliver via" headless modes, plan
- * claude-code-headless-async-runs-from-the-session-panel).
+ * Env-gated end-to-end test for the headless turn path (the session panel's
+ * headless delivery channel, plan session-bridge-hardening).
  *
  * Exercises the REAL web server and a REAL `claude` binary end to end — no
  * mocks, no stubs, no fake runner:
  *
- *   seed a real claude session (headless) → POST /sessions/:id/run (resume)
- *   → 202 accepted → child spawns → exit mapping → mode-1 write-back mirrors
- *   the runtime transcript → GET /transcript shows the user turn followed by
- *   the assistant reply.
+ *   seed a real claude session (headless) → POST /sessions/:id/turns
+ *   → 202 accepted → the observed session is ADOPTED (forked) into a new ARCS
+ *   thread → child spawns → exit mapping → the write-back folds the run's event
+ *   log → GET /transcript on the WRITE TARGET shows the user turn followed by
+ *   the assistant reply, and the observed session is untouched.
  *
  * The test is gated by ARCS_CLAUDE_E2E=1: without it, the single `it` is
  * skipped so the bare file passes in CI (exit 0) even where no `claude` can
  * run. With the gate on, it shells out to a real, authenticated `claude` on
  * PATH (and costs real tokens) — run deliberately, never in CI.
  *
- * Mode choice: RESUME, not oneshot/stable. Under the current write-back
- * (sessions.ts writeBackRun), only resume mirrors the child's runtime
- * transcript into the sidecar — oneshot/stable append the user turn at request
- * time and finalize metadata.run (replyChars) but never write the assistant
- * reply into the sidecar, so a transcript assertion would be false by design
- * for those modes. Resume needs no terminal session: the test seeds the
- * session itself with a headless `claude -p --session-id <uuid>` spawn.
+ * This is the only place the ADOPTION FORK is exercised against a real claude:
+ * `--resume <observed uuid> --session-id <fresh uuid> --fork-session`. The
+ * fork's transcript is a separate file, so asserting the original session's
+ * JSONL did not grow is what proves the human's live terminal thread was not
+ * hijacked — the failure mode has no error to notice it by (claude accepts
+ * `--session-id` equal to `--resume`, exit 0, empty stderr).
  *
  * Known version-drift note: the route builds the child argv WITHOUT `--cwd` —
  * claude >= 2.x rejects it ("unknown option"), settling every headless run as
@@ -34,7 +33,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { type Dirent, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { type Dirent, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -152,8 +151,16 @@ async function waitForRunSettled(
   );
 }
 
+/** Complete lines in a claude JSONL transcript — the measure the fork probe
+ *  used, so "the original did not grow" is asserted the same way it was found. */
+function transcriptLineCount(path: string): number {
+  return readFileSync(path, "utf-8")
+    .split("\n")
+    .filter((line) => line.trim() !== "").length;
+}
+
 it.skipIf(!e2e)(
-  "headless claude run writes a transcript back",
+  "a headless turn forks the observed session and writes back to the fork",
   async () => {
     await withTempDataDir(async (dir) => {
       writeFileSync(
@@ -178,9 +185,9 @@ it.skipIf(!e2e)(
         "utf-8",
       );
 
-      // A real Claude session the resume target can attach to: the headless seed
-      // writes ~/.claude/projects/<escaped workdir>/<uuid>.jsonl, which the
-      // mode-1 write-back mirrors back after the run child exits.
+      // A real Claude session for the turn to ADOPT: the headless seed writes
+      // ~/.claude/projects/<escaped workdir>/<uuid>.jsonl, which the fork
+      // inherits the context of and must leave untouched.
       const runtimeSessionId = randomUUID();
       seedClaudeSession(dir, runtimeSessionId);
       const transcriptPath = findSessionTranscript(runtimeSessionId);
@@ -188,6 +195,7 @@ it.skipIf(!e2e)(
         transcriptPath,
         "seed session JSONL must exist under ~/.claude/projects",
       ).toBeDefined();
+      const seedLinesBefore = transcriptLineCount(transcriptPath as string);
 
       const session = await createSession(projectDir, {
         runtimeType: "claude-code",
@@ -202,38 +210,47 @@ it.skipIf(!e2e)(
       try {
         server = await startWebServer({ port: 0, host: "127.0.0.1", watch: false });
 
-        // 1. The route answers 202 immediately — the run proceeds out-of-band.
+        // 1. The route answers 202 immediately — the run proceeds out-of-band —
+        //    and names the record it forked the observed session into.
         const runRes = await fetch(
-          `${server.url}/api/p/demo/sessions/${session.normalizedId}/run`,
+          `${server.url}/api/p/demo/sessions/${session.normalizedId}/turns`,
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "X-ARCS-Token": currentWebToken() ?? "",
             },
-            body: JSON.stringify({ mode: "resume", message: RUN_MESSAGE }),
+            body: JSON.stringify({ intent: "ask", message: RUN_MESSAGE }),
           },
         );
         expect(runRes.status).toBe(202);
         const runEnvelope = (await runRes.json()) as {
           ok: boolean;
-          data?: { run?: { accepted?: boolean; mode?: string } };
+          data?: { runId?: string; streamUrl?: string; writeTargetId?: string };
         };
         expect(runEnvelope.ok).toBe(true);
-        expect(runEnvelope.data?.run).toEqual({ accepted: true, mode: "resume" });
+        const runId = runEnvelope.data?.runId as string;
+        const writeTargetId = runEnvelope.data?.writeTargetId as string;
+        expect(runId).toBeTypeOf("string");
+        // Adoption forks: the write target is a NEW ARCS thread, never the
+        // observed record the turn was addressed to.
+        expect(writeTargetId).toMatch(/^arcs-thread-demo-/);
+        expect(writeTargetId).not.toBe(session.normalizedId);
+        expect(runEnvelope.data?.streamUrl).toBe(
+          `/api/p/demo/sessions/${writeTargetId}/runs/${runId}/stream`,
+        );
 
-        // 2. The run completes: metadata.run finalizes with a terminal outcome.
-        const { run } = await waitForRunSettled(server.url, session.normalizedId, POLL_DEADLINE_MS);
+        // 2. The run completes: metadata.run finalizes with a terminal outcome
+        //    on the WRITE TARGET, carrying the turn's intent.
+        const { run } = await waitForRunSettled(server.url, writeTargetId, POLL_DEADLINE_MS);
         expect(run.outcome).toBe("success");
-        expect(run.mode).toBe("resume");
+        expect(run.mode).toBe("ask");
         expect(typeof run.endedAt).toBe("number");
         expect(run.replyChars).toBeGreaterThan(0);
 
-        // 3. The write-back mirrored the runtime transcript: the user turn lands
-        //    before the assistant turn carrying the reply (exact text loose).
-        const trRes = await fetch(
-          `${server.url}/api/p/demo/sessions/${session.normalizedId}/transcript`,
-        );
+        // 3. The fork's own sidecar: the request-time user turn, then the
+        //    assistant reply the settle folded down (exact text loose).
+        const trRes = await fetch(`${server.url}/api/p/demo/sessions/${writeTargetId}/transcript`);
         expect(trRes.status).toBe(200);
         const trEnvelope = (await trRes.json()) as {
           ok: boolean;
@@ -241,7 +258,10 @@ it.skipIf(!e2e)(
         };
         const turns = trEnvelope.data?.turns ?? [];
         const userIdx = turns.findIndex((t) => t.type === "user" && t.text === RUN_MESSAGE);
-        expect(userIdx, "the run's user turn must be mirrored").toBeGreaterThanOrEqual(0);
+        expect(
+          userIdx,
+          "the turn's user prompt must be on the fork's sidecar",
+        ).toBeGreaterThanOrEqual(0);
         const assistantAfter = turns
           .slice(userIdx + 1)
           .find((t) => t.type === "assistant" && t.text.trim().length > 0);
@@ -249,10 +269,22 @@ it.skipIf(!e2e)(
           assistantAfter,
           "an assistant turn with the reply text must follow the user turn",
         ).toBeDefined();
+
+        // 4. THE SAFETY PROPERTY. The observed session's transcript did not
+        //    grow, and its record holds no claim — a fork that landed in place
+        //    would have appended to the human's live thread with exit 0 and an
+        //    empty stderr, which is exactly why this is measured rather than
+        //    trusted.
+        expect(transcriptLineCount(transcriptPath as string)).toBe(seedLinesBefore);
+        const observedRes = await fetch(
+          `${server.url}/api/p/demo/sessions/${session.normalizedId}`,
+        );
+        const observed = (await observedRes.json()) as SessionEnvelope;
+        expect(observed.data?.metadata?.run).toBeUndefined();
       } finally {
         await server?.close();
       }
     });
   },
-  180_000, // real claude seed + run + mirror routinely exceed vitest's 5s default
+  180_000, // real claude seed + fork + settle routinely exceed vitest's 5s default
 );

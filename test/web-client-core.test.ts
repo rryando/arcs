@@ -2,8 +2,9 @@
  * Unit tests for the web client's pure shortcut-matching core, its API request
  * builder, its session-state vocabulary (the sessions filter, the live counter,
  * the composer's resume gate and the badge they must all agree with about every
- * row) and the zero-import leaf that vocabulary lives in, the server's SSE
- * change classifier, and the dev-only vite plugin that supplies the token in
+ * row) and the zero-import leaf that vocabulary lives in, the run-stream fold
+ * and the turn-list composition that consume the run event stream, the server's
+ * SSE change classifier, and the dev-only vite plugin that supplies the token in
  * `vite dev`.
  */
 
@@ -13,6 +14,15 @@ import { fileURLToPath } from "node:url";
 import { type Plugin, resolveConfig } from "vite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
+import type { SessionTurn } from "../web/src/api/client.js";
+import {
+  EMPTY_RUN_STREAM,
+  foldRunEnd,
+  foldRunLine,
+  type RunStreamState,
+  runStreamText,
+} from "../web/src/api/sse.js";
+import { composeTurnList } from "../web/src/components/SessionPanel.js";
 import {
   filterSessionsByState,
   isSessionAttached,
@@ -427,6 +437,249 @@ describe("session vocabulary leaf", () => {
     expect(
       code.match(/^\s*import\b|^\s*export\b.*\bfrom\b|^\s*\}\s*from\b|\bimport\s*\(/m),
     ).toBeNull();
+  });
+});
+
+/**
+ * The client half of the run event stream (`GET …/runs/:runId/stream`), whose
+ * server half is covered by test/run-stream-route.test.ts.
+ *
+ * Everything here is driven through the pure fold, never through an
+ * `EventSource`: the browser's automatic reconnect is not the thing under test
+ * (it is the platform's), and what a client author can actually get wrong is
+ * the arithmetic on either side of it — the cursor it resumes at, and whether
+ * the deltas of a message and the completed message that repeats them both
+ * reach the screen.
+ */
+describe("run event stream fold", () => {
+  const delta = (text: string) =>
+    JSON.stringify({
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+    });
+  const assistant = (content: unknown[]) =>
+    JSON.stringify({ type: "assistant", message: { content } });
+
+  /** One run's log, exactly as the child wrote it: partial deltas, the completed
+   *  message that repeats them, a tool call, a line no version of this client
+   *  can parse, and a second message. */
+  const log = [
+    JSON.stringify({ type: "system", subtype: "init" }),
+    delta("hel"),
+    delta("lo"),
+    assistant([{ type: "text", text: "hello" }]),
+    assistant([{ type: "tool_use", name: "Read", input: { file_path: "src/web-server/app.ts" } }]),
+    "{ not json at all",
+    assistant([{ type: "text", text: " world" }]),
+  ];
+
+  /** Delivers `[from, to)` the way the route does — every line carrying its own
+   *  ABSOLUTE offset, which is the only reason a resumed connection is
+   *  indistinguishable from one that never dropped. */
+  function tail(state: RunStreamState, from: number, to = log.length): RunStreamState {
+    let next = state;
+    for (let offset = from; offset < to; offset += 1) {
+      next = foldRunLine(next, { offset, line: log[offset] ?? "" });
+    }
+    return next;
+  }
+
+  it("renders partial text as it arrives, before any message completes", () => {
+    const midMessage = tail(EMPTY_RUN_STREAM, 0, 3);
+    // The whole point of the second channel: text on screen while the message
+    // is still being written.
+    expect(runStreamText(midMessage)).toBe("hello");
+    expect(midMessage.text).toBe("");
+    expect(midMessage.partial).toBe("hello");
+  });
+
+  it("lets the completed message supersede its own deltas rather than repeat them", () => {
+    // The duplication a naive fold produces here is "hellohello": the completed
+    // `assistant` message carries the same text the deltas streamed.
+    expect(runStreamText(tail(EMPTY_RUN_STREAM, 0, 4))).toBe("hello");
+    expect(runStreamText(tail(EMPTY_RUN_STREAM, 0))).toBe("hello world");
+  });
+
+  it("ticks tools by name and target, and folds unknown lines to nothing", () => {
+    const state = tail(EMPTY_RUN_STREAM, 0);
+    expect(state.tools).toEqual([{ id: "4:0", name: "Read", target: "src/web-server/app.ts" }]);
+    // The `system` line, and the line no parser can read, both survive in the
+    // log and contribute nothing here — a view of the log may not fail on a
+    // record it has never seen.
+    expect(state.nextOffset).toBe(log.length);
+  });
+
+  it("resumes a dropped connection at the frame's own offset — no gap, no duplicate", () => {
+    // Seen through line 3; the cursor is the route's `from`: last seen + 1.
+    const dropped = tail(EMPTY_RUN_STREAM, 0, 4);
+    expect(dropped.nextOffset).toBe(4);
+
+    // What the reconnect delivers: `from = nextOffset`, absolute offsets intact.
+    const resumed = tail(dropped, dropped.nextOffset);
+    const uninterrupted = tail(EMPTY_RUN_STREAM, 0);
+
+    expect(runStreamText(resumed)).toBe(runStreamText(uninterrupted));
+    expect(resumed.tools).toEqual(uninterrupted.tools);
+    expect(resumed.nextOffset).toBe(uninterrupted.nextOffset);
+    // Non-vacuity: the drop really did split the run in two, and the second
+    // half really did carry content.
+    expect(runStreamText(dropped)).not.toBe(runStreamText(uninterrupted));
+  });
+
+  it("never rewinds the cursor, so a replayed frame cannot lower the resume point", () => {
+    const state = tail(EMPTY_RUN_STREAM, 0);
+    // `Last-Event-ID` merges as max(from, header) server-side; the cursor this
+    // side is a high-water mark for the same reason. Note there is deliberately
+    // no text dedupe behind it — the offset contract is what prevents a
+    // duplicate, and a dedupe here would hide a resume bug rather than fix one.
+    expect(foldRunLine(state, { offset: 1, line: delta("x") }).nextOffset).toBe(state.nextOffset);
+  });
+
+  it("settles on the end frame, carrying the outcome and the truncation flag", () => {
+    const ended = foldRunEnd(tail(EMPTY_RUN_STREAM, 0), {
+      offset: log.length,
+      outcome: "success",
+      truncated: true,
+    });
+    expect(ended.status).toBe("ended");
+    expect(ended.outcome).toBe("success");
+    expect(ended.truncated).toBe(true);
+    // The end frame's offset is the log's total line count — the `from` that
+    // would now return nothing.
+    expect(ended.nextOffset).toBe(log.length);
+
+    // Unknowable truncation is ABSENT, never `false`: a newer run owning the
+    // record makes this run's completeness unreadable, and the fold must not
+    // manufacture an answer for it.
+    const unknown = foldRunEnd(EMPTY_RUN_STREAM, { offset: 2 });
+    expect(unknown.truncated).toBeUndefined();
+    expect("truncated" in unknown).toBe(false);
+  });
+});
+
+/**
+ * The one rendering rule the two sources of a run's text have to obey.
+ *
+ * A run reaches the panel twice — live off its event log, then as the sidecar
+ * turns the settle folds down — and the visible symptom of getting the handover
+ * wrong is a flash of the same paragraph twice. A test that watched for the
+ * flash would be a timing test; this asserts the invariant that makes the flash
+ * impossible instead, over every commit the panel passes through.
+ */
+describe("session panel turn list", () => {
+  const runId = "run-7c1f";
+  const prompt: SessionTurn = { id: -9, type: "user", text: "summarize the route" };
+  /** What the settle folded down — tagged with the run, as the server writes it. */
+  const foldedText: SessionTurn = { id: -8, type: "assistant", text: "hello world", run: runId };
+  const foldedTool: SessionTurn = {
+    id: -7,
+    type: "assistant",
+    text: "",
+    tool: { name: "Read" },
+    run: runId,
+  };
+  /** A turn from an EARLIER run — tagged, but not with this one. */
+  const older: SessionTurn = { id: -12, type: "assistant", text: "yesterday", run: "run-0aaa" };
+
+  const streaming: RunStreamState = {
+    ...EMPTY_RUN_STREAM,
+    runId,
+    status: "open",
+    partial: "hello",
+  };
+  const settled: RunStreamState = {
+    ...streaming,
+    status: "ended",
+    text: "hello world",
+    partial: "",
+  };
+
+  /** Every commit one run puts the panel through, in order. The interesting
+   *  ones are the last three: the stream ends, the transcript has not refetched
+   *  yet, and then it has. */
+  const timeline: Array<{ at: string; turns: SessionTurn[]; live: RunStreamState | null }> = [
+    { at: "before any run", turns: [older], live: null },
+    {
+      at: "accepted, nothing streamed yet",
+      turns: [older, prompt],
+      live: { ...EMPTY_RUN_STREAM, runId, status: "connecting" },
+    },
+    { at: "streaming", turns: [older, prompt], live: streaming },
+    {
+      at: "reconnecting mid-run",
+      turns: [older, prompt],
+      live: { ...streaming, status: "connecting" },
+    },
+    { at: "settled, sidecar not refetched", turns: [older, prompt], live: settled },
+    {
+      at: "settled, sidecar refetched",
+      turns: [older, prompt, foldedText, foldedTool],
+      live: settled,
+    },
+    {
+      at: "stream state dropped after the swap",
+      turns: [older, prompt, foldedText, foldedTool],
+      live: null,
+    },
+  ];
+
+  const compose = (commit: (typeof timeline)[number]) => composeTurnList(commit.turns, commit.live);
+
+  it("never holds the streamed block and the run's folded turns in the same commit", () => {
+    for (const commit of timeline) {
+      const items = compose(commit);
+      const streamed = items.filter((item) => item.kind === "stream");
+      const folded = items.filter((item) => item.kind === "turn" && item.turn.run === runId);
+      // Labelled so a failure names the commit that broke it.
+      expect([commit.at, streamed.length === 0 || folded.length === 0]).toEqual([commit.at, true]);
+    }
+  });
+
+  it("covers both sides of the swap — the assertion above is not vacuous", () => {
+    const streamedAt = timeline.filter((commit) =>
+      compose(commit).some((item) => item.kind === "stream"),
+    );
+    const foldedAt = timeline.filter((commit) =>
+      compose(commit).some((item) => item.kind === "turn" && item.turn.run === runId),
+    );
+    expect(streamedAt.map((commit) => commit.at)).toEqual([
+      "accepted, nothing streamed yet",
+      "streaming",
+      "reconnecting mid-run",
+      "settled, sidecar not refetched",
+    ]);
+    expect(foldedAt.map((commit) => commit.at)).toEqual([
+      "settled, sidecar refetched",
+      "stream state dropped after the swap",
+    ]);
+  });
+
+  it("swaps in one commit — the run's text is on screen in every commit of the run", () => {
+    // No gap either: the block is dropped by the ARRIVAL of the folded turns,
+    // never by the stream ending, so no commit renders neither.
+    for (const commit of timeline.slice(1)) {
+      const items = compose(commit);
+      const carries =
+        items.some((item) => item.kind === "stream") ||
+        items.some((item) => item.kind === "turn" && item.turn.run === runId);
+      expect([commit.at, carries]).toEqual([commit.at, true]);
+    }
+  });
+
+  it("keeps an ended block that folded no turns — a silent run is still evidence", () => {
+    // The fold appends nothing for a run with no assistant output, so nothing
+    // ever tags the sidecar with it. An `end`-driven swap would blank the only
+    // record the user has that the run happened at all.
+    const items = composeTurnList([older, prompt], { ...settled, text: "", partial: "" });
+    expect(items.filter((item) => item.kind === "stream")).toHaveLength(1);
+  });
+
+  it("is keyed on the run, not on the presence of any folded turn", () => {
+    // An older run's folded turns must not suppress this run's live block.
+    const items = composeTurnList([older], streaming);
+    expect(items.map((item) => item.kind)).toEqual(["turn", "stream"]);
+    // And an idle stream (nothing being tailed) contributes nothing.
+    expect(composeTurnList([older], EMPTY_RUN_STREAM).map((item) => item.kind)).toEqual(["turn"]);
   });
 });
 
