@@ -740,6 +740,24 @@ export interface SettleSessionRunInput {
   error?: string;
   /** Epoch ms for `metadata.run.endedAt` — defaults to now. */
   endedAt?: number;
+  /**
+   * Extra `metadata.run` fields stamped in the SAME write as the outcome: what
+   * the RUNNER measured and no claim could have known at spawn (the pid and
+   * startedAt the child actually reported, the run's mode, the stream
+   * observations). Merged UNDER the settle's own fields, so `outcome`/`endedAt`/
+   * `error` can never be smuggled past the settle that owns them.
+   */
+  run?: Record<string, unknown>;
+  /**
+   * Sibling `metadata` keys written in the same read-modify-write, shallow
+   * merged as `updateSession` merges. The seed-decision repair rides here: a
+   * settle that released the claim in one write and repaired the record in a
+   * second is readable in between as "this run failed" while still carrying the
+   * seed state that failed it — and the second write can land AFTER a newer run
+   * has already claimed the record, clobbering its live `metadata.run`. Merged
+   * UNDER `run`, so `run` can never be rewritten through this door.
+   */
+  metadata?: Record<string, unknown>;
   /** ISO override for `updatedAt` (tests). */
   now?: string;
 }
@@ -828,6 +846,7 @@ async function settleSessionRunUnlocked(
   const ts = nowISO(input.now);
   const run: Record<string, unknown> = {
     ...existingRunMetadata(session),
+    ...input.run,
     outcome: input.outcome,
     endedAt: input.endedAt ?? epochMs(ts),
     ...(input.error !== undefined && { error: input.error }),
@@ -838,7 +857,7 @@ async function settleSessionRunUnlocked(
   delete session.currentRunId;
   delete session.currentRunPid;
   delete session.heartbeatAt;
-  session.metadata = { ...session.metadata, run };
+  session.metadata = { ...session.metadata, ...input.metadata, run };
   session.updatedAt = ts;
 
   index.sessions[position] = session;
@@ -847,12 +866,21 @@ async function settleSessionRunUnlocked(
 }
 
 /**
- * Releases a session's run claim and records how the run ended on
- * `metadata.run`, in one lock acquisition.
+ * Releases a session's run claim, records how the run ended on `metadata.run`,
+ * and applies whatever the settle repaired — in ONE lock acquisition.
  *
  * Read-modify-write has to be atomic: `metadata.run` is replaced wholesale by
  * every writer, so settling through the generic `updateSession` would race the
  * route's own write-back and could drop the run's pid/startedAt.
+ *
+ * Everything a settle concludes therefore goes in HERE rather than in a
+ * follow-up `updateSession`. The claim is the only thing serializing a run
+ * against the next one, and releasing it is the LAST thing this write does — so
+ * a conclusion left to a second write is both observable in the gap (the record
+ * reads settled while still carrying the state the run just disproved) and
+ * unguarded outside it: the `input.runId` check above holds only for the
+ * duration of this lock, and a newer run can claim the record the moment it is
+ * released.
  */
 export async function settleSessionRun(
   projectDir: string,

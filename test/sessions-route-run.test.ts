@@ -320,10 +320,23 @@ async function expectRunRegistered(projectDir: string, normalizedId: string, mod
   });
 }
 
-/** Waits until the run has settled and released its claim. */
-async function expectSettled(projectDir: string, normalizedId: string): Promise<void> {
-  await vi.waitFor(async () => {
-    expect((await getSession(projectDir, normalizedId)).currentRunId).toBeUndefined();
+/**
+ * Waits until the run has settled and released its claim, and answers the very
+ * snapshot that satisfied it.
+ *
+ * Callers assert the settle's conclusions on THAT record rather than on a fresh
+ * read, because the released claim is the only thing serializing this run
+ * against the next one: everything the settle concluded has to be on the record
+ * already at the instant the claim goes, or a turn accepted right afterwards
+ * reads state the run just disproved. Re-reading would hand a settle that
+ * writes its conclusions late a second chance to pass, which is exactly the
+ * flake that hid the split write.
+ */
+async function expectSettled(projectDir: string, normalizedId: string): Promise<SessionMeta> {
+  return vi.waitFor(async () => {
+    const stored = await getSession(projectDir, normalizedId);
+    expect(stored.currentRunId).toBeUndefined();
+    return stored;
   });
 }
 
@@ -910,9 +923,8 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
       const second = await postTurn(base, THREAD, { intent: "ask", message: "two" });
       expect(second.status).toBe(202);
       expect(capturedJobs[1].argv).toContain("--session-id");
-      await expectSettled(projectDir, THREAD);
 
-      const repaired = await getSession(projectDir, THREAD);
+      const repaired = await expectSettled(projectDir, THREAD);
       expect(repaired.metadata?.threadInitialized).toBe(true);
       expect(repaired.metadata?.claudeSessionId).toBe(uuid);
       expect(repaired.metadata?.run).toMatchObject({
@@ -949,9 +961,10 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
       // (the transcript was pruned, or the seed never actually landed).
       runRecord = { ...RUN_RECORD, outcome: "error", error: NO_CONVERSATION(uuid) };
       await postTurn(base, THREAD, { intent: "ask", message: "two" });
-      await expectSettled(projectDir, THREAD);
 
-      const repaired = await getSession(projectDir, THREAD);
+      // Asserted on the snapshot the released claim was read from: the repair
+      // rides the SAME write, so a record that reads settled already carries it.
+      const repaired = await expectSettled(projectDir, THREAD);
       expect(repaired.metadata?.threadInitialized).toBe(false);
       const reminted = repaired.metadata?.claudeSessionId as string;
       expect(reminted).toMatch(BARE_UUID);
@@ -975,6 +988,72 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
     });
   });
 
+  it("never publishes the released claim ahead of the repair — the settle is ONE write", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_wedge_atomic");
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "one",
+        threadRef: THREAD,
+      });
+      const uuid = await claudeUuid(projectDir, THREAD);
+      await expectSettled(projectDir, THREAD);
+      runRecord = { ...RUN_RECORD, outcome: "error", error: NO_CONVERSATION(uuid) };
+
+      // THE STATE THIS TEST EXISTS TO OUTLAW, and why a second write cannot be
+      // used to carry the repair: the runner frees its concurrency slot (endRun)
+      // BEFORE the write-back runs, so from the instant the claim is released a
+      // turn is accepted again. A record readable as "this run failed" while
+      // still flagged initialized on the uuid that failed it sends that turn
+      // straight back into the same doomed --resume — and the late write then
+      // lands on top of the new run's claim, re-minting its uuid mid-flight.
+      //
+      // Sampled rather than asserted once, because a split write is a WINDOW:
+      // one read cannot prove absence of a state that exists only between two
+      // writes, so the record is read as fast as the event loop allows across
+      // the whole settle. `run.outcome === "error"` is what dates a sample to
+      // THIS run — before the second turn claims, metadata.run still carries the
+      // first turn's success, and while it is claimed there is no outcome at all.
+      const wedged: SessionMeta[] = [];
+      let samples = 0;
+      let sampling = true;
+      const sampler = (async () => {
+        while (sampling) {
+          samples += 1;
+          const stored = await getSession(projectDir, THREAD);
+          const run = stored.metadata?.run as { outcome?: string } | undefined;
+          if (
+            stored.currentRunId === undefined &&
+            run?.outcome === "error" &&
+            stored.metadata?.threadInitialized === true
+          ) {
+            wedged.push(stored);
+          }
+        }
+      })();
+
+      try {
+        await postTurn(base, THREAD, { intent: "ask", message: "two" });
+        const repaired = await expectSettled(projectDir, THREAD);
+
+        // The sampler was actually reading — otherwise the emptiness below would
+        // be vacuous.
+        expect(samples).toBeGreaterThan(20);
+        expect(wedged).toEqual([]);
+        // And the settle did happen, so the emptiness is not "nothing ran".
+        expect(repaired.metadata?.threadInitialized).toBe(false);
+        expect(repaired.metadata?.claudeSessionId).not.toBe(uuid);
+      } finally {
+        // Unconditional, and covering the settle wait: if that times out, a
+        // loop stopped only on the happy path outlives the test, and the next
+        // teardown deletes the data dir under a still-spinning getSession —
+        // surfacing as an ITEM_NOT_FOUND blamed on an innocent later test.
+        sampling = false;
+        await sampler;
+      }
+    });
+  });
+
   it("that repair also drops a fork source claude cannot find, so an adopted thread reseeds instead of re-forking", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       const observed = await seedObserved(projectDir, "22222222-2222-4222-8222-222222222222");
@@ -990,9 +1069,8 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
       });
       const fork = first.envelope.data?.writeTargetId as string;
       expect(capturedJobs[0].argv).toContain("--fork-session");
-      await expectSettled(projectDir, fork);
 
-      const repaired = await getSession(projectDir, fork);
+      const repaired = await expectSettled(projectDir, fork);
       expect(repaired.metadata?.adoptedClaudeSessionId).toBe("");
       // Provenance survives — it records where the thread came from and never
       // reaches argv.

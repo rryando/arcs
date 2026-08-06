@@ -537,33 +537,31 @@ async function writeBackRun(
   // per session however many runs it accumulates.
   await pruneRunEventLogs(projectDir, ctx.writeTarget.normalizedId);
 
-  // Outcome + claim release, atomically. `endedAt` rides the record so the run
-  // is stamped with the moment the CHILD exited, not the moment this write ran.
-  const settled = await settleSessionRun(projectDir, ctx.writeTarget.normalizedId, {
+  const repair = repairThreadSeed(record);
+
+  // ONE write: the outcome, everything the runner measured, the seed-decision
+  // repair, and the claim release. `endedAt` rides the record so the run is
+  // stamped with the moment the CHILD exited, not the moment this write ran.
+  //
+  // Leaving any of it to a follow-up `updateSession` is what made the repair
+  // unsound, because the RUNNER frees its concurrency slot (endRun) BEFORE it
+  // fires this write-back: from the moment the claim is released the next turn
+  // is accepted, so a repair one write later is both readable in the gap — the
+  // record reads settled-and-failed while still carrying the seed state that
+  // failed it, and the next turn re-issues the very `--resume` claude just
+  // refused — and able to land AFTER that turn claimed the record, clobbering
+  // its live metadata.run and re-minting its uuid mid-flight. The `runId` guard
+  // is only honest inside the settle's own lock.
+  await settleSessionRun(projectDir, ctx.writeTarget.normalizedId, {
     runId: ctx.runId,
     outcome: record.outcome,
     ...(record.error !== undefined && { error: record.error }),
     ...(record.endedAt !== undefined && { endedAt: record.endedAt }),
-  });
-
-  // Everything the RUNNER measured, which no claim could have known at spawn:
-  // the pid/startedAt the child actually reported, the run's intent, and the
-  // stream observations — time-to-first-token and wire-format drift are only
-  // readable after the fact if they reach disk. `settleSessionRun` takes the
-  // outcome alone (a settle must not be a place where arbitrary run fields can
-  // be smuggled in), so these merge onto the run object it just wrote.
-  const run = runMetadata(settled);
-  // A newer run already owns the record — the settle above refused it, and this
-  // merge must not overwrite the new run's numbers with this one's either.
-  if (run.runId !== ctx.runId) return;
-  const repair = repairThreadSeed(record);
-  const metadata: Record<string, unknown> = {
-    // Seed-decision repair rides the SAME write as the outcome, so a record can
-    // never be readable as "this run failed" while still carrying the seed
-    // state that failed it.
-    ...repair.metadata,
+    // Everything the RUNNER measured, which no claim could have known at spawn:
+    // the pid/startedAt the child actually reported, the run's intent, and the
+    // stream observations — time-to-first-token and wire-format drift are only
+    // readable after the fact if they reach disk.
     run: {
-      ...run,
       pid: record.pid,
       startedAt: record.startedAt,
       mode: ctx.intent,
@@ -585,8 +583,8 @@ async function writeBackRun(
       // itself already succeeded or failed on its own merits.
       ...(record.eventLogError !== undefined && { eventLogError: record.eventLogError }),
     },
-  };
-  await updateSession(projectDir, { id: ctx.writeTarget.normalizedId, metadata });
+    ...(Object.keys(repair.metadata).length > 0 && { metadata: repair.metadata }),
+  });
 }
 
 sessionsRoute.get("/api/p/:slug/sessions", async (c) =>
