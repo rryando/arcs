@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { writeHookToken } from "../src/utils/hook-token-store.js";
 import {
   createSession,
+  deriveSessionPhase,
   enqueueSessionMessage,
   getSession,
   listSessions,
@@ -495,7 +496,7 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
     });
   });
 
-  it("skips mirroring for an arcs-owned control value but still persists the path", async () => {
+  it("skips mirroring for an arcs-origin session but still persists the path", async () => {
     await withHookCtx(async ({ base, projectDir }) => {
       const transcriptPath = resolve(projectDir, "cc-owned-transcript.jsonl");
       writeFileSync(
@@ -509,23 +510,62 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
         ].join("\n"),
         "utf-8",
       );
+      // An ARCS-minted thread: its sidecar is written by the run route's own
+      // turn appends, so mirroring on top would duplicate the conversation.
+      await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc-owned",
+        origin: "arcs",
+      });
 
       const { status, envelope } = await postEvent(base, {
         hook_event_name: "UserPromptSubmit",
         session_id: "cc-owned",
-        control: "arcs-owned",
         transcript_path: transcriptPath,
       });
 
       expect(status).toBe(200);
       expect(envelope.data?.queuedMessages).toEqual([]);
 
-      // The arcs-owned marker suppresses transcript mirroring entirely…
+      // The persisted origin suppresses transcript mirroring entirely…
       expect(existsSync(join(projectDir, "sessions", "cc-owned.transcript.jsonl"))).toBe(false);
       // …but the path itself is still recorded so later readers can resolve it.
       const session = await getSession(projectDir, "cc-owned");
       expect(session.metadata?.transcriptPath).toBe(transcriptPath);
+      // The checkpoint never demotes an ARCS-owned thread to an observation.
+      expect(session.origin).toBe("arcs");
+    });
+  });
+
+  it("registers a hook-announced session as observed, whatever control claims", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const transcriptPath = resolve(projectDir, "cc-sniff-transcript.jsonl");
+      writeFileSync(
+        transcriptPath,
+        [
+          JSON.stringify({
+            type: "user",
+            message: { content: "terminal prompt" },
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }),
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-sniff",
+        control: "arcs-owned",
+        transcript_path: transcriptPath,
+      });
+
+      expect(status).toBe(200);
+      // Anything reaching this endpoint is a real terminal session, so the
+      // marker no longer decides anything: it is persisted, and ignored.
+      const session = await getSession(projectDir, "cc-sniff");
+      expect(session.origin).toBe("observed");
       expect(session.metadata?.control).toBe("arcs-owned");
+      expect(existsSync(join(projectDir, "sessions", "cc-sniff.transcript.jsonl"))).toBe(true);
     });
   });
 
@@ -557,6 +597,81 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
       const session = await getSession(projectDir, "cc-plain");
       expect(session.metadata?.transcriptPath).toBe(transcriptPath);
       expect(session.metadata?.control).toBeUndefined();
+    });
+  });
+
+  it("stamps lastCheckpointAt on UserPromptSubmit, even when the event carries nothing else", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, { hook_event_name: "SessionStart", session_id: "cc-beat-up" });
+      // A registered session that has never checkpointed reads idle: nothing
+      // has reported that the terminal is working.
+      expect(deriveSessionPhase(await getSession(projectDir, "cc-beat-up"))).toBe("idle");
+
+      const before = Date.now();
+      const { status } = await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-beat-up",
+      });
+
+      expect(status).toBe(200);
+      const session = await getSession(projectDir, "cc-beat-up");
+      const stamped = Date.parse(session.lastCheckpointAt ?? "");
+      expect(Number.isNaN(stamped)).toBe(false);
+      expect(stamped).toBeGreaterThanOrEqual(before);
+      // The checkpoint is the observed session's proof of life.
+      expect(deriveSessionPhase(session)).toBe("running");
+    });
+  });
+
+  it("stamps lastCheckpointAt on Stop and moves it forward at every checkpoint", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "cc-beat-stop",
+        transcript_path: "/tmp/cc-beat-stop.jsonl",
+      });
+      const first = (await getSession(projectDir, "cc-beat-stop")).lastCheckpointAt ?? "";
+
+      const { status } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-beat-stop",
+      });
+
+      expect(status).toBe(200);
+      const session = await getSession(projectDir, "cc-beat-stop");
+      expect(Date.parse(session.lastCheckpointAt ?? "")).toBeGreaterThanOrEqual(Date.parse(first));
+      // The metadata a previous checkpoint carried survives the stamp.
+      expect(session.metadata?.transcriptPath).toBe("/tmp/cc-beat-stop.jsonl");
+    });
+  });
+
+  it("stamps a checkpoint for a session it has never seen before", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const { status } = await postEvent(base, {
+        hook_event_name: "Stop",
+        session_id: "cc-beat-unknown",
+        cwd: "/work/demo",
+      });
+
+      expect(status).toBe(200);
+      const session = await getSession(projectDir, "cc-beat-unknown");
+      expect(session.lastCheckpointAt).toBeDefined();
+      expect(deriveSessionPhase(session)).toBe("running");
+    });
+  });
+
+  it("leaves a completed session reading ended, whatever its last checkpoint said", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await postEvent(base, { hook_event_name: "UserPromptSubmit", session_id: "cc-beat-end" });
+      await postEvent(base, {
+        hook_event_name: "SessionEnd",
+        session_id: "cc-beat-end",
+        reason: "logout",
+      });
+
+      const session = await getSession(projectDir, "cc-beat-end");
+      expect(session.lastCheckpointAt).toBeDefined();
+      expect(deriveSessionPhase(session)).toBe("ended");
     });
   });
 

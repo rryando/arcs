@@ -27,8 +27,11 @@ import {
 import { DagError } from "../../utils/errors.js";
 import { readJsonSafe } from "../../utils/json.js";
 import {
+  beginSessionRun,
+  canQueue,
   createSession,
   deleteSession,
+  deriveSessionPhase,
   enqueueSessionMessage,
   getSession,
   listSessions,
@@ -37,16 +40,26 @@ import {
   SESSION_STATUSES,
   type SessionFilters,
   type SessionMeta,
+  type SessionPhase,
+  sessionRunClaim,
+  settleSessionRun,
   updateSession,
   upsertSession,
 } from "../../utils/session-store.js";
-import { type ClaudeRunRecord, isRunLive, runClaudeJob } from "../claude-runner.js";
+import {
+  type ClaudeRunRecord,
+  isRunLive,
+  liveRunPid,
+  resolveTimeoutMs,
+  runClaudeJob,
+} from "../claude-runner.js";
 import {
   createOpencodeSession,
   readOpencodeConfig,
   sendOpencodeMessage,
 } from "../opencode-client.js";
 import { parseBody, requireProjectDir, respond } from "../respond.js";
+import { isProcessAlive, reconcileSessionPhases } from "../session-reconciler.js";
 
 export const sessionsRoute = new Hono();
 
@@ -181,10 +194,115 @@ function parseFilters(status: string | undefined, runtimeType: string | undefine
   return filters;
 }
 
+// ---------------------------------------------------------------------------
+// Derived phase (read side)
+// ---------------------------------------------------------------------------
+
+/**
+ * A session as a reader gets it: the stored record plus its reconciled phase.
+ *
+ * `phase` is DERIVED per response and never persisted — the store has no such
+ * field and cannot be given one. It is the single answer to "is this session
+ * live right now"; the raw `status` still travels for the record's own state.
+ */
+type SessionView = SessionMeta & { phase: SessionPhase };
+
+/**
+ * Epoch-ms deadline the claimed run will be killed at, when the spawn site
+ * persisted one. Validated rather than trusted — a hand-edited index can carry
+ * anything under this key.
+ */
+function runDeadlineAt(session: SessionMeta): number | undefined {
+  const value = session.metadata?.runDeadlineAt;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * The claimed run's own deadline, standing in for the store's fixed heartbeat
+ * TTL.
+ *
+ * `RUN_HEARTBEAT_TTL_MS` is sized to the runner's 10-minute DEFAULT_TIMEOUT_MS,
+ * but `resolveTimeoutMs` honours an explicit `timeoutMs` and
+ * `ARCS_CLAUDE_RUN_TIMEOUT_MS`, and nothing refreshes `heartbeatAt` mid-run —
+ * so past minute 10 a perfectly healthy 30-minute run derives `idle`, and the
+ * reconciler cannot rescue it because it early-returns on any non-`running`
+ * derivation and never probes the pid. The spawn site is the only place that
+ * knows the timeout, so it persists the resulting deadline on the claim
+ * (`metadata.runDeadlineAt`) and it is read back here as that run's TTL:
+ *
+ *  - inside the deadline the pid decides, exactly as the reconciler would;
+ *  - past it the claim is not evidence of anything — the runner has already
+ *    SIGTERMed then SIGKILLed the child — so it demotes to `idle`.
+ *
+ * Only ever consulted for a record that still holds a claim AND carries a
+ * deadline; anything else (including every claim written before this field
+ * existed) keeps the reconciler's own answer untouched.
+ */
+function runDeadlinePhase(session: SessionMeta, phase: SessionPhase, now: number): SessionPhase {
+  // A terminal status outranks every liveness signal — a session that is over
+  // is never reopened here.
+  if (phase === "failed" || phase === "ended") return phase;
+  const deadlineAt = runDeadlineAt(session);
+  if (sessionRunClaim(session) === undefined || deadlineAt === undefined) return phase;
+  if (now > deadlineAt) return "idle";
+  const pid = session.currentRunPid;
+  // No pid to probe (the spawn produced none) — the deadline stands alone.
+  if (typeof pid !== "number") return "running";
+  return isProcessAlive(pid) ? "running" : "idle";
+}
+
+/**
+ * Attaches the reconciled phase to each session of ONE response.
+ *
+ * `reconcileSessionPhases` takes the project's whole index and runs AT MOST one
+ * `claude agents --json` probe for it, so this is never one probe per session —
+ * and the detail route pays exactly what the list does. At most, because the
+ * probe is lazy: a request whose records all answer from their own evidence
+ * (terminal, idle, or holding a run claim) spawns no subprocess at all. A record
+ * that appeared between the two reads is not in the reconciler's answer and
+ * falls back to its own store-derived phase.
+ */
+async function withPhases(projectDir: string, sessions: SessionMeta[]): Promise<SessionView[]> {
+  const now = Date.now();
+  const reconciled = new Map(
+    (await reconcileSessionPhases(projectDir, { now })).map((view) => [view.sessionId, view.phase]),
+  );
+  return sessions.map((session) => ({
+    ...session,
+    phase: runDeadlinePhase(
+      session,
+      reconciled.get(session.normalizedId) ?? deriveSessionPhase(session, { now }),
+      now,
+    ),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Run claims
+// ---------------------------------------------------------------------------
+
 interface RunWriteBackContext {
   mode: "resume" | "oneshot" | "stable";
   writeTarget: SessionMeta;
   firstStableSpawn: boolean;
+  /** Id of the run this write-back settles — the claim it is allowed to release. */
+  runId: string;
+  /**
+   * Resolves once the spawn-time claim (including the child's pid) has landed.
+   * The write-back MUST await it before settling: settling releases the claim,
+   * so a pid write arriving afterwards would resurrect a run that already
+   * ended and leave the session reading `running` until its deadline. Both ends
+   * belong to the same request, so the ordering is expressed directly rather
+   * than hoped for.
+   */
+  claimed: Promise<void>;
+}
+
+/** Existing `metadata.run` as a mergeable object — anything else reads empty. */
+function runMetadata(session: SessionMeta): Record<string, unknown> {
+  const run = session.metadata?.run;
+  if (typeof run !== "object" || run === null || Array.isArray(run)) return {};
+  return run as Record<string, unknown>;
 }
 
 /**
@@ -206,12 +324,21 @@ interface RunWriteBackContext {
  * mode plus endedAt/outcome/error/replyChars) so the panel shows the true
  * result. Best-effort by contract: the runner swallows any error thrown here,
  * so a failed write-back never surfaces on the accepted 202.
+ *
+ * The run CLAIM is released here too, by `settleSessionRun` rather than by a
+ * hand-assembled `metadata.run` write: releasing the claim and stamping the
+ * outcome is one read-modify-write under the store lock, guarded by the run id
+ * so a run that has already been superseded never settles a newer one out from
+ * under it.
  */
 async function writeBackRun(
   projectDir: string,
   ctx: RunWriteBackContext,
   record: ClaudeRunRecord,
 ): Promise<void> {
+  // Never settle a claim that is still being written (see ctx.claimed).
+  await ctx.claimed;
+
   if (ctx.mode === "resume") {
     let target = ctx.writeTarget;
     try {
@@ -233,23 +360,40 @@ async function writeBackRun(
     });
   }
 
-  const run: Record<string, unknown> = {
-    pid: record.pid,
-    startedAt: record.startedAt,
-    mode: ctx.mode,
-    ...(record.endedAt !== undefined && { endedAt: record.endedAt }),
+  // Outcome + claim release, atomically. `endedAt` rides the record so the run
+  // is stamped with the moment the CHILD exited, not the moment this write ran.
+  const settled = await settleSessionRun(projectDir, ctx.writeTarget.normalizedId, {
+    runId: ctx.runId,
     outcome: record.outcome,
     ...(record.error !== undefined && { error: record.error }),
-    ...(record.replyChars !== undefined && { replyChars: record.replyChars }),
-  };
-  const runMetadata: Record<string, unknown> = { run };
-  if (ctx.mode === "stable" && ctx.firstStableSpawn && record.outcome === "success") {
-    runMetadata.threadInitialized = true;
-  }
-  await updateSession(projectDir, {
-    id: ctx.writeTarget.normalizedId,
-    metadata: runMetadata,
+    ...(record.endedAt !== undefined && { endedAt: record.endedAt }),
   });
+
+  // Everything the RUNNER measured, which no claim could have known at spawn:
+  // the pid/startedAt the child actually reported, the targeting mode, and the
+  // stream observations — time-to-first-token and wire-format drift are only
+  // readable after the fact if they reach disk. `settleSessionRun` takes the
+  // outcome alone (a settle must not be a place where arbitrary run fields can
+  // be smuggled in), so these merge onto the run object it just wrote.
+  const run = runMetadata(settled);
+  // A newer run already owns the record — the settle above refused it, and this
+  // merge must not overwrite the new run's numbers with this one's either.
+  if (run.runId !== ctx.runId) return;
+  const metadata: Record<string, unknown> = {
+    run: {
+      ...run,
+      pid: record.pid,
+      startedAt: record.startedAt,
+      mode: ctx.mode,
+      ...(record.replyChars !== undefined && { replyChars: record.replyChars }),
+      ...(record.firstTokenAt !== undefined && { firstTokenAt: record.firstTokenAt }),
+      ...(record.skippedLines !== undefined && { skippedLines: record.skippedLines }),
+    },
+  };
+  if (ctx.mode === "stable" && ctx.firstStableSpawn && record.outcome === "success") {
+    metadata.threadInitialized = true;
+  }
+  await updateSession(projectDir, { id: ctx.writeTarget.normalizedId, metadata });
 }
 
 sessionsRoute.get("/api/p/:slug/sessions", async (c) =>
@@ -259,7 +403,7 @@ sessionsRoute.get("/api/p/:slug/sessions", async (c) =>
       projectDir,
       parseFilters(c.req.query("status"), c.req.query("runtimeType")),
     );
-    return { sessions };
+    return { sessions: await withPhases(projectDir, sessions) };
   }),
 );
 
@@ -316,7 +460,9 @@ sessionsRoute.post("/api/p/:slug/sessions/opencode/new", async (c) =>
 sessionsRoute.get("/api/p/:slug/sessions/:id", async (c) =>
   respond(c, async () => {
     const projectDir = requireProjectDir(c.req.param("slug"));
-    return getSession(projectDir, c.req.param("id"));
+    const session = await getSession(projectDir, c.req.param("id"));
+    const [view] = await withPhases(projectDir, [session]);
+    return view;
   }),
 );
 
@@ -338,6 +484,13 @@ sessionsRoute.patch("/api/p/:slug/sessions/:id", async (c) =>
  * Both answer with the updated session, so the caller can tell them apart by
  * `messageQueue` rather than by branching on `runtimeType` itself.
  *
+ * Queued delivery needs a terminal session to drain the queue, so it is gated
+ * on the `canQueue` capability derived from the session's persisted origin. An
+ * `arcs`-origin thread has nothing attached that would ever read the queue:
+ * accepting the message would make this route a black hole that answers 200 and
+ * silently drops the prompt, so it is refused outright and the caller is sent to
+ * `POST /run`, which actually drives such a thread.
+ *
  * A `reference` body field appends an ARCS-authored reference turn to the
  * session's transcript sidecar, but only after delivery has succeeded — a
  * failed send must never leave a dangling reference behind. The append is a
@@ -351,6 +504,14 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
 
     let updated: SessionMeta;
     if (session.runtimeType === "claude-code") {
+      if (!canQueue(session)) {
+        throw new DagError(
+          "SESSION_QUEUE_UNSUPPORTED",
+          `cannot queue a message for session "${session.normalizedId}": it is an ARCS-owned ` +
+            `thread with no terminal session attached, so nothing would ever drain the queue — ` +
+            `drive it with POST /api/p/<slug>/sessions/${session.normalizedId}/run instead.`,
+        );
+      }
       // Queued, not sent: `lastMessageAt` stays untouched until the session
       // actually drains this at a checkpoint.
       updated = await enqueueSessionMessage(projectDir, session.normalizedId, message);
@@ -452,16 +613,20 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
           writeTarget = await upsertSession(projectDir, {
             runtimeType: "claude-code",
             runtimeSessionId: `arcs-oneshot-${slug}`,
+            // `origin: "arcs"` is what makes this record unqueueable; the
+            // `control` marker is kept for readers that still render it.
+            origin: "arcs",
             metadata: { control: "arcs-owned", directory: dir },
           });
         } else {
           // stable — reuse the referenced session's own thread when ARCS owns
-          // it, otherwise take the payload threadId or mint a fresh one. A
-          // payload threadId names the ARCS thread record only and gets its own
-          // minted claude uuid: attaching to an external session's real claude
-          // thread is mode=resume's job, never stable's.
+          // it (its persisted origin says so; no metadata string is consulted),
+          // otherwise take the payload threadId or mint a fresh one. A payload
+          // threadId names the ARCS thread record only and gets its own minted
+          // claude uuid: attaching to an external session's real claude thread
+          // is mode=resume's job, never stable's.
           const thread =
-            (session.metadata?.control === "arcs-owned" && session.runtimeSessionId) ||
+            (session.origin === "arcs" && session.runtimeSessionId) ||
             threadId ||
             `arcs-thread-${slug}-${randomUUID()}`;
           runThreadId = thread;
@@ -471,6 +636,11 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
           writeTarget = await upsertSession(projectDir, {
             runtimeType: "claude-code",
             runtimeSessionId: thread,
+            // Create-only: a freshly minted thread is ARCS-owned, while a
+            // payload threadId naming a session ARCS merely observes keeps its
+            // own origin (a terminal is attached there, so its queue still
+            // works) — the store never rewrites provenance on an upsert.
+            origin: "arcs",
             metadata: {
               control: "arcs-owned",
               directory: dir,
@@ -525,6 +695,30 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
           : ["-p", message, "--resume", claudeThread, "--output-format", "json"];
       }
 
+      // The run's own ceiling, resolved HERE so the deadline persisted with the
+      // claim is the same number the runner arms its kill timer with (it
+      // prefers this over its own env/default lookup).
+      const runId = randomUUID();
+      const timeoutMs = resolveTimeoutMs(undefined, process.env);
+      // Persisted next to the claim rather than inside metadata.run, which
+      // `beginSessionRun` replaces wholesale: as a sibling key the deadline
+      // cannot be clobbered by the claim, nor the claim by it.
+      await updateSession(projectDir, {
+        id: writeTarget.normalizedId,
+        metadata: { runDeadlineAt: Date.now() + timeoutMs },
+      });
+      // Claim the record BEFORE the child exists: from here on, a server that
+      // dies mid-run leaves a claim behind rather than an invisible orphan, and
+      // the startup sweep (settleOrphanedRunsOnStartup) is what settles it.
+      await beginSessionRun(projectDir, writeTarget.normalizedId, { runId });
+
+      // Gate for the write-back: it must not settle (and release) the claim
+      // while the pid write below is still in flight.
+      let claimComplete: () => void = () => {};
+      const claimed = new Promise<void>((resolveClaim) => {
+        claimComplete = resolveClaim;
+      });
+
       // Fire-and-forget: the run proceeds out-of-band. The runner invokes the
       // registered write-back after the child fully exits (it resolves on
       // `close`) on every outcome path; write-back failures are swallowed by
@@ -533,12 +727,31 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       runClaudeJob({
         argv,
         cwd: dir,
+        timeoutMs,
         writeTargetKey: writeTarget.normalizedId,
         onSettled: (record) =>
-          writeBackRun(projectDir, { mode, writeTarget, firstStableSpawn }, record),
+          writeBackRun(projectDir, { mode, writeTarget, firstStableSpawn, runId, claimed }, record),
       }).catch(() => {
         // Best-effort — the write-back lives inside the runner's onSettled.
       });
+
+      // runClaudeJob spawns synchronously (nothing is awaited before its
+      // beginRun), so the child's pid is readable right here — and the claim it
+      // lands on is the one written above, never a later run's. `undefined`
+      // means the spawn produced no live run at all and `null` means it
+      // produced no pid; neither is something to persist, and the claim then
+      // stands on its heartbeat/deadline alone.
+      try {
+        const pid = liveRunPid(writeTarget.normalizedId);
+        if (typeof pid === "number") {
+          await beginSessionRun(projectDir, writeTarget.normalizedId, { runId, pid });
+        }
+      } catch {
+        // A claim ARCS could not complete is not a reason to fail an accepted
+        // run — the record simply carries no pid for it.
+      } finally {
+        claimComplete();
+      }
 
       return {
         session: writeTarget,

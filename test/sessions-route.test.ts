@@ -25,6 +25,7 @@ import {
   type SessionMeta,
 } from "../src/utils/session-store.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
+import { currentWebToken } from "../src/web-server/web-token.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 interface CapturedRequest {
@@ -203,7 +204,7 @@ async function withRouteCtx(run: (ctx: Ctx) => Promise<void>): Promise<void> {
 async function sendMessage(base: string, id: string, body: unknown) {
   const res = await fetch(`${base}/api/p/demo/sessions/${id}/message`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
     body: JSON.stringify(body),
   });
   const envelope = (await res.json()) as {
@@ -226,7 +227,7 @@ function setWorkspacePaths(projectDir: string, paths: string[]): void {
 async function createOpencode(base: string, body: unknown = {}) {
   const res = await fetch(`${base}/api/p/demo/sessions/opencode/new`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
     body: JSON.stringify(body),
   });
   const envelope = (await res.json()) as {
@@ -436,6 +437,69 @@ describe("POST /api/p/:slug/sessions/:id/message", () => {
       const { envelope } = await sendMessage(base, session.normalizedId, { message: "second" });
 
       expect(envelope.data?.messageQueue).toEqual(["first", "second"]);
+    });
+  });
+
+  it("refuses to queue for an arcs-origin session instead of swallowing the message", async () => {
+    await withRouteCtx(async ({ base, projectDir, opencode }) => {
+      const thread = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "arcs-thread-demo-1",
+        origin: "arcs",
+        metadata: { control: "arcs-owned", directory: "/work/demo" },
+      });
+
+      const { status, envelope } = await sendMessage(base, thread.normalizedId, {
+        message: "into the void",
+        reference: REFERENCE,
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("SESSION_QUEUE_UNSUPPORTED");
+      // The refusal has to say what to do instead, or it is just a dead end.
+      expect(envelope.message).toMatch(/\/run/);
+
+      // Nothing was accepted anywhere: no queue entry, no timestamp bump, and
+      // no reference turn left dangling in the sidecar.
+      const stored = await getSession(projectDir, thread.normalizedId);
+      expect(stored.messageQueue).toBeUndefined();
+      expect(stored.lastMessageAt).toBeUndefined();
+      expect(await readSessionTurns(projectDir, thread.normalizedId)).toEqual([]);
+      expect(opencode.requests).toHaveLength(0);
+    });
+  });
+
+  it("refuses a legacy arcs-owned record the same way, with no migration run", async () => {
+    await withRouteCtx(async ({ base, projectDir }) => {
+      // A record persisted before `origin` existed: the marker is the only
+      // signal it was ARCS-minted, and the read path promotes it.
+      mkdirSync(resolve(projectDir, "sessions"), { recursive: true });
+      writeFileSync(
+        resolve(projectDir, "sessions", "index.json"),
+        JSON.stringify({
+          sessions: [
+            {
+              id: "arcs-oneshot-demo",
+              normalizedId: "arcs-oneshot-demo",
+              runtimeType: "claude-code",
+              runtimeSessionId: "arcs-oneshot-demo",
+              status: "active",
+              startedAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              metadata: { control: "arcs-owned", directory: "/work/demo" },
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const { status, envelope } = await sendMessage(base, "arcs-oneshot-demo", {
+        message: "into the void",
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("SESSION_QUEUE_UNSUPPORTED");
+      expect((await getSession(projectDir, "arcs-oneshot-demo")).messageQueue).toBeUndefined();
     });
   });
 
@@ -797,7 +861,7 @@ describe("DELETE /api/p/:slug/sessions/:id", () => {
 
       const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
@@ -818,7 +882,7 @@ describe("DELETE /api/p/:slug/sessions/:id", () => {
 
       const res = await fetch(`${base}/api/p/demo/sessions/${session.normalizedId}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };
@@ -844,7 +908,7 @@ describe("DELETE /api/p/:slug/sessions/:id", () => {
 
       const res = await fetch(`${base}/api/p/demo/sessions/${encodeURIComponent("Delete Me 1")}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
       });
       expect(res.status).toBe(200);
       const envelope = (await res.json()) as { ok: boolean; data?: { deleted: boolean } };

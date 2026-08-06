@@ -11,7 +11,19 @@ import { Badge, type BadgeColor } from "./Badge";
 
 export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "disconnected"] as const;
 
+/** Derived liveness the server sends on session reads (`SessionMeta.phase`) —
+ *  what this badge actually shows. Ordered live-first, with the raw statuses
+ *  following in SESSION_STATE_ORDER for a record read from an endpoint that
+ *  carries no phase. */
+export const SESSION_PHASES = ["running", "idle", "failed", "ended"] as const;
+
+/** Sort rank for whatever the badge is rendering — one ordering across both
+ *  vocabularies, so a column showing phases sorts the way it reads. */
+export const SESSION_STATE_ORDER: readonly string[] = [...SESSION_PHASES, ...SESSION_STATUSES];
+
 export const SESSION_STATUS_GLYPH: Record<string, string> = {
+  running: "●",
+  ended: "○",
   active: "●",
   idle: "◐",
   completed: "✓",
@@ -20,6 +32,8 @@ export const SESSION_STATUS_GLYPH: Record<string, string> = {
 };
 
 export const SESSION_STATUS_TEXT_CLASS: Record<string, string> = {
+  running: "text-term-green",
+  ended: "text-term-dim",
   active: "text-term-green",
   idle: "text-term-amber",
   completed: "text-term-cyan",
@@ -29,6 +43,7 @@ export const SESSION_STATUS_TEXT_CLASS: Record<string, string> = {
 
 export function sessionStatusColor(status: string): BadgeColor {
   switch (status) {
+    case "running":
     case "active":
       return "green";
     case "idle":

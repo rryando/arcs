@@ -14,10 +14,61 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// ---------------------------------------------------------------------------
+// Mutation token
+// ---------------------------------------------------------------------------
+
+/** Pinned by the server, which injects the tag into the shell it serves
+ *  (src/web-server/static.ts). Changing it here alone silently 401s the app. */
+const TOKEN_META_NAME = "arcs-web-token";
+
+/** Mirrors MUTATION_METHODS in src/web-server/web-auth.ts. Reads are not gated,
+ *  so a GET goes out exactly as it did before the token existed. */
+const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * The token this document was served with, read ONCE at module load.
+ *
+ * One read is enough: the token is minted per server start and the shell is
+ * served `no-store`, so a rotated token always arrives with a fresh document —
+ * re-reading per request could never see anything a reload would not.
+ *
+ * Two degradations, both deliberate and silent:
+ *  - no `document` at all (this module is imported by node-environment tests) —
+ *    guarded, because a throw here would be an import-time crash;
+ *  - no meta tag / empty content (server too old, or served by something that
+ *    is not this server) — no header goes out and the server answers a clean
+ *    401, which is a far more legible failure than a client-side exception.
+ */
+function readWebToken(): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  return (
+    document.querySelector(`meta[name="${TOKEN_META_NAME}"]`)?.getAttribute("content") ?? undefined
+  );
+}
+
+const webToken = readWebToken();
+
+/**
+ * The single writing path to the API. Exported so a caller needing custom init
+ * (extra headers, an AbortSignal) still goes through the token merge instead of
+ * hand-rolling a `fetch` that the server would refuse.
+ *
+ * Header order is load-bearing. `...init` is spread FIRST and `headers` rebuilt
+ * after it, so a caller's own headers can never replace the whole header object
+ * and drop the token; inside, `...init?.headers` comes LAST so a caller can
+ * still override `Content-Type` (and, if it ever needs to, the token itself).
+ */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      // Absent token => no header at all, never `X-ARCS-Token: undefined`.
+      ...(webToken && MUTATION_METHODS.has(method) ? { "X-ARCS-Token": webToken } : {}),
+      ...init?.headers,
+    },
   });
   const body = (await res.json().catch(() => null)) as
     | { ok: true; data: T }
@@ -99,13 +150,31 @@ export type SessionStatus = "active" | "idle" | "completed" | "failed" | "discon
 export type SessionRuntimeType = "opencode" | "claude-code";
 export type SessionLinkedNodeType = "task" | "plan";
 
+/** Provenance of a session record, persisted server-side.
+ *  - `observed` — a runtime session ARCS watches (terminal `claude` via the hook
+ *    bridge, or a live opencode session). It can be messaged.
+ *  - `arcs` — a headless thread ARCS minted for itself. Nothing drains its
+ *    message queue, so `POST /sessions/:id/message` refuses it with
+ *    `SESSION_QUEUE_UNSUPPORTED`; drive it with `POST /sessions/:id/run`. */
+export type SessionOrigin = "observed" | "arcs";
+
+/** What a session is doing right now, derived server-side per response from the
+ *  record's run claim / last checkpoint and reconciled against the live process
+ *  and `claude agents`. Never stored: a persisted phase goes stale the moment a
+ *  process dies without telling anyone, which is the "stuck on running forever"
+ *  failure this replaces. This — not `status` — is what the status badge shows. */
+export type SessionPhase = "running" | "idle" | "failed" | "ended";
+
 /** Write-back of a headless `claude -p` run, persisted on `metadata.run` when
  *  the child exits — on every outcome path, so a failed run is readable. */
 export interface SessionRunMeta {
   mode: string;
-  /** Absent only on a record written before the write-back existed. */
-  outcome?: "success" | "error" | "timeout";
-  /** Failure detail — present on error/timeout outcomes. */
+  /** Absent only on a record written before the write-back existed.
+   *  `interrupted` is never produced BY a run: it is written FOR one whose
+   *  process disappeared without ever settling (a server restart's orphan,
+   *  settled by the startup sweep). */
+  outcome?: "success" | "error" | "timeout" | "interrupted";
+  /** Failure detail — present on error/timeout/interrupted outcomes. */
   error?: string;
   /** Epoch milliseconds (the runner writes `Date.now()`), never an ISO string. */
   startedAt?: number;
@@ -120,8 +189,9 @@ export interface SessionMetadata {
   title?: string;
   /** Workspace directory the session runs in. */
   directory?: string;
-  /** `"arcs-owned"` marks a headless record ARCS minted itself — no terminal
-   *  session is attached to it, so nothing ever drains its message queue. */
+  /** `"arcs-owned"` marks a headless record ARCS minted itself. Superseded by
+   *  `SessionMeta.origin` as the signal to branch on — kept only because
+   *  existing call sites still read it and the server still writes it. */
   control?: string;
   run?: SessionRunMeta;
   [key: string]: unknown;
@@ -132,7 +202,15 @@ export interface SessionMeta {
   normalizedId: string;
   runtimeType: SessionRuntimeType;
   runtimeSessionId: string;
+  /** Always sent: the server fills it in on read even for records persisted
+   *  before the field existed, so this never has to be defaulted here. */
+  origin: SessionOrigin;
   status: SessionStatus;
+  /** Derived liveness, attached by the server to session READS (list + detail).
+   *  Absent on the session echoed back by `POST /run`, which answers with the
+   *  record it just claimed rather than a reconciled view — so readers fall
+   *  back to `status` (see `sessionState`). */
+  phase?: SessionPhase;
   startedAt: string;
   lastMessageAt?: string;
   updatedAt: string;

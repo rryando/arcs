@@ -2,19 +2,25 @@
 // Tests for session-store — CRUD, upsert idempotency, filters, validation
 // ---------------------------------------------------------------------------
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPlan } from "../src/utils/plan-store.js";
 import {
+  beginSessionRun,
+  CHECKPOINT_TTL_MS,
+  canQueue,
   createSession,
   deleteSession,
+  deriveSessionPhase,
   drainSessionMessageQueue,
   enqueueSessionMessage,
   getSession,
   listSessions,
+  RUN_HEARTBEAT_TTL_MS,
   readSessionIndex,
+  settleSessionRun,
   updateSession,
   upsertSession,
 } from "../src/utils/session-store.js";
@@ -178,6 +184,427 @@ describe("session-store: upsert", () => {
 
     expect(updated.status).toBe("failed");
     expect(updated.lastMessageAt).toBe("2026-01-02T00:00:00.000Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Origin — provenance and the capability derived from it
+// ---------------------------------------------------------------------------
+
+/** Writes a raw sessions/index.json in the shape a build without `origin` left
+ *  on disk, so back-compat is proven against real legacy bytes rather than
+ *  against a record this build wrote. */
+function writeLegacyIndex(dir: string, sessions: Record<string, unknown>[]): void {
+  mkdirSync(resolve(dir, "sessions"), { recursive: true });
+  writeFileSync(
+    resolve(dir, "sessions", "index.json"),
+    `${JSON.stringify({ sessions }, null, 2)}\n`,
+    "utf-8",
+  );
+}
+
+function legacyRecord(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: "cc-legacy",
+    normalizedId: "cc-legacy",
+    runtimeType: "claude-code",
+    runtimeSessionId: "cc-legacy",
+    status: "active",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function rawSessions(dir: string): Record<string, unknown>[] {
+  const raw = readFileSync(resolve(dir, "sessions", "index.json"), "utf-8");
+  return (JSON.parse(raw) as { sessions: Record<string, unknown>[] }).sessions;
+}
+
+describe("session-store: origin", () => {
+  it("defaults a created session to observed and persists it", async () => {
+    const dir = makeProjectDir();
+    const session = await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "cc_observed",
+    });
+
+    expect(session.origin).toBe("observed");
+    expect(rawSessions(dir)[0].origin).toBe("observed");
+  });
+
+  it("mints an arcs-origin record when the caller owns it", async () => {
+    const dir = makeProjectDir();
+    const thread = await upsertSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-thread-demo-1",
+      origin: "arcs",
+      metadata: { control: "arcs-owned" },
+    });
+
+    expect(thread.origin).toBe("arcs");
+    expect((await getSession(dir, "arcs-thread-demo-1")).origin).toBe("arcs");
+  });
+
+  it("never rewrites provenance on a later upsert, in either direction", async () => {
+    const dir = makeProjectDir();
+    await upsertSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-thread-demo-2",
+      origin: "arcs",
+    });
+    await upsertSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "cc_terminal",
+      origin: "observed",
+    });
+
+    // A hook observation of an ARCS thread must not demote it — that would
+    // reopen the queue black hole.
+    const observedAgain = await upsertSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-thread-demo-2",
+      origin: "observed",
+      status: "idle",
+    });
+    // …and an ARCS run claiming an existing terminal session as its write
+    // target must not erase the terminal that is attached to it.
+    const claimed = await upsertSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "cc_terminal",
+      origin: "arcs",
+      metadata: { control: "arcs-owned" },
+    });
+
+    expect(observedAgain.origin).toBe("arcs");
+    expect(observedAgain.status).toBe("idle");
+    expect(claimed.origin).toBe("observed");
+    expect(claimed.metadata).toEqual({ control: "arcs-owned" });
+  });
+
+  it("reads a legacy arcs-owned record back as origin arcs, with no migration", async () => {
+    const dir = makeProjectDir();
+    writeLegacyIndex(dir, [
+      legacyRecord({ metadata: { control: "arcs-owned", directory: "/repo" } }),
+    ]);
+
+    // Nothing ran but a read: no migration script, no rewrite on disk.
+    expect((await getSession(dir, "cc-legacy")).origin).toBe("arcs");
+    expect((await listSessions(dir))[0].origin).toBe("arcs");
+    expect(rawSessions(dir)[0].origin).toBeUndefined();
+  });
+
+  it("reads a legacy record without the marker as origin observed", async () => {
+    const dir = makeProjectDir();
+    writeLegacyIndex(dir, [legacyRecord({ metadata: { directory: "/repo" } })]);
+
+    expect((await getSession(dir, "cc-legacy")).origin).toBe("observed");
+  });
+
+  it("persists the derived origin the next time the record is written", async () => {
+    const dir = makeProjectDir();
+    writeLegacyIndex(dir, [legacyRecord({ metadata: { control: "arcs-owned" } })]);
+
+    await updateSession(dir, { id: "cc-legacy", status: "idle" });
+
+    expect(rawSessions(dir)[0].origin).toBe("arcs");
+    // The promotion is stable: re-reading the now-persisted field agrees.
+    expect((await getSession(dir, "cc-legacy")).origin).toBe("arcs");
+  });
+
+  it("re-derives an unusable persisted origin instead of trusting it", async () => {
+    const dir = makeProjectDir();
+    writeLegacyIndex(dir, [legacyRecord({ origin: "owner", metadata: { control: "arcs-owned" } })]);
+
+    expect((await getSession(dir, "cc-legacy")).origin).toBe("arcs");
+  });
+});
+
+describe("session-store: canQueue", () => {
+  it("is true only for an observed claude-code session", async () => {
+    const dir = makeProjectDir();
+    const observed = await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "cc_queueable",
+    });
+    const owned = await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-thread-demo-3",
+      origin: "arcs",
+    });
+    // opencode takes live injection, so its queue is never the delivery channel.
+    const opencode = await createSession(dir, {
+      runtimeType: "opencode",
+      runtimeSessionId: "ses_live",
+    });
+
+    expect(canQueue(observed)).toBe(true);
+    expect(canQueue(owned)).toBe(false);
+    expect(canQueue(opencode)).toBe(false);
+  });
+
+  it("is false for a legacy arcs-owned record, through the derived origin", async () => {
+    const dir = makeProjectDir();
+    writeLegacyIndex(dir, [legacyRecord({ metadata: { control: "arcs-owned" } })]);
+
+    expect(canQueue(await getSession(dir, "cc-legacy"))).toBe(false);
+  });
+});
+
+describe("session-store: run claims", () => {
+  it("persists the claim, the pid and the heartbeat, and seeds metadata.run", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-thread-demo-1",
+      origin: "arcs",
+    });
+
+    const claimed = await beginSessionRun(dir, "arcs-thread-demo-1", {
+      runId: "run-1",
+      pid: 4242,
+      now: "2026-02-01T00:00:00.000Z",
+    });
+
+    expect(claimed.currentRunId).toBe("run-1");
+    expect(claimed.currentRunPid).toBe(4242);
+    // Top-level session timestamps are ISO…
+    expect(claimed.heartbeatAt).toBe("2026-02-01T00:00:00.000Z");
+    // …while metadata.run keeps epoch ms, the unit claude-runner writes.
+    expect(claimed.metadata?.run).toEqual({
+      runId: "run-1",
+      pid: 4242,
+      startedAt: Date.parse("2026-02-01T00:00:00.000Z"),
+    });
+    expect(rawSessions(dir)[0].currentRunId).toBe("run-1");
+  });
+
+  it("omits the pid when the spawn produced none", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "arcs-nopid" });
+
+    const claimed = await beginSessionRun(dir, "arcs-nopid", { runId: "run-1", pid: null });
+
+    expect(claimed.currentRunPid).toBeUndefined();
+    expect((claimed.metadata?.run as Record<string, unknown>).pid).toBeNull();
+  });
+
+  it("replaces the previous run object so a live claim never shows a stale outcome", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "arcs-thread" });
+    await beginSessionRun(dir, "arcs-thread", { runId: "run-1", pid: 1 });
+    await settleSessionRun(dir, "arcs-thread", { outcome: "error", error: "boom" });
+
+    const second = await beginSessionRun(dir, "arcs-thread", { runId: "run-2", pid: 2 });
+
+    const run = second.metadata?.run as Record<string, unknown>;
+    expect(run.runId).toBe("run-2");
+    expect(run.outcome).toBeUndefined();
+    expect(run.error).toBeUndefined();
+  });
+
+  it("settles a run: clears the claim, keeps the run's own facts", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "arcs-thread" });
+    await beginSessionRun(dir, "arcs-thread", {
+      runId: "run-1",
+      pid: 4242,
+      now: "2026-02-01T00:00:00.000Z",
+    });
+
+    const settled = await settleSessionRun(dir, "arcs-thread", {
+      runId: "run-1",
+      outcome: "interrupted",
+      error: "process is gone",
+      now: "2026-02-01T00:05:00.000Z",
+    });
+
+    expect(settled.currentRunId).toBeUndefined();
+    expect(settled.currentRunPid).toBeUndefined();
+    // The proof of life goes with the claim it belonged to.
+    expect(settled.heartbeatAt).toBeUndefined();
+    expect(settled.metadata?.run).toEqual({
+      runId: "run-1",
+      pid: 4242,
+      startedAt: Date.parse("2026-02-01T00:00:00.000Z"),
+      endedAt: Date.parse("2026-02-01T00:05:00.000Z"),
+      outcome: "interrupted",
+      error: "process is gone",
+    });
+  });
+
+  it("refuses to settle a run that is no longer the current claim", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "arcs-thread" });
+    await beginSessionRun(dir, "arcs-thread", { runId: "run-1", pid: 1 });
+    await settleSessionRun(dir, "arcs-thread", { runId: "run-1", outcome: "success" });
+    const newer = await beginSessionRun(dir, "arcs-thread", { runId: "run-2", pid: 2 });
+
+    // A late settle for the finished run must not clear the newer claim.
+    const after = await settleSessionRun(dir, "arcs-thread", {
+      runId: "run-1",
+      outcome: "timeout",
+    });
+
+    expect(after).toEqual(newer);
+    expect(after.currentRunId).toBe("run-2");
+  });
+
+  it("is a no-op when the record holds no claim at all", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "cc-plain" });
+    const before = await getSession(dir, "cc-plain");
+
+    const after = await settleSessionRun(dir, "cc-plain", { outcome: "interrupted" });
+
+    expect(after).toEqual(before);
+    expect(after.metadata?.run).toBeUndefined();
+  });
+
+  it("throws for a session that does not exist", async () => {
+    const dir = makeProjectDir();
+    await expect(beginSessionRun(dir, "nope", { runId: "run-1" })).rejects.toThrow(
+      'Could not find session "nope"',
+    );
+    await expect(settleSessionRun(dir, "nope", { outcome: "error" })).rejects.toThrow(
+      'Could not find session "nope"',
+    );
+  });
+});
+
+describe("session-store: checkpoints", () => {
+  it("sets and clears lastCheckpointAt through updateSession", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "cc-checkpoint" });
+
+    const stamped = await updateSession(dir, {
+      id: "cc-checkpoint",
+      lastCheckpointAt: "2026-02-01T00:00:00.000Z",
+    });
+    expect(stamped.lastCheckpointAt).toBe("2026-02-01T00:00:00.000Z");
+    expect(rawSessions(dir)[0].lastCheckpointAt).toBe("2026-02-01T00:00:00.000Z");
+
+    expect(
+      (await updateSession(dir, { id: "cc-checkpoint", lastCheckpointAt: null })).lastCheckpointAt,
+    ).toBeUndefined();
+  });
+});
+
+describe("session-store: derived phase", () => {
+  const FIXED_NOW = Date.parse("2026-02-01T12:00:00.000Z");
+  const agoIso = (ms: number): string => new Date(FIXED_NOW - ms).toISOString();
+
+  async function claimedSession(dir: string, heartbeatAt: string) {
+    await createSession(dir, {
+      runtimeType: "claude-code",
+      runtimeSessionId: "arcs-thread",
+      origin: "arcs",
+    });
+    await beginSessionRun(dir, "arcs-thread", { runId: "run-1", pid: 1, now: heartbeatAt });
+    return getSession(dir, "arcs-thread");
+  }
+
+  it("reads a claimed run with a fresh heartbeat as running", async () => {
+    const dir = makeProjectDir();
+    const session = await claimedSession(dir, agoIso(30_000));
+
+    expect(deriveSessionPhase(session, { now: FIXED_NOW })).toBe("running");
+  });
+
+  it("demotes a claim whose heartbeat went stale to idle, not failed", async () => {
+    const dir = makeProjectDir();
+    const session = await claimedSession(dir, agoIso(RUN_HEARTBEAT_TTL_MS + 1_000));
+
+    // The run is settled by the reconciler, never guessed at here.
+    expect(deriveSessionPhase(session, { now: FIXED_NOW })).toBe("idle");
+  });
+
+  it("reads an observed session by its last checkpoint", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "cc-observed" });
+
+    await updateSession(dir, { id: "cc-observed", lastCheckpointAt: agoIso(10_000) });
+    expect(deriveSessionPhase(await getSession(dir, "cc-observed"), { now: FIXED_NOW })).toBe(
+      "running",
+    );
+
+    await updateSession(dir, {
+      id: "cc-observed",
+      lastCheckpointAt: agoIso(CHECKPOINT_TTL_MS + 1_000),
+    });
+    expect(deriveSessionPhase(await getSession(dir, "cc-observed"), { now: FIXED_NOW })).toBe(
+      "idle",
+    );
+  });
+
+  it("reads a session with no evidence at all as idle", async () => {
+    const dir = makeProjectDir();
+    const session = await createSession(dir, {
+      runtimeType: "opencode",
+      runtimeSessionId: "ses_new",
+    });
+
+    expect(deriveSessionPhase(session, { now: FIXED_NOW })).toBe("idle");
+  });
+
+  it("lets a terminal status outrank every liveness signal", async () => {
+    const dir = makeProjectDir();
+    const session = await claimedSession(dir, agoIso(1_000));
+
+    expect(deriveSessionPhase({ ...session, status: "failed" }, { now: FIXED_NOW })).toBe("failed");
+    expect(deriveSessionPhase({ ...session, status: "completed" }, { now: FIXED_NOW })).toBe(
+      "ended",
+    );
+    expect(deriveSessionPhase({ ...session, status: "disconnected" }, { now: FIXED_NOW })).toBe(
+      "ended",
+    );
+  });
+
+  it("does not turn a failed run into a failed session", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "arcs-thread" });
+    await beginSessionRun(dir, "arcs-thread", { runId: "run-1", pid: 1 });
+    await settleSessionRun(dir, "arcs-thread", { outcome: "error", error: "boom" });
+
+    // Run history is rendered next to the run; the session itself is simply
+    // ready for the next one.
+    expect(deriveSessionPhase(await getSession(dir, "arcs-thread"))).toBe("idle");
+  });
+
+  it("validates the timestamps instead of trusting them", async () => {
+    const dir = makeProjectDir();
+    writeLegacyIndex(dir, [
+      legacyRecord({
+        origin: "observed",
+        lastCheckpointAt: "not a timestamp",
+        currentRunId: 42,
+      }),
+    ]);
+
+    const session = await getSession(dir, "cc-legacy");
+    // A non-string claim is no claim, and an unparsable stamp is no evidence.
+    expect(deriveSessionPhase(session, { now: FIXED_NOW })).toBe("idle");
+  });
+
+  it("treats a clock-skewed future stamp as fresh", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "cc-skew" });
+    await updateSession(dir, { id: "cc-skew", lastCheckpointAt: agoIso(-30_000) });
+
+    expect(deriveSessionPhase(await getSession(dir, "cc-skew"), { now: FIXED_NOW })).toBe(
+      "running",
+    );
+  });
+
+  it("never persists a phase — it exists only as a derivation", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "cc-nophase" });
+    await beginSessionRun(dir, "cc-nophase", { runId: "run-1", pid: 1 });
+    await updateSession(dir, { id: "cc-nophase", lastCheckpointAt: new Date().toISOString() });
+
+    const raw = readFileSync(resolve(dir, "sessions", "index.json"), "utf-8");
+    expect(raw).not.toContain('"phase"');
+    expect(Object.keys(rawSessions(dir)[0])).not.toContain("phase");
   });
 });
 

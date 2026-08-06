@@ -20,6 +20,12 @@
  *   ARCS_HOOK_URL    ARCS web server URL (default http://127.0.0.1:4173)
  */
 
+// DEFAULT_URL and EVENTS are literals on purpose: this file runs standalone out
+// of the user's settings.json and importing ARCS would give the HARD RULE above
+// a way to fail. `src/utils/hook-contract.ts` owns the same two values for the
+// TypeScript side, and `test/hook-contract-parity.test.ts` parses THIS source
+// and fails if the two ever diverge — so keep the shapes greppable: a
+// double-quoted DEFAULT_URL, and a flat `new Set([...])` of string literals.
 const DEFAULT_URL = "http://127.0.0.1:4173";
 /** Short by design: a hung ARCS server must not stall prompt submission. */
 const TIMEOUT_MS = 1500;

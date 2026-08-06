@@ -22,7 +22,7 @@ import { cx, relativeTime, truncate } from "../lib/format";
 import { SessionLinkModal } from "./SessionLinkModal";
 import { canSendMessage, isVisibleSession, SessionMessageForm } from "./SessionMessageForm";
 import { useSessionPanel } from "./SessionPanel";
-import { SESSION_STATUSES, SessionStatusBadge } from "./SessionStatusBadge";
+import { SESSION_STATE_ORDER, SESSION_STATUSES, SessionStatusBadge } from "./SessionStatusBadge";
 
 const RUNTIME_LABEL: Record<string, string> = {
   opencode: "opencode",
@@ -32,6 +32,16 @@ const RUNTIME_LABEL: Record<string, string> = {
 function metaString(session: SessionMeta, key: string): string {
   const value = session.metadata?.[key];
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * What the status column shows: the server's derived phase — the only answer to
+ * "is this session live right now" — falling back to the record's own status
+ * for a session that reached the table without one. The raw status stays
+ * readable in the cell's tooltip, so the two are never confused for each other.
+ */
+function sessionState(session: SessionMeta): string {
+  return session.phase ?? session.status;
 }
 
 export function SessionsView() {
@@ -94,12 +104,15 @@ export function SessionsView() {
         key: "status",
         title: "status",
         className: "w-36",
-        sortValue: (s) => SESSION_STATUSES.indexOf(s.status),
+        sortValue: (s) => SESSION_STATE_ORDER.indexOf(sessionState(s)),
         render: (s) => {
           const queued = s.messageQueue?.length ?? 0;
           return (
-            <span className="inline-flex items-center gap-1">
-              <SessionStatusBadge status={s.status} />
+            <span
+              className="inline-flex items-center gap-1"
+              title={`live phase — the record's own status is "${s.status}"`}
+            >
+              <SessionStatusBadge status={sessionState(s)} />
               {queued > 0 && (
                 <span
                   title={`${queued} message${queued === 1 ? "" : "s"} queued — waiting for the session's next checkpoint`}

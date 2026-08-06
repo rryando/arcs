@@ -40,6 +40,7 @@ import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createSession } from "../src/utils/session-store.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
+import { currentWebToken } from "../src/web-server/web-token.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 const e2e = process.env.ARCS_CLAUDE_E2E === "1";
@@ -206,7 +207,10 @@ it.skipIf(!e2e)(
           `${server.url}/api/p/demo/sessions/${session.normalizedId}/run`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "X-ARCS-Token": currentWebToken() ?? "",
+            },
             body: JSON.stringify({ mode: "resume", message: RUN_MESSAGE }),
           },
         );

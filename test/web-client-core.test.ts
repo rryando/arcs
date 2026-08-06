@@ -1,14 +1,20 @@
 /**
- * Unit tests for the web client's pure shortcut-matching core and the
- * server's SSE change classifier.
+ * Unit tests for the web client's pure shortcut-matching core, its API request
+ * builder, the server's SSE change classifier, and the dev-only vite plugin
+ * that supplies the token in `vite dev`.
  */
 
-import { describe, expect, it } from "vitest";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type Plugin, resolveConfig } from "vite";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { resolveReference } from "../web/src/lib/reference-resolver.js";
 import { type Binding, eventToKey, matchBindings } from "../web/src/lib/shortcuts.js";
+import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 function keyEvent(
   key: string,
@@ -241,5 +247,254 @@ describe("resolveReference", () => {
     expect(
       resolveReference({ slug: "arcs", kind: "plan", id: "my-plan", sectionId: "tasks" }),
     ).toEqual({ path: "/p/arcs/plans/my-plan", hash: "#tasks" });
+  });
+});
+
+describe("api client web token", () => {
+  const TOKEN = "a".repeat(64);
+  const realFetch = globalThis.fetch;
+
+  interface FetchCall {
+    path: string;
+    method?: string;
+    headers: Record<string, string>;
+  }
+
+  /** Stands in for the served document. `querySelector` answers ONLY the exact
+   *  selector the server's injected tag matches (name pinned in
+   *  src/web-server/static.ts), so a client querying anything else reads null
+   *  and the token assertions below fail. */
+  function documentWithMeta(content: string | null) {
+    return {
+      querySelector: (selector: string) =>
+        selector === 'meta[name="arcs-web-token"]' && content !== null
+          ? { getAttribute: (name: string) => (name === "content" ? content : null) }
+          : null,
+    };
+  }
+
+  /** Loads a FRESH client module — the token is read once at load, so every
+   *  case needs its own instance — against the given document, and records
+   *  what it hands to `fetch`. `doc: undefined` is the non-browser case. */
+  async function loadClient(doc: unknown) {
+    vi.resetModules();
+    const calls: FetchCall[] = [];
+    const g = globalThis as any;
+    g.document = doc;
+    g.fetch = async (input: any, init: any) => {
+      calls.push({
+        path: String(input),
+        method: init?.method,
+        headers: { ...(init?.headers ?? {}) },
+      });
+      return { status: 200, json: async () => ({ ok: true, data: {} }) } as unknown as Response;
+    };
+    const { api, request } = await import("../web/src/api/client.js");
+    return { api, request, calls };
+  }
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    (globalThis as any).document = undefined;
+    vi.resetModules();
+  });
+
+  it("sends the injected token on mutating requests", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(TOKEN));
+    await api.deleteTask("arcs", "t1");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[0]?.headers["X-ARCS-Token"]).toBe(TOKEN);
+    expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("keeps the token when a call site passes its own headers", async () => {
+    const { request, calls } = await loadClient(documentWithMeta(TOKEN));
+    await request("/api/p/arcs/tasks", {
+      method: "POST",
+      headers: { "X-Custom": "1" },
+      body: "{}",
+    });
+
+    // The regression this pins: spreading `...init` after the header literal
+    // replaced the whole object and dropped the token for any call site that
+    // brought headers of its own.
+    expect(calls[0]?.headers["X-ARCS-Token"]).toBe(TOKEN);
+    expect(calls[0]?.headers["X-Custom"]).toBe("1");
+    expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
+    expect(calls[0]?.method).toBe("POST");
+  });
+
+  it("still lets a call site override a default header", async () => {
+    const { request, calls } = await loadClient(documentWithMeta(TOKEN));
+    await request("/api/p/arcs/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+    });
+
+    expect(calls[0]?.headers["Content-Type"]).toBe("text/plain");
+    expect(calls[0]?.headers["X-ARCS-Token"]).toBe(TOKEN);
+  });
+
+  it("leaves reads unchanged — no token on a GET", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(TOKEN));
+    await api.tasks("arcs");
+
+    expect(calls[0]?.method).toBeUndefined();
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+  });
+
+  it("degrades to no header when the shell carries no meta tag", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(null));
+    await api.deleteTask("arcs", "t1");
+
+    // No throw at module load, no bogus `X-ARCS-Token: undefined` — the server
+    // answers a clean 401 instead.
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+    expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("degrades to no header when there is no document at all", async () => {
+    const { api, calls } = await loadClient(undefined);
+    await api.deleteTask("arcs", "t1");
+
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+  });
+
+  it("empty meta content counts as no token", async () => {
+    const { api, calls } = await loadClient(documentWithMeta(""));
+    await api.deleteTask("arcs", "t1");
+
+    expect(calls[0]?.headers).not.toHaveProperty("X-ARCS-Token");
+  });
+});
+
+/**
+ * The dev-server counterpart of the block above: where the built shell gets its
+ * token from `src/web-server/static.ts`, `vite dev` gets it from the
+ * `arcs-web-token-dev` plugin in `web/vite.config.ts`.
+ *
+ * APPROACH — these tests drive vite's own `resolveConfig()` against the real
+ * `web/vite.config.ts` rather than importing the config module and reading its
+ * plugin array. That is deliberate: `apply: "serve"` is a declaration, and only
+ * vite decides what it means. Asserting the field would pin the source text;
+ * resolving the config pins the property that actually matters — the plugin is
+ * absent from the plugin pipeline of a production build, so a dev-only secret
+ * cannot reach a shipped shell. `vite` is already a root devDependency, so this
+ * costs no new dependency.
+ */
+describe("arcs-web-token-dev vite plugin", () => {
+  const PLUGIN = "arcs-web-token-dev";
+  const webDir = fileURLToPath(new URL("../web", import.meta.url));
+  const configFile = join(webDir, "vite.config.ts");
+
+  /** Resolves the real web config exactly as `vite dev` / `vite build` would.
+   *  Each call re-evaluates the config module, so the returned plugin is a
+   *  fresh instance bound to whatever ARCS_DATA_DIR is set at this moment. */
+  async function resolveWebConfig(command: "serve" | "build") {
+    return resolveConfig(
+      { root: webDir, configFile, logLevel: "silent" },
+      command,
+      command === "build" ? "production" : "development",
+    );
+  }
+
+  function pluginNames(plugins: readonly Plugin[]): string[] {
+    return plugins.map((plugin) => plugin.name);
+  }
+
+  async function tokenPlugin(): Promise<Plugin> {
+    const config = await resolveWebConfig("serve");
+    const plugin = config.plugins.find((candidate) => candidate.name === PLUGIN);
+    if (!plugin) throw new Error(`${PLUGIN} missing from the resolved serve config`);
+    return plugin;
+  }
+
+  /** Invokes `transformIndexHtml` the way vite's html pipeline does. The hook
+   *  may be declared bare or as `{ order, handler }`; normalize both so these
+   *  tests pin behaviour rather than declaration shape. */
+  async function transformIndexHtml(plugin: Plugin): Promise<unknown> {
+    const hook = plugin.transformIndexHtml;
+    const handler = typeof hook === "function" ? hook : hook?.handler;
+    if (typeof handler !== "function") {
+      throw new Error(`${PLUGIN} exposes no transformIndexHtml handler`);
+    }
+    const invoke = handler as (html: string, ctx: any) => unknown;
+    return invoke("<html><head></head><body></body></html>", {
+      path: "/index.html",
+      filename: join(webDir, "index.html"),
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is in the serve pipeline and out of the production build pipeline", async () => {
+    const [serve, build] = await Promise.all([
+      resolveWebConfig("serve"),
+      resolveWebConfig("build"),
+    ]);
+
+    expect(pluginNames(serve.plugins)).toContain(PLUGIN);
+    // The security property: a dev-only secret must never be injectable by a
+    // shipped shell. `apply: "serve"` is what buys this — drop it and this line
+    // fails.
+    expect(pluginNames(build.plugins)).not.toContain(PLUGIN);
+
+    // Guards the assertion above against being vacuously true: prove the same
+    // config file really was loaded for `build` (a config that failed to load,
+    // or a plugin array that silently emptied, would also "not contain" it).
+    expect(build.command).toBe("build");
+    expect(pluginNames(build.plugins)).toContain("@tailwindcss/vite:scan");
+    expect(pluginNames(serve.plugins)).toContain("@tailwindcss/vite:scan");
+  });
+
+  it("injects the token from web-token.json as the meta tag the client reads", async () => {
+    const token = "b".repeat(64);
+    await withTempDataDir(async (dir) => {
+      writeFileSync(join(dir, "web-token.json"), JSON.stringify({ token }), "utf-8");
+
+      const result = await transformIndexHtml(await tokenPlugin());
+
+      // The name is load-bearing: it is the one selector the client queries
+      // (see "api client web token" above) and the one static.ts emits.
+      expect(result).toEqual([
+        { tag: "meta", attrs: { name: "arcs-web-token", content: token }, injectTo: "head" },
+      ]);
+    });
+  });
+
+  it("injects nothing and warns at most once when the token file is missing", async () => {
+    await withTempDataDir(async () => {
+      // withTempDataDir seeds meta.json only — no web-token.json, i.e. the
+      // state of a machine where `arcs web` has never run.
+      const plugin = await tokenPlugin();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const first = await transformIndexHtml(plugin);
+      const second = await transformIndexHtml(plugin);
+
+      // Not fatal: reads still work, mutations 401. But a browser reload must
+      // not restate the warning on every request.
+      expect(first).toBeUndefined();
+      expect(second).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("web-token.json");
+    });
+  });
+
+  it("injects nothing and does not throw when the token file is unparsable", async () => {
+    await withTempDataDir(async (dir) => {
+      writeFileSync(join(dir, "web-token.json"), "{ not json at all", "utf-8");
+
+      const plugin = await tokenPlugin();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      // A truncated or half-written file must degrade like a missing one, not
+      // crash the dev server and not inject a bogus token.
+      await expect(transformIndexHtml(plugin)).resolves.toBeUndefined();
+    });
   });
 });
