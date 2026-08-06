@@ -1,7 +1,8 @@
 /**
  * Unit tests for the web client's pure shortcut-matching core, its API request
- * builder, the server's SSE change classifier, and the dev-only vite plugin
- * that supplies the token in `vite dev`.
+ * builder, its session-state vocabulary (the sessions filter and the badge that
+ * must agree about every row), the server's SSE change classifier, and the
+ * dev-only vite plugin that supplies the token in `vite dev`.
  */
 
 import { writeFileSync } from "node:fs";
@@ -10,6 +11,12 @@ import { fileURLToPath } from "node:url";
 import { type Plugin, resolveConfig } from "vite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyChange } from "../src/web-server/watcher.js";
+import {
+  filterSessionsByState,
+  type SessionStateSource,
+  SessionStatusBadge,
+  sessionStateChips,
+} from "../web/src/components/SessionStatusBadge.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { resolveReference } from "../web/src/lib/reference-resolver.js";
@@ -247,6 +254,75 @@ describe("resolveReference", () => {
     expect(
       resolveReference({ slug: "arcs", kind: "plan", id: "my-plan", sectionId: "tasks" }),
     ).toEqual({ path: "/p/arcs/plans/my-plan", hash: "#tasks" });
+  });
+});
+
+describe("session state filter vs badge", () => {
+  /**
+   * The label `SessionStatusBadge` actually renders for a record, read off the
+   * element it returns rather than recomputed — so these assertions are about
+   * the badge itself, not about a second copy of its logic.
+   */
+  function badgeLabel(session: SessionStateSource): string {
+    const text: string[] = [];
+    const walk = (node: unknown): void => {
+      if (typeof node === "string") {
+        text.push(node);
+      } else if (Array.isArray(node)) {
+        for (const child of node) walk(child);
+      } else if (node && typeof node === "object" && "props" in node) {
+        walk((node as { props: { children?: unknown } }).props.children);
+      }
+    };
+    walk(SessionStatusBadge({ session }));
+    // [glyph, label] — the badge's own text is the last leaf.
+    return text.at(-1) ?? "";
+  }
+
+  // The record the two axes disagree about: stored `active` (its heartbeat
+  // lapsed, nothing ever closed it) while the server derives `idle`.
+  const lapsed: SessionStateSource = { status: "active", phase: "idle" };
+  const live: SessionStateSource = { status: "idle", phase: "running" };
+  const over: SessionStateSource = { status: "completed", phase: "ended" };
+  // Reached the UI without a phase (the record echoed by `POST /run`).
+  const phaseless: SessionStateSource = { status: "disconnected" };
+  const sessions = [lapsed, live, over, phaseless];
+
+  it("badges a session by its derived phase, falling back to the stored status", () => {
+    expect(badgeLabel(lapsed)).toBe("idle");
+    expect(badgeLabel(live)).toBe("running");
+    expect(badgeLabel(over)).toBe("ended");
+    expect(badgeLabel(phaseless)).toBe("disconnected");
+  });
+
+  it("never shows a row under a chip its own badge contradicts", () => {
+    for (const chip of sessionStateChips(sessions, null)) {
+      for (const session of filterSessionsByState(sessions, chip)) {
+        expect(badgeLabel(session)).toBe(chip);
+      }
+    }
+  });
+
+  it("filters the disagreeing record on its phase, never on its stored status", () => {
+    expect(filterSessionsByState(sessions, "idle")).toContain(lapsed);
+    expect(filterSessionsByState(sessions, "active")).toEqual([]);
+    expect(sessionStateChips(sessions, null)).not.toContain("active");
+  });
+
+  it("offers a chip for every visible row and no chip that matches nothing", () => {
+    const chips = sessionStateChips(sessions, null);
+    expect(chips).toEqual(["running", "idle", "ended", "disconnected"]);
+    for (const session of sessions) expect(chips).toContain(badgeLabel(session));
+    for (const chip of chips)
+      expect(filterSessionsByState(sessions, chip).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the active chip clickable after its last row leaves the list", () => {
+    expect(sessionStateChips([over], "running")).toEqual(["running", "ended"]);
+  });
+
+  it("filters nothing out under `all`", () => {
+    expect(filterSessionsByState(sessions, null)).toEqual(sessions);
   });
 });
 

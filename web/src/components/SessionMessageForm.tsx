@@ -146,7 +146,7 @@ export function SessionMessageForm({
                 className="group flex w-full items-center gap-2 border-b border-term-border/40 px-2 py-1 text-left text-[12px] text-term-fg hover:bg-term-fg/5"
               >
                 <span className="w-3 text-term-green opacity-0 group-hover:opacity-100">▸</span>
-                <SessionStatusBadge status={s.status} />
+                <SessionStatusBadge session={s} />
                 <span className="flex-1 truncate">{sessionLabel(s)}</span>
                 <span className="text-[11px] text-term-dim">{s.runtimeType}</span>
               </button>

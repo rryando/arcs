@@ -11,8 +11,8 @@
  * runner's own lifecycle (covered by test/claude-runner.test.ts).
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readSessionTurns } from "../src/utils/claude-transcript.js";
 import {
@@ -77,6 +77,11 @@ import {
   liveRunPid,
   runClaudeJob,
 } from "../src/web-server/claude-runner.js";
+import {
+  foldRunEventLog,
+  RUN_EVENT_LOG_RETENTION,
+  runEventLogPath,
+} from "../src/web-server/run-event-log.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 const WORKSPACE = "/work/demo";
@@ -108,16 +113,48 @@ const REFERENCE = {
 let capturedJobs: ClaudeJobInput[] = [];
 /** Record the fake runner settles each job with — tests override for error runs. */
 let runRecord: ClaudeRunRecord = RUN_RECORD;
+/**
+ * Child stdout the fake runner persists to the run's event log before it
+ * settles, exactly as the real runner does mid-stream (W2). Empty means the run
+ * left no log at all — the pre-W2 world, where the captured reply is the only
+ * thing that can reach the sidecar.
+ */
+let runStdout = "";
+
+/** Serializes events as the NDJSON lines `--output-format stream-json` emits. */
+function ndjson(...events: unknown[]): string {
+  return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+}
+
+const assistantEvent = (...blocks: unknown[]) => ({
+  type: "assistant",
+  message: { role: "assistant", content: blocks },
+});
+const textBlock = (text: string) => ({ type: "text", text });
+const toolBlock = (name: string) => ({ type: "tool_use", id: "tu_1", name, input: {} });
 
 beforeEach(() => {
   capturedJobs = [];
   runRecord = RUN_RECORD;
+  runStdout = "";
   agentsProbe.spawns = 0;
   agentsProbe.stdout = "[]";
   vi.mocked(isRunLive).mockReturnValue(false);
   vi.mocked(liveRunPid).mockReturnValue(4242);
   vi.mocked(runClaudeJob).mockImplementation(async (input) => {
     capturedJobs.push(input);
+    // The real runner writes every stdout line to the run's event log verbatim
+    // as it arrives, before parsing and long before settling; the fake leaves
+    // behind just that durable artifact so the route's settle has one to fold.
+    if (input.eventLog !== undefined && runStdout !== "") {
+      const path = runEventLogPath(
+        input.eventLog.projectDir,
+        input.eventLog.sessionId,
+        input.eventLog.runId,
+      );
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, runStdout, "utf-8");
+    }
     // Simulate the real runner's post-close write-back (T005 seam): once the
     // child exits, onSettled fires with the settled record before the run
     // resolves.
@@ -1291,6 +1328,260 @@ describe("POST /api/p/:slug/sessions/:id/run — assistant reply write-back (T00
         expect(turns.map((t) => t.id)).toEqual([-1]);
         expect(turns.map((t) => t.type)).toEqual(["user"]);
       });
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/run — per-run event log + fold-down (W2)", () => {
+  const ONESHOT = "arcs-oneshot-demo";
+
+  function eventLogNames(projectDir: string): string[] {
+    const dir = resolve(projectDir, "sessions");
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".events.jsonl"))
+      .sort();
+  }
+
+  /** The run id the record itself carries, once the run has settled. */
+  async function settledRunId(projectDir: string, normalizedId: string): Promise<string> {
+    let runId = "";
+    await vi.waitFor(async () => {
+      const stored = await getSession(projectDir, normalizedId);
+      const run = stored.metadata?.run as { runId?: string; outcome?: string } | undefined;
+      expect(run?.outcome).toBeTypeOf("string");
+      expect(run?.runId).toBeTypeOf("string");
+      runId = run?.runId as string;
+    });
+    return runId;
+  }
+
+  it("logs under the SAME run id it persisted as the claim — name and record agree", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(assistantEvent(textBlock("hello")));
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_runid",
+      });
+
+      const { status } = await postRun(base, seed.normalizedId, {
+        mode: "oneshot",
+        message: "go",
+      });
+      expect(status).toBe(202);
+
+      const runId = await settledRunId(projectDir, ONESHOT);
+      // The id handed to the runner, the id on the record and the id in the
+      // filename are one value — they cannot drift.
+      expect(capturedJobs[0].eventLog?.runId).toBe(runId);
+      expect(capturedJobs[0].eventLog?.sessionId).toBe(ONESHOT);
+      expect(eventLogNames(projectDir)).toEqual([`${ONESHOT}.run-${runId}.events.jsonl`]);
+      expect(existsSync(runEventLogPath(projectDir, ONESHOT, runId))).toBe(true);
+    });
+  });
+
+  it("folds assistant text plus one turn per tool_use, and never doubles the reply", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(
+        { type: "system", subtype: "init" },
+        assistantEvent(textBlock("Looking."), toolBlock("Read")),
+        { type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } },
+        assistantEvent(textBlock("Done.")),
+        { type: "result", is_error: false, result: "Done." },
+      );
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_fold",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      const runId = await settledRunId(projectDir, ONESHOT);
+
+      const turns = await readSessionTurns(projectDir, ONESHOT);
+      expect(turns.map((t) => [t.id, t.type, t.text, t.tool?.name])).toEqual([
+        [-1, "user", "go", undefined],
+        [-2, "assistant", "Looking.", undefined],
+        [-3, "assistant", "", "Read"],
+        [-4, "assistant", "Done.", undefined],
+      ]);
+      // The captured replyText ("reply") is NOT appended on top of the fold.
+      expect(turns.some((t) => t.text === "reply")).toBe(false);
+      // Every folded turn is tagged with the run; the request-time user turn is not.
+      expect(turns.map((t) => t.run)).toEqual([undefined, runId, runId, runId]);
+    });
+  });
+
+  it("folding the settled log again is a no-op", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(assistantEvent(textBlock("once"), toolBlock("Bash")));
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_idempotent",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      const runId = await settledRunId(projectDir, ONESHOT);
+      const afterRun = await readSessionTurns(projectDir, ONESHOT);
+      expect(afterRun.map((t) => t.text)).toEqual(["go", "once", ""]);
+
+      // A second settle for the same run (a retry, a restart's sweep) folds
+      // nothing: the sidecar already carries the run's own id.
+      const again = await foldRunEventLog(projectDir, ONESHOT, runId);
+      expect(again).toEqual({ appended: 0, alreadyFolded: true, assistantTextFolded: true });
+      expect(await readSessionTurns(projectDir, ONESHOT)).toEqual(afterRun);
+    });
+  });
+
+  it("an error outcome still folds the partial output the child produced", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(assistantEvent(textBlock("got this far")));
+      runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_error",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      const runId = await settledRunId(projectDir, ONESHOT);
+
+      // The log outlives the failure: what the child said is in the sidecar and
+      // the raw log is still on disk for inspection.
+      const turns = await readSessionTurns(projectDir, ONESHOT);
+      expect(turns.map((t) => [t.type, t.text])).toEqual([
+        ["user", "go"],
+        ["assistant", "got this far"],
+      ]);
+      expect(existsSync(runEventLogPath(projectDir, ONESHOT, runId))).toBe(true);
+    });
+  });
+
+  it("a timeout outcome keeps its log too", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson({ type: "system", subtype: "init" });
+      runRecord = { ...RUN_RECORD, outcome: "timeout", error: "timed out" };
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_timeout",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      const runId = await settledRunId(projectDir, ONESHOT);
+
+      expect(existsSync(runEventLogPath(projectDir, ONESHOT, runId))).toBe(true);
+      // Nothing assistant-shaped in the log, and a failed run appends no reply.
+      const turns = await readSessionTurns(projectDir, ONESHOT);
+      expect(turns.map((t) => t.type)).toEqual(["user"]);
+    });
+  });
+
+  it("without a log the captured-reply write-back is unchanged", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = "";
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_nolog",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      await settledRunId(projectDir, ONESHOT);
+
+      const turns = await readSessionTurns(projectDir, ONESHOT);
+      expect(turns.map((t) => [t.type, t.text])).toEqual([
+        ["user", "go"],
+        ["assistant", "reply"],
+      ]);
+      expect(eventLogNames(projectDir)).toEqual([]);
+    });
+  });
+
+  it("prunes at settle so a session's logs stay bounded", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_retention",
+      });
+
+      const runs = RUN_EVENT_LOG_RETENTION + 3;
+      for (let i = 0; i < runs; i += 1) {
+        runStdout = ndjson(assistantEvent(textBlock(`turn ${i}`)));
+        const { status } = await postRun(base, seed.normalizedId, {
+          mode: "oneshot",
+          message: `run ${i}`,
+        });
+        expect(status).toBe(202);
+        // The claim is released at settle — and settle is where the prune runs.
+        await vi.waitFor(async () => {
+          expect((await getSession(projectDir, ONESHOT)).currentRunId).toBeUndefined();
+        });
+      }
+
+      expect(capturedJobs).toHaveLength(runs);
+      expect(eventLogNames(projectDir)).toHaveLength(RUN_EVENT_LOG_RETENTION);
+      // The newest run's log is always one of the survivors.
+      const newest = capturedJobs[runs - 1].eventLog?.runId as string;
+      expect(existsSync(runEventLogPath(projectDir, ONESHOT, newest))).toBe(true);
+      // Every turn still folded exactly once, oldest logs pruned or not.
+      const turns = await readSessionTurns(projectDir, ONESHOT);
+      expect(turns.filter((t) => t.text.startsWith("turn "))).toHaveLength(runs);
+    });
+  });
+
+  it("DELETE takes the session's event logs with its sidecar", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(assistantEvent(textBlock("bye")));
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_delete",
+      });
+
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "go" });
+      await settledRunId(projectDir, ONESHOT);
+      expect(eventLogNames(projectDir)).toHaveLength(1);
+
+      const res = await fetch(`${base}/api/p/demo/sessions/${ONESHOT}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
+      });
+      expect(res.status).toBe(200);
+      expect(eventLogNames(projectDir)).toEqual([]);
+      expect(await readSessionTurns(projectDir, ONESHOT)).toEqual([]);
+    });
+  });
+
+  it("resume mode logs the run but never folds — the mirror owns that sidecar", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const transcriptPath = resolve(projectDir, "w2-transcript.jsonl");
+      writeFileSync(
+        transcriptPath,
+        `${[
+          JSON.stringify({ type: "user", message: { content: "prompt" } }),
+          JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "mirrored reply" }] },
+          }),
+        ].join("\n")}\n`,
+        "utf-8",
+      );
+      runStdout = ndjson(assistantEvent(textBlock("mirrored reply")));
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_w2_resume",
+        status: "idle",
+        metadata: { directory: WORKSPACE, transcriptPath },
+      });
+
+      await postRun(base, session.normalizedId, { mode: "resume", message: "carry on" });
+      const runId = await settledRunId(projectDir, session.normalizedId);
+
+      // The log exists (every run gets one) but the sidecar holds only the
+      // mirrored transcript lines — folding would have doubled them.
+      expect(existsSync(runEventLogPath(projectDir, session.normalizedId, runId))).toBe(true);
+      const turns = await readSessionTurns(projectDir, session.normalizedId);
+      expect(turns.map((t) => [t.id, t.text])).toEqual([
+        [0, "prompt"],
+        [1, "mirrored reply"],
+      ]);
+      expect(turns.every((t) => t.run === undefined)).toBe(true);
     });
   });
 });

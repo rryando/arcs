@@ -101,8 +101,10 @@ describe("web token gate", () => {
       expect(typeof file.createdAt).toBe("string");
       expect(Object.keys(file).sort()).toEqual(["createdAt", "token"]);
 
-      // Owner-only: the hook token file's world-readable mode is the mistake
-      // this assertion exists to prevent repeating.
+      // Owner-only: the hook token file used to land world-readable — the
+      // mistake this assertion exists to prevent repeating. That file is 0o600
+      // now too (hook-token-store.ts chmods it), so this guards a regression
+      // rather than describing a live divergence.
       expect(statSync(path).mode & 0o777).toBe(0o600);
     });
   });

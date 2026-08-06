@@ -59,6 +59,7 @@ import {
   sendOpencodeMessage,
 } from "../opencode-client.js";
 import { parseBody, requireProjectDir, respond } from "../respond.js";
+import { foldRunEventLog, pruneRunEventLogs } from "../run-event-log.js";
 import { isProcessAlive, reconcileSessionPhases } from "../session-reconciler.js";
 
 export const sessionsRoute = new Hono();
@@ -317,8 +318,15 @@ function runMetadata(session: SessionMeta): Record<string, unknown> {
  *   mirrorSessionTranscript is offset-idempotent and never throws, so repeated
  *   write-backs never duplicate and failures are inert.
  * - oneshot/stable: never mirror — their sidecars are appendSessionTurn-owned.
- *   On a success outcome the captured reply is appended as an assistant turn
- *   (every reply lands in the sidecar); error/timeout outcomes append nothing.
+ *   The run's own event log folds down first (assistant text plus one turn per
+ *   tool_use, every turn tagged with the run id so a second fold is a no-op).
+ *   Only when that fold produced no assistant text — no log, an empty log, a
+ *   child that spoke only through the terminal `result` envelope — does the
+ *   captured reply get appended as an assistant turn on a success outcome;
+ *   error/timeout outcomes still append nothing. The fold is deliberately NOT
+ *   run for resume mode: that sidecar is owned by the transcript mirror above,
+ *   which already carries the same turns with their transcript line ids, so
+ *   folding there would double every turn.
  *
  * Every path finalizes metadata.run with the settled record (pid/startedAt/
  * mode plus endedAt/outcome/error/replyChars) so the panel shows the true
@@ -350,15 +358,33 @@ async function writeBackRun(
     if (typeof transcriptPath === "string" && transcriptPath !== "") {
       await mirrorSessionTranscript(projectDir, ctx.writeTarget.normalizedId, transcriptPath);
     }
-  } else if (record.outcome === "success" && record.replyText !== undefined) {
-    // Modes 2/3 on success: the captured reply lands in the sidecar as an
-    // assistant turn (minted in the shared negative id space after the user
-    // turn and any reference). Error/timeout outcomes append nothing.
-    await appendSessionTurn(projectDir, ctx.writeTarget.normalizedId, {
-      type: "assistant",
-      text: record.replyText,
-    });
+  } else {
+    // Modes 2/3: fold the run's durable event log down into the sidecar first.
+    // Idempotent by its own output — every folded turn carries the run id, and
+    // a run already represented there folds to nothing.
+    const fold = await foldRunEventLog(projectDir, ctx.writeTarget.normalizedId, ctx.runId);
+    if (
+      !fold.assistantTextFolded &&
+      record.outcome === "success" &&
+      record.replyText !== undefined
+    ) {
+      // Nothing in the log spoke for this run (no log at all, or only tool
+      // turns): the captured reply lands in the sidecar as an assistant turn,
+      // minted in the shared negative id space after the user turn and any
+      // reference. Tagged with the run id too, so it is covered by the same
+      // no-second-fold guard. Error/timeout outcomes append nothing.
+      await appendSessionTurn(projectDir, ctx.writeTarget.normalizedId, {
+        type: "assistant",
+        text: record.replyText,
+        run: ctx.runId,
+      });
+    }
   }
+
+  // Bounded retention, every mode: the log that just settled is the newest, so
+  // it always survives and the sessions dir stays capped at
+  // RUN_EVENT_LOG_RETENTION logs per session however many runs it accumulates.
+  await pruneRunEventLogs(projectDir, ctx.writeTarget.normalizedId);
 
   // Outcome + claim release, atomically. `endedAt` rides the record so the run
   // is stamped with the moment the CHILD exited, not the moment this write ran.
@@ -388,6 +414,10 @@ async function writeBackRun(
       ...(record.replyChars !== undefined && { replyChars: record.replyChars }),
       ...(record.firstTokenAt !== undefined && { firstTokenAt: record.firstTokenAt }),
       ...(record.skippedLines !== undefined && { skippedLines: record.skippedLines }),
+      ...(record.eventLogLines !== undefined && { eventLogLines: record.eventLogLines }),
+      // A log that could not be written is REPORTED here, never thrown: the run
+      // itself already succeeded or failed on its own merits.
+      ...(record.eventLogError !== undefined && { eventLogError: record.eventLogError }),
     },
   };
   if (ctx.mode === "stable" && ctx.firstStableSpawn && record.outcome === "success") {
@@ -729,6 +759,9 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
         cwd: dir,
         timeoutMs,
         writeTargetKey: writeTarget.normalizedId,
+        // The SAME runId the claim above persisted as currentRunId — the log's
+        // filename and the session record can never name different runs.
+        eventLog: { projectDir, sessionId: writeTarget.normalizedId, runId },
         onSettled: (record) =>
           writeBackRun(projectDir, { mode, writeTarget, firstStableSpawn, runId, claimed }, record),
       }).catch(() => {
@@ -779,6 +812,9 @@ sessionsRoute.delete("/api/p/:slug/sessions/:id", async (c) =>
     } catch {
       // Sidecar may not exist — a failed unlink is a swallowed no-op.
     }
+    // Retention only ever prunes at a settle, and a deleted session never
+    // settles again — its logs would otherwise sit in the sessions dir forever.
+    await pruneRunEventLogs(projectDir, session.normalizedId, 0);
     return { deleted: true };
   }),
 );

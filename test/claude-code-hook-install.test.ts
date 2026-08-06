@@ -2,7 +2,16 @@
 // Tests for the consent-gated .claude/settings.local.json hook writer
 // ---------------------------------------------------------------------------
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -68,6 +77,55 @@ describe("installClaudeCodeHook", () => {
               `ARCS_HOOK_URL=${result.serverUrl} node ${result.hookScriptPath}`,
           );
         }
+      });
+    });
+  });
+
+  it("writes the token-bearing settings file owner-only on a fresh create", async () => {
+    await withTempDataDir(async (dataDir) => {
+      await withWorkspace(async (workspace) => {
+        const projectDir = projectDirFor(dataDir, "demo");
+
+        const result = await installClaudeCodeHook({
+          workspacePath: workspace,
+          projectDir,
+          slug: "demo",
+        });
+
+        // The file is a second cleartext copy of the hook token, so its mode is
+        // a control and not cosmetics.
+        expect(readFileSync(result.settingsPath, "utf-8")).toContain(
+          `ARCS_HOOK_TOKEN=${result.token}`,
+        );
+        expect(statSync(result.settingsPath).mode & 0o777).toBe(0o600);
+      });
+    });
+  });
+
+  it("repairs a pre-existing world-readable file, leaving .claude's own mode alone", async () => {
+    await withTempDataDir(async (dataDir) => {
+      await withWorkspace(async (workspace) => {
+        const projectDir = projectDirFor(dataDir, "demo");
+        const claudeDir = resolve(workspace, ".claude");
+        const settingsPath = claudeSettingsLocalPath(workspace);
+        mkdirSync(claudeDir, { recursive: true });
+        writeFileSync(
+          settingsPath,
+          JSON.stringify({ permissions: { allow: ["Bash(ls)"] } }),
+          "utf-8",
+        );
+        // What an older ARCS install left behind under a default umask.
+        chmodSync(settingsPath, 0o644);
+        const dirModeBefore = statSync(claudeDir).mode & 0o777;
+
+        await installClaudeCodeHook({ workspacePath: workspace, projectDir, slug: "demo" });
+
+        // `writeFile`'s mode applies only at create and this write truncates the
+        // inode already there, so only the unconditional chmod narrows it.
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+        // `.claude` holds the user's other files — ARCS must not narrow it.
+        expect(statSync(claudeDir).mode & 0o777).toBe(dirModeBefore);
+        expect(readSettings(workspace).permissions).toEqual({ allow: ["Bash(ls)"] });
       });
     });
   });

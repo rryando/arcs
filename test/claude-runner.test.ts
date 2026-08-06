@@ -8,6 +8,8 @@
 
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   beginRun,
@@ -20,6 +22,8 @@ import {
   STDOUT_CAP,
   withStreamJsonArgv,
 } from "../src/web-server/claude-runner.js";
+import { runEventLogPath } from "../src/web-server/run-event-log.js";
+import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 /** Minimal child that mirrors the ChildProcess surface the runner touches. */
 class FakeChild extends EventEmitter {
@@ -233,6 +237,178 @@ describe("runClaudeJob — output caps", () => {
     expect(record.outcome).toBe("error");
     expect(record.error).toHaveLength(STDERR_CAP);
     expect(record.error?.endsWith("END")).toBe(true);
+  });
+});
+
+describe("runClaudeJob — per-run event log", () => {
+  const RUN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const SESSION_ID = "arcs-thread-demo";
+
+  /** Isolated project dir plus the log target the route would hand the runner. */
+  async function withLogTarget(
+    body: (ctx: { projectDir: string; logPath: string }) => Promise<void>,
+  ): Promise<void> {
+    await withTempDataDir(async (dir) => {
+      const projectDir = resolve(dir, "projects", "demo");
+      mkdirSync(projectDir, { recursive: true });
+      await body({
+        projectDir,
+        logPath: runEventLogPath(projectDir, SESSION_ID, RUN_ID),
+      });
+    });
+  }
+
+  const target = (projectDir: string) => ({
+    projectDir,
+    sessionId: SESSION_ID,
+    runId: RUN_ID,
+  });
+
+  it("persists every stdout line verbatim BEFORE the reader parses it", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        { argv: ["-p", "x"], writeTargetKey: "w", eventLog: target(projectDir) },
+        { spawnImpl },
+      );
+
+      // One line the reader cannot parse, one type it does not know, one it
+      // does. The log is TOTAL where the parser is selective.
+      const stdout = `${["{ truncated json", '{"type":"never_seen_before"}', JSON.stringify(assistantMessage("hi"))].join("\n")}\n`;
+      children[0].emitStdout(stdout);
+
+      // Mid-run, with the run still unresolved: the bytes are already on disk,
+      // so the write cannot be happening after the parse (or at settle).
+      expect(readFileSync(logPath, "utf-8")).toBe(stdout);
+
+      children[0].finish(0, null, { stdout: `${JSON.stringify(resultEvent("hi"))}\n` });
+      const record = await run;
+
+      const lines = readFileSync(logPath, "utf-8").split("\n").slice(0, -1);
+      expect(lines).toEqual([
+        "{ truncated json",
+        '{"type":"never_seen_before"}',
+        JSON.stringify(assistantMessage("hi")),
+        JSON.stringify(resultEvent("hi")),
+      ]);
+      expect(record.outcome).toBe("success");
+      expect(record.eventLogLines).toBe(4);
+      expect(record.eventLogError).toBeUndefined();
+      // The reader skipped two of the four lines; the log kept all four.
+      expect(record.skippedLines).toBe(2);
+    });
+  });
+
+  it("names the log with the runId the caller already persisted as the claim", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        { argv: ["-p", "x"], writeTargetKey: "w", eventLog: target(projectDir) },
+        { spawnImpl },
+      );
+      children[0].finish(0, null, { stdout: `${JSON.stringify(resultEvent("ok"))}\n` });
+      await run;
+
+      expect(logPath.endsWith(`/sessions/${SESSION_ID}.run-${RUN_ID}.events.jsonl`)).toBe(true);
+      expect(existsSync(logPath)).toBe(true);
+    });
+  });
+
+  it("keeps the log on an error outcome", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        { argv: ["-p", "x"], writeTargetKey: "w", eventLog: target(projectDir) },
+        { spawnImpl },
+      );
+      children[0].emitStdout(`${JSON.stringify(assistantMessage("partial work"))}\n`);
+      children[0].finish(1, null, { stderr: "boom" });
+      const record = await run;
+
+      expect(record.outcome).toBe("error");
+      expect(readFileSync(logPath, "utf-8")).toBe(
+        `${JSON.stringify(assistantMessage("partial work"))}\n`,
+      );
+      expect(record.eventLogLines).toBe(1);
+    });
+  });
+
+  it("keeps everything that arrived before a timeout kill", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        {
+          argv: ["-p", "x"],
+          writeTargetKey: "w",
+          timeoutMs: 20,
+          eventLog: target(projectDir),
+        },
+        { spawnImpl, killGraceMs: 10 },
+      );
+      children[0].emitStdout(`${JSON.stringify(textDelta("thinking..."))}\n`);
+
+      await vi.waitFor(() => expect(children[0].killed).toContain("SIGKILL"));
+      children[0].finish(null, "SIGKILL");
+      const record = await run;
+
+      expect(record.outcome).toBe("timeout");
+      expect(readFileSync(logPath, "utf-8")).toBe(`${JSON.stringify(textDelta("thinking..."))}\n`);
+      expect(record.eventLogLines).toBe(1);
+    });
+  });
+
+  it("terminates a final unterminated line so the file stays line-addressable", async () => {
+    await withLogTarget(async ({ projectDir, logPath }) => {
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        { argv: ["-p", "x"], writeTargetKey: "w", eventLog: target(projectDir) },
+        { spawnImpl },
+      );
+      // No trailing newline — exactly what a killed child leaves behind.
+      children[0].finish(0, null, { stdout: JSON.stringify(resultEvent("ok")) });
+      const record = await run;
+
+      const raw = readFileSync(logPath, "utf-8");
+      expect(raw).toBe(`${JSON.stringify(resultEvent("ok"))}\n`);
+      expect(record.eventLogLines).toBe(1);
+    });
+  });
+
+  it("reports an unwritable log on the record without failing the run", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = resolve(dir, "projects", "demo");
+      mkdirSync(projectDir, { recursive: true });
+      // A FILE where sessions/ should be — every log write fails.
+      writeFileSync(resolve(projectDir, "sessions"), "not a directory", "utf-8");
+
+      const { children, spawnImpl } = fakeSpawn();
+      const run = runClaudeJob(
+        {
+          argv: ["-p", "x"],
+          writeTargetKey: "w",
+          eventLog: { projectDir, sessionId: SESSION_ID, runId: RUN_ID },
+        },
+        { spawnImpl },
+      );
+      children[0].finish(0, null, { stdout: `${JSON.stringify(resultEvent("still fine"))}\n` });
+      const record = await run;
+
+      expect(record.outcome).toBe("success");
+      expect(record.replyText).toBe("still fine");
+      expect(record.eventLogError).toBeTypeOf("string");
+      expect(record.eventLogLines).toBe(0);
+    });
+  });
+
+  it("writes no log and reports no lines when the caller supplies no target", async () => {
+    const { children, spawnImpl } = fakeSpawn();
+    const run = runClaudeJob({ argv: ["-p", "x"], writeTargetKey: "w" }, { spawnImpl });
+    children[0].finish(0, null, { stdout: JSON_REPLY });
+    const record = await run;
+
+    expect(record.outcome).toBe("success");
+    expect(record.eventLogLines).toBeUndefined();
+    expect(record.eventLogError).toBeUndefined();
   });
 });
 

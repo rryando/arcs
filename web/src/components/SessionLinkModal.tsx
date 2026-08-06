@@ -228,7 +228,7 @@ export function LinkedSessions({
       <ul className="divide-y divide-term-border/40">
         {sessions.map((s) => (
           <li key={s.normalizedId} className="flex items-center gap-2 px-2 py-1 text-[12px]">
-            <SessionStatusBadge status={s.status} />
+            <SessionStatusBadge session={s} />
             <span className="font-bold">{sessionLabel(s)}</span>
             <span className="text-term-dim">{truncate(s.runtimeSessionId, 20)}</span>
             <span className="flex-1" />

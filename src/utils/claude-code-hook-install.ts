@@ -18,7 +18,7 @@
  *      untouched, in place.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import color from "picocolors";
@@ -92,7 +92,7 @@ export function mergeHookIntoSettings(
 
 /**
  * Reads the workspace's `.claude/settings.local.json` (if any), merges in a
- * freshly provisioned hook, and writes it back.
+ * freshly provisioned hook, and writes it back owner-only.
  *
  * Throws when the existing file is present but unparseable — nothing is written
  * in that case, so a hand-edited settings file is never clobbered.
@@ -141,7 +141,33 @@ export async function installClaudeCodeHook(options: {
   const merged = mergeHookIntoSettings(settings, provisioned);
 
   await mkdir(dirname(settingsPath), { recursive: true });
-  await writeFile(settingsPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+  // The merged command embeds `ARCS_HOOK_TOKEN=<value>`, so this file is a
+  // SECOND cleartext copy of the hook token — this one in the user's repo
+  // rather than under ARCS's own data dir. `mode` covers the fresh create; it
+  // does NOT cover a pre-existing file, because this is a direct, non-atomic
+  // open(path, "w", mode) that truncates the inode already there and leaves
+  // that inode's mode alone. (That create-only caveat is exactly the one that
+  // does NOT apply to the token store's temp+rename writer, where every write
+  // installs a fresh inode — it bites squarely here.) So the chmod is
+  // unconditional, and that is also what repairs a 0644 file left behind by an
+  // older install.
+  //
+  // What this buys, stated honestly: 0o600 is a cross-user control. It does
+  // nothing against a process running as THIS user, and it does not hide the
+  // token from `ps` — the value is inlined in the hook command string, so every
+  // hook fire still exposes it in the process table. Handing the hook a path
+  // (`ARCS_HOOK_TOKEN_FILE=<path>`) instead of the value would close that; the
+  // mode only closes the on-disk half.
+  //
+  // The `.claude` DIRECTORY is deliberately left exactly as found. Unlike the
+  // hooks dir under ARCS's data dir, which holds nothing but the token, this
+  // one holds the user's other Claude Code files, and narrowing it would be a
+  // hostile surprise in a directory ARCS does not own.
+  await writeFile(settingsPath, `${JSON.stringify(merged, null, 2)}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  await chmod(settingsPath, 0o600);
 
   return {
     settingsPath,

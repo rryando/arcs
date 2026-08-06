@@ -8,8 +8,11 @@
  * decides what the child *does* — but it does own the child's OUTPUT CONTRACT:
  * every run is normalized onto `--output-format stream-json
  * --include-partial-messages --verbose` (see withStreamJsonArgv), so stdout is
- * always the newline-delimited event stream the reader below understands. The
- * route's post-run write-back (transcript mirror + metadata.run finalization)
+ * always the newline-delimited event stream the reader below understands. When
+ * the caller supplies an `eventLog` target, that stream is ALSO persisted
+ * verbatim to the run's own event log before the reader parses a byte of it
+ * (see run-event-log.ts) — the log is the durable record, parsing is a consumer.
+ * The route's post-run write-back (transcript mirror + metadata.run finalization)
  * plugs in as the per-job `onSettled` callback, invoked after the child exits.
  *
  * Injectable `spawnImpl` + `binary` keep tests free of real children; the
@@ -19,6 +22,7 @@
  */
 
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import { openRunEventLog, type RunEventLogTarget } from "./run-event-log.js";
 
 export type RunOutcome = "success" | "error" | "timeout";
 
@@ -44,6 +48,18 @@ export interface ClaudeRunRecord {
    * run still settles normally, the number says the reader fell behind claude.
    */
   skippedLines?: number;
+  /**
+   * Lines written to the run's durable event log — the count of stdout lines
+   * that reached disk, which is >= what the reader could use (the log keeps the
+   * ones it skipped too). Absent when the run had no log target.
+   */
+  eventLogLines?: number;
+  /**
+   * Why the event log could not be written, when it failed. REPORTED, never
+   * thrown: a run whose log is unwritable still runs, still settles and still
+   * returns its reply — losing the audit trail is not a reason to lose the run.
+   */
+  eventLogError?: string;
 }
 
 export interface ClaudeJobInput {
@@ -65,6 +81,16 @@ export interface ClaudeJobInput {
   /** Base env for the child (defaults to process.env) minus the ARCS_HOOK_*
    *  handshake keys (ARCS_HOOK_TOKEN, ARCS_HOOK_SLUG, ARCS_HOOK_URL). */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Where to persist this run's stdout verbatim. When present, every stdout
+   * chunk is written to `sessions/{sessionId}.run-{runId}.events.jsonl` BEFORE
+   * the NDJSON reader below sees it, on every outcome — success, error and
+   * timeout alike. The caller supplies the runId it already persisted as the
+   * session's `currentRunId`, so the log's name and the session record cannot
+   * disagree. Omit it and the run keeps no log (the runner stays usable without
+   * a project dir).
+   */
+  eventLog?: RunEventLogTarget;
   /**
    * Post-run write-back invoked with the settled record after the child has
    * fully exited (`close` fired, stdio drained) — on every path that yields a
@@ -260,7 +286,12 @@ export async function runClaudeJob(
 
   const record: ClaudeRunRecord = { pid: child.pid ?? null, startedAt, outcome: "success" };
   try {
-    const settled = await settleRun(child, { timeoutMs, killGraceMs, binary });
+    const settled = await settleRun(child, {
+      timeoutMs,
+      killGraceMs,
+      binary,
+      ...(input.eventLog !== undefined && { eventLog: input.eventLog }),
+    });
     record.endedAt = settled.endedAt;
     record.outcome = settled.outcome;
     if (settled.error !== undefined) record.error = settled.error;
@@ -272,6 +303,8 @@ export async function runClaudeJob(
     // before the kill still carries its TTFT number.
     if (settled.firstTokenAt !== undefined) record.firstTokenAt = settled.firstTokenAt;
     if (settled.skippedLines !== undefined) record.skippedLines = settled.skippedLines;
+    if (settled.eventLogLines !== undefined) record.eventLogLines = settled.eventLogLines;
+    if (settled.eventLogError !== undefined) record.eventLogError = settled.eventLogError;
   } catch (err) {
     // Never throw on child-side failures — every path resolves to a record.
     record.outcome = "error";
@@ -309,6 +342,7 @@ interface SettleContext {
   timeoutMs: number;
   killGraceMs: number;
   binary: string;
+  eventLog?: RunEventLogTarget;
 }
 
 interface SettleResult {
@@ -318,12 +352,17 @@ interface SettleResult {
   replyText?: string;
   firstTokenAt?: number;
   skippedLines?: number;
+  eventLogLines?: number;
+  eventLogError?: string;
 }
 
 function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResult> {
   return new Promise<SettleResult>((resolve) => {
     const stdout = makeStreamReader({ rawCap: STDOUT_CAP, lineCap: MAX_EVENT_LINE });
     const stderr = makeTailBuffer(STDERR_CAP);
+    // Opened before any listener attaches, so the file exists even for a child
+    // that never writes a byte — an error or timeout run still leaves a log.
+    const events = openRunEventLog(ctx.eventLog);
     let settled = false;
     let timedOut = false;
     let termTimer: NodeJS.Timeout | null = null;
@@ -345,11 +384,17 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
       child.removeAllListeners();
       child.stdout?.removeAllListeners();
       child.stderr?.removeAllListeners();
+      // The log closes on EVERY settle path — error, close and timeout — so the
+      // durable record of what the child said outlives how the run ended.
+      events.flush();
+      const log = events.close();
       const seen = stdout.snapshot();
       resolve({
         ...result,
         ...(seen.firstTokenAt !== undefined && { firstTokenAt: seen.firstTokenAt }),
         ...(seen.skippedLines > 0 && { skippedLines: seen.skippedLines }),
+        ...(ctx.eventLog !== undefined && { eventLogLines: log.lines }),
+        ...(log.error !== undefined && { eventLogError: log.error }),
       });
     };
 
@@ -361,7 +406,15 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
       }, ctx.killGraceMs);
     }, ctx.timeoutMs);
 
-    child.stdout?.on("data", (chunk: Buffer | string) => stdout.push(String(chunk)));
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      // DURABLE FIRST. The raw bytes hit disk synchronously here, before the
+      // reader below is given a chance to parse them — the log is the source of
+      // truth and the reader is a consumer, so a line the reader cannot use (or
+      // a process that dies on the very next statement) still leaves the line
+      // on disk. Never throws: openRunEventLog reports failures instead.
+      events.push(chunk);
+      stdout.push(String(chunk));
+    });
     child.stderr?.on("data", (chunk: Buffer | string) => stderr.push(String(chunk)));
 
     child.on("error", (err: Error) => {

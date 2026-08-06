@@ -63,6 +63,13 @@ export interface TranscriptTurn {
   section?: ReferenceSection;
   /** Reference turns only: identity of the source document. */
   source?: ReferenceSource;
+  /**
+   * Run this turn was folded down from (see web-server/run-event-log.ts). Set
+   * only on ARCS-authored turns written at a run's settle, where it doubles as
+   * the fold's idempotence marker: a run whose id already appears here has
+   * been folded and is never folded again.
+   */
+  run?: string;
 }
 
 export interface ReadTranscriptResult {
@@ -84,6 +91,11 @@ export interface SessionTurnInput {
   type: "user" | "assistant";
   text: string;
   ts?: string;
+  /** Tool this turn stands for — a `tool_use` folded down from a run's event
+   *  log, rendered dimmed exactly like a mirrored tool turn. */
+  tool?: { name: string };
+  /** Run this turn was folded down from; also the fold's idempotence marker. */
+  run?: string;
 }
 
 /** Single-read cap for transcript files; anything larger mirrors as a no-op. */
@@ -411,6 +423,10 @@ export async function appendReferenceTurn(
  * and reference appends. A failed append is a swallowed no-op. The id is
  * minted from the shared ARCS-authored negative space so it can never collide
  * with a reference turn — both render through <TurnRow key={t.id}>.
+ *
+ * `tool` and `run` ride through verbatim: they are what a run's event-log
+ * fold-down writes (one turn per `tool_use`, every turn tagged with the run
+ * whose log produced it — see web-server/run-event-log.ts).
  */
 export async function appendSessionTurn(
   projectDir: string,
@@ -427,6 +443,8 @@ export async function appendSessionTurn(
         type: turn.type,
         text: turn.text,
         ...(turn.ts !== undefined ? { ts: turn.ts } : {}),
+        ...(turn.tool !== undefined ? { tool: turn.tool } : {}),
+        ...(turn.run !== undefined ? { run: turn.run } : {}),
       };
       await appendRecords(sidecarPath, [record]);
     });

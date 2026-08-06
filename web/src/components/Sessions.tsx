@@ -22,26 +22,27 @@ import { cx, relativeTime, truncate } from "../lib/format";
 import { SessionLinkModal } from "./SessionLinkModal";
 import { canSendMessage, isVisibleSession, SessionMessageForm } from "./SessionMessageForm";
 import { useSessionPanel } from "./SessionPanel";
-import { SESSION_STATE_ORDER, SESSION_STATUSES, SessionStatusBadge } from "./SessionStatusBadge";
+import {
+  filterSessionsByState,
+  SessionStatusBadge,
+  sessionState,
+  sessionStateChips,
+  sessionStateRank,
+} from "./SessionStatusBadge";
 
 const RUNTIME_LABEL: Record<string, string> = {
   opencode: "opencode",
   "claude-code": "claude code",
 };
 
+/** States that mean "a session a human could talk to right now": the live
+ *  phases, plus the raw `active` a record that arrived without a phase is
+ *  badged with. */
+const LIVE_STATES = new Set(["running", "idle", "active"]);
+
 function metaString(session: SessionMeta, key: string): string {
   const value = session.metadata?.[key];
   return typeof value === "string" ? value : "";
-}
-
-/**
- * What the status column shows: the server's derived phase — the only answer to
- * "is this session live right now" — falling back to the record's own status
- * for a session that reached the table without one. The raw status stays
- * readable in the cell's tooltip, so the two are never confused for each other.
- */
-function sessionState(session: SessionMeta): string {
-  return session.phase ?? session.status;
 }
 
 export function SessionsView() {
@@ -54,7 +55,7 @@ export function SessionsView() {
   const { push } = useToaster();
   const { openSession } = useSessionPanel();
 
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
   const [linkTarget, setLinkTarget] = useState<SessionMeta | null>(null);
   const [messageTarget, setMessageTarget] = useState<SessionMeta | null>(null);
@@ -63,15 +64,41 @@ export function SessionsView() {
   // currently surfaces, so the counts below describe what the user can see.
   const sessions = useMemo(() => (data?.sessions ?? []).filter(isVisibleSession), [data]);
 
+  /**
+   * DECISION: the chips filter on the same `sessionState()` the status column
+   * renders — the derived phase — not on the persisted `status` underneath it.
+   *
+   * The alternative was keeping status chips and relabelling them "record
+   * status" so the two axes read as different things. Rejected: it asks the
+   * user to hold two vocabularies for one column, and it leaves the `active`
+   * chip returning rows badged `running` and hiding rows badged `running`
+   * whose stored status happens to be `idle`. A filter that contradicts the
+   * badge next to it is broken; a filter whose results move because the derived
+   * phase moved is merely live — which the badge already is, since phase is
+   * reconciled per response and never persisted.
+   *
+   * The chips themselves come from the states actually on screen for the same
+   * reason (`sessionStateChips`): a fixed phase list would offer chips that
+   * match nothing and leave any record that arrived without a phase — badged
+   * with its raw status — reachable under no chip at all.
+   */
   const rows = useMemo(() => {
-    const list = statusFilter ? sessions.filter((s) => s.status === statusFilter) : sessions;
+    const list = filterSessionsByState(sessions, stateFilter);
     return [...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [sessions, statusFilter]);
+  }, [sessions, stateFilter]);
 
-  // ARCS-owned records are headless run bookkeeping, not sessions a human can
-  // reach — counting them as "live" advertises agents nobody is talking to.
+  const stateChips = useMemo(
+    () => sessionStateChips(sessions, stateFilter),
+    [sessions, stateFilter],
+  );
+
+  // Counted off the same derived state the badges show: a record still stored
+  // `active` whose process is gone derives `ended`, and advertising it as live
+  // is the stale-liveness bug the derived phase exists to kill. ARCS-owned
+  // records are headless run bookkeeping, not sessions a human can reach —
+  // counting them as "live" advertises agents nobody is talking to.
   const liveCount = sessions.filter(
-    (s) => (s.status === "active" || s.status === "idle") && s.metadata?.control !== "arcs-owned",
+    (s) => LIVE_STATES.has(sessionState(s)) && s.metadata?.control !== "arcs-owned",
   ).length;
 
   const linkLabel = useMemo(() => {
@@ -104,15 +131,21 @@ export function SessionsView() {
         key: "status",
         title: "status",
         className: "w-36",
-        sortValue: (s) => SESSION_STATE_ORDER.indexOf(sessionState(s)),
+        sortValue: (s) => sessionStateRank(sessionState(s)),
         render: (s) => {
           const queued = s.messageQueue?.length ?? 0;
           return (
             <span
               className="inline-flex items-center gap-1"
-              title={`live phase — the record's own status is "${s.status}"`}
+              // Names which axis the badge is on, so the raw status stays
+              // readable without ever being the thing a control acts on.
+              title={
+                s.phase
+                  ? `live phase — the record's own status is "${s.status}"`
+                  : `the record's own status — no live phase was sent for this session`
+              }
             >
-              <SessionStatusBadge status={sessionState(s)} />
+              <SessionStatusBadge session={s} />
               {queued > 0 && (
                 <span
                   title={`${queued} message${queued === 1 ? "" : "s"} queued — waiting for the session's next checkpoint`}
@@ -267,16 +300,16 @@ export function SessionsView() {
         }
       >
         <div className="flex items-center gap-1 border-b border-term-border px-2 py-1 text-[11px]">
-          <StatusChip
-            active={statusFilter === null}
-            onClick={() => setStatusFilter(null)}
+          <StateChip
+            active={stateFilter === null}
+            onClick={() => setStateFilter(null)}
             label="all"
           />
-          {SESSION_STATUSES.map((s) => (
-            <StatusChip
+          {stateChips.map((s) => (
+            <StateChip
               key={s}
-              active={statusFilter === s}
-              onClick={() => setStatusFilter(statusFilter === s ? null : s)}
+              active={stateFilter === s}
+              onClick={() => setStateFilter(stateFilter === s ? null : s)}
               label={s}
             />
           ))}
@@ -352,7 +385,8 @@ export function SessionsView() {
   );
 }
 
-function StatusChip({
+/** One filter chip, labelled with the same state string the badges render. */
+function StateChip({
   active,
   onClick,
   label,
