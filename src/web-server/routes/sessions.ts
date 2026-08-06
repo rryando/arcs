@@ -17,6 +17,7 @@ import { stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { z } from "zod";
+import { isSessionAttached } from "../../shared/session-vocabulary.js";
 import {
   appendReferenceTurn,
   appendSessionTurn,
@@ -60,6 +61,7 @@ import {
   readOpencodeConfig,
   sendOpencodeMessage,
 } from "../opencode-client.js";
+import { buildStagedEnvironment, planStageRefresh } from "../prompt-assembly.js";
 import { parseBody, requireProjectDir, respond } from "../respond.js";
 import { foldRunEventLog, pruneRunEventLogs } from "../run-event-log.js";
 import { isProcessAlive, reconcileSessionPhases } from "../session-reconciler.js";
@@ -303,48 +305,12 @@ function parseFilters(status: string | undefined, runtimeType: string | undefine
  */
 type SessionView = SessionMeta & { phase: SessionPhase };
 
-/**
- * The state this module decides from, stated exactly as the web client states
- * it: the derived phase, falling back to the record's own status for a record
- * that reached a decision site without one.
- *
- * One derivation on BOTH sides of the wire — the mirror of `sessionState()` in
- * web/src/components/SessionStatusBadge.tsx. An affordance the client offers and
- * the answer this server gives are then computed from the same field, so they
- * cannot disagree about whether a session is reachable.
- */
-function sessionState(session: SessionMeta & { phase?: SessionPhase }): string {
-  return session.phase ?? session.status;
-}
-
-/**
- * States meaning "a process is driving this session right now".
- *
- * Deliberately NARROWER than "not over": `idle` is live — the record has not
- * finished — but nothing holds its runtime thread, and that gap is precisely the
- * headless-resume use case. Conflating the two sets would refuse a resume to
- * every session that can actually use one.
- *
- * `active` is the persisted status, reachable only through `sessionState`'s
- * fallback for a record handed to the predicate without a derived phase. Every
- * call site in this module goes through `withPhases` first, so the phase decides
- * in practice; the fallback is the conservative answer (treat as attached,
- * refuse) for anything that does not, rather than a silent accept.
- */
-const ATTACHED_STATES = new Set(["running", "active"]);
-
-/**
- * Is a process attached to this session right now?
- *
- * The gate on anything needing the session's runtime thread free — today the
- * headless `claude -p --resume`, which cannot attach to a thread a terminal is
- * already driving. Takes the RECORD, never a pre-picked string, so no call site
- * can hand it the persisted status while the UI one screen away renders the
- * derived phase.
- */
-function isSessionAttached(session: SessionMeta & { phase?: SessionPhase }): boolean {
-  return ATTACHED_STATES.has(sessionState(session));
-}
+// The state this module decides from — `sessionState()` and the predicates over
+// it — is NOT defined here. It lives in `src/shared/session-vocabulary.ts`, the
+// zero-import leaf `web/src/components/SessionStatusBadge.tsx` imports too, so
+// an affordance the client offers and the answer this server gives are computed
+// by the same function rather than by two copies of it. The reachable
+// (status, phase) pairs are enumerated there.
 
 /**
  * Epoch-ms deadline the claimed run will be killed at, when the spawn site
@@ -735,6 +701,12 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
  * delivery-first ordering (user turn before reference). Mode 1 never appends:
  * its transcript write-back happens at exit (T005).
  *
+ * Staged environment (W2): every spawn carries the write-target's stable context
+ * block on `--append-system-prompt` when there is one to carry — always for a
+ * spawn that STARTS a conversation, and only on a restage for one that continues
+ * it. The returned record is persisted at `metadata.stage` exactly when
+ * `planStageRefresh` asks for it, and is the next turn's freshness baseline.
+ *
  * Concurrency: one live run per write-target. The runner's beginRun is the
  * atomic claim; the read-only isRunLive probe here answers the common
  * overlapping case with a proper 409 before anything is appended or spawned
@@ -872,6 +844,52 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
           : ["-p", message, "--resume", claudeThread, "--output-format", "json"];
       }
 
+      // --- Staged environment (W2) -----------------------------------------
+      //
+      // Keyed on the WRITE TARGET, never on the referenced session: the write
+      // target is the record the run lands on and the record `metadata.stage`
+      // is persisted to, so the fingerprint compared next turn describes the
+      // same node the text was built from.
+      //
+      // `workspaceRoot` is the directory the child will ACTUALLY run in — which
+      // is `primaryWorkspacePath(projectDir, slug)` for oneshot/stable, and the
+      // resumed session's own directory when it has one. Staging the project's
+      // primary path there regardless would state a root the child is not in.
+      const stageOpts = { workspaceRoot: dir };
+      const refresh = await planStageRefresh(projectDir, slug, writeTarget, stageOpts);
+      // A spawn that CONTINUES a conversation (resume, and every stable spawn
+      // after the seed) already carries the block from the turn that staged it,
+      // so a fresh stage needs no re-injection — that is what the cheap exit
+      // buys, and what manual predicate P1 rests on. A spawn that STARTS one
+      // (oneshot always; the stable seed once) has no history at all, so "it is
+      // already in the conversation" is false for it by construction and it must
+      // carry the block even on a fresh stage. That is the only path paying for
+      // a second assembly, and only on a turn the cheap exit fired.
+      const startsNewConversation = mode === "oneshot" || firstStableSpawn;
+      const staged =
+        refresh.staged ??
+        (startsNewConversation
+          ? await buildStagedEnvironment(projectDir, slug, writeTarget, {
+              ...stageOpts,
+              // The same watermark planStageRefresh stamps with, so this record
+              // stays mtime-comparable even though this path never persists it.
+              now: refresh.probedAt,
+            })
+          : undefined);
+      // The pair is appended DIRECTLY rather than built by `buildPermissionArgv`.
+      // That module owns this flag, but it returns a WHOLE tool/permission
+      // segment keyed on an `intent` (ask|change) this route does not have —
+      // /run takes a MODE, and intents arrive with POST /turns — so emitting the
+      // segment here would newly restrict what tools today's runs may use, a
+      // behaviour change well beyond wiring the staging. The seam for /turns:
+      // build the segment there and pass this same text as its
+      // `stagedSystemPrompt`, replacing this push.
+      //
+      // The value can never be flag-shaped: the staged text always opens with
+      // the envelope delimiter, so permission-policy's `asValueToken` guard —
+      // which exists for caller-authored text — has nothing to do here.
+      if (staged) argv.push("--append-system-prompt", staged.text);
+
       // The run's own ceiling, resolved HERE so the deadline persisted with the
       // claim is the same number the runner arms its kill timer with (it
       // prefers this over its own env/default lookup).
@@ -879,10 +897,19 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/run", async (c) =>
       const timeoutMs = resolveTimeoutMs(undefined, process.env);
       // Persisted next to the claim rather than inside metadata.run, which
       // `beginSessionRun` replaces wholesale: as a sibling key the deadline
-      // cannot be clobbered by the claim, nor the claim by it.
+      // cannot be clobbered by the claim, nor the claim by it. The stage record
+      // rides the SAME write — one more sibling key, no extra store round trip,
+      // and it lands before the claim that would otherwise replace metadata.run
+      // underneath it.
       await updateSession(projectDir, {
         id: writeTarget.normalizedId,
-        metadata: { runDeadlineAt: Date.now() + timeoutMs },
+        metadata: {
+          runDeadlineAt: Date.now() + timeoutMs,
+          // Written EXACTLY when the refresh asks for it. On the cheap exit
+          // nothing was rebuilt, so re-stamping the record would move the very
+          // watermark the next turn's freshness decision is made against.
+          ...(refresh.persist && refresh.stage ? { stage: refresh.stage } : {}),
+        },
       });
       // Claim the record BEFORE the child exists: from here on, a server that
       // dies mid-run leaves a claim behind rather than an invisible orphan, and

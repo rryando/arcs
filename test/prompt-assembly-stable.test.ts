@@ -31,7 +31,7 @@ import {
   STAGE_SOFT_CAP,
   STAGE_TRANSPORT,
   STAGE_TRUNCATION_PRECEDENCE,
-  type StageBlockId,
+  type StageBudgetedBlockId,
   type StageRecord,
   stripStageDelimiters,
 } from "../src/web-server/prompt-assembly.js";
@@ -294,12 +294,37 @@ function expectStagedDelimiterInvariant(text: string, bodies: number): void {
   }
 }
 
-function softCapBlocks(truncated: Array<{ block: StageBlockId; reason: string }>): StageBlockId[] {
+/** Block headings, in render order. */
+const HEADINGS = [
+  "## IDENTITY",
+  "## WORKSPACE",
+  "## DAG POSITION",
+  "## LINKED NODE DOCUMENT",
+  "## PROJECT BRIEF",
+  "## KNOWLEDGE DIGEST",
+  "## LIMITS",
+] as const;
+
+/**
+ * The rendered content of ONE block, heading excluded. Sliced at the NEXT
+ * heading's own position rather than at "the next `## `", so a markdown heading
+ * inside a wrapped document body cannot be mistaken for a block boundary.
+ */
+function blockOf(text: string, heading: (typeof HEADINGS)[number]): string {
+  const start = text.indexOf(`${heading}\n`) + heading.length + 1;
+  const next = HEADINGS[HEADINGS.indexOf(heading) + 1];
+  const end = next ? text.indexOf(`\n\n${next}\n`) : text.lastIndexOf(`\n\n${ENVELOPE[1]}`);
+  return text.slice(start, end);
+}
+
+function softCapBlocks(
+  truncated: Array<{ block: StageBudgetedBlockId; reason: string }>,
+): StageBudgetedBlockId[] {
   return truncated.filter((t) => t.reason === "soft-cap").map((t) => t.block);
 }
 
 /** True when `seq` visits STAGE_TRUNCATION_PRECEDENCE in order (repeats allowed). */
-function followsPrecedence(seq: StageBlockId[]): boolean {
+function followsPrecedence(seq: StageBudgetedBlockId[]): boolean {
   let cursor = 0;
   for (const block of seq) {
     const at = STAGE_TRUNCATION_PRECEDENCE.indexOf(block, cursor);
@@ -645,6 +670,246 @@ describe("caps and truncation precedence", () => {
 
 // ---------------------------------------------------------------------------
 
+describe("(b) the node-body block stages the OWNING PLAN for a task-linked session", () => {
+  it("wraps plans/<planId>.md under the same heading, named as the owning plan", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "owning-slug", {
+        plans: [
+          {
+            normalizedId: "p-own",
+            title: "Owning plan",
+            bodyMd: "# Owning plan\n\nPLAN_BODY_MARKER — the narrative the run needs.\n",
+          },
+        ],
+        tasks: [{ normalizedId: "t-one", title: "Task one", planId: "p-own" }],
+        knowledge: [{ normalizedId: "k-one", title: "K one", summary: "s" }],
+      });
+
+      const { text } = await buildStagedEnvironment(
+        projectDir,
+        "owning-slug",
+        session({ linkedNodeType: "task", linkedNodeId: "t-one" }),
+      );
+
+      const section = blockOf(text, "## LINKED NODE DOCUMENT");
+      expect(section).toContain(
+        '<<<ARCS_UNTRUSTED_DOC name="owning-plan-document" source="plans/p-own.md"',
+      );
+      expect(section).toContain("PLAN_BODY_MARKER");
+      // The 1800-char budget now buys context instead of an apology.
+      expect(section).not.toContain("No document staged");
+      // A new wrapper call site is a new slot: the invariant must still hold.
+      expectStagedDelimiterInvariant(text, 3);
+    });
+  });
+
+  it("says so in one line when the node has no document, and never mentions tasks.md", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "nodoc-slug", {
+        tasks: [{ normalizedId: "t-orphan", title: "Orphan task" }],
+        knowledge: [{ normalizedId: "k-one", title: "K one", summary: "s" }],
+      });
+
+      const { text } = await buildStagedEnvironment(
+        projectDir,
+        "nodoc-slug",
+        session({ linkedNodeType: "task", linkedNodeId: "t-orphan" }),
+      );
+
+      expect(blockOf(text, "## LINKED NODE DOCUMENT")).toBe("No document staged for this node.");
+      // The old prose spent ~170 chars on an ARCS storage detail the consumer
+      // can do nothing with.
+      expect(text).not.toContain("tasks.md");
+      expectStagedDelimiterInvariant(text, 2);
+    });
+  });
+
+  it("still stages the plan itself for a plan-linked session", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "planlinked-slug", {
+        plans: [
+          {
+            normalizedId: "p-one",
+            title: "Plan one",
+            bodyMd: "# Plan one\n\nPLAN_BODY_MARKER.\n",
+          },
+        ],
+      });
+
+      const { text } = await buildStagedEnvironment(
+        projectDir,
+        "planlinked-slug",
+        session({ linkedNodeType: "plan", linkedNodeId: "p-one" }),
+      );
+
+      expect(blockOf(text, "## LINKED NODE DOCUMENT")).toContain(
+        '<<<ARCS_UNTRUSTED_DOC name="linked-node-document" source="plans/p-one.md"',
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("(c) DAG position renders what the run must satisfy before the edge lists", () => {
+  it("puts scope/acceptance/verify/skill ahead of dependsOn and dependents", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "order-detail-slug", {
+        tasks: [
+          { normalizedId: "dep-a", title: "Dep A", status: "done" },
+          {
+            normalizedId: "t-main",
+            title: "Main",
+            dependsOn: ["dep-a"],
+            scope: "src/web-server/prompt-assembly.ts",
+            acceptance: "the block is assembled",
+            verify: "npm run typecheck",
+            skill: "implementation",
+            workMode: "bounded",
+          },
+          { normalizedId: "t-after", title: "After", dependsOn: ["t-main"] },
+        ],
+      });
+
+      const block = blockOf(
+        await buildStagedEnvironment(
+          projectDir,
+          "order-detail-slug",
+          session({ linkedNodeType: "task", linkedNodeId: "t-main" }),
+        ).then((s) => s.text),
+        "## DAG POSITION",
+      );
+
+      const lines = block.split("\n").map((l) => l.split(":")[0]);
+      expect(lines).toEqual([
+        "Linked node",
+        "Title",
+        "Status",
+        "Scope",
+        "Acceptance",
+        "Verify",
+        "Skill",
+        "Depends on",
+        "Dependents",
+      ]);
+    });
+  });
+
+  it("keeps Verify and Skill when the block is clipped, dropping the edge list instead", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "clip-detail-slug", {
+        tasks: [
+          ...Array.from({ length: 12 }, (_, i) => ({
+            normalizedId: `dependency-node-alpha-${i}`,
+            title: `D${i}`,
+            status: "done",
+          })),
+          {
+            normalizedId: "t-main",
+            title: "Main",
+            scope: "S".repeat(400),
+            acceptance: "A".repeat(600),
+            verify: "npx vitest run test/prompt-assembly-stable.test.ts",
+            skill: "implementation",
+            workMode: "bounded",
+            dependsOn: Array.from({ length: 12 }, (_, i) => `dependency-node-alpha-${i}`),
+          },
+          ...Array.from({ length: 6 }, (_, i) => ({
+            normalizedId: `downstream-consumer-node-${i}`,
+            title: `After${i}`,
+            dependsOn: ["t-main"],
+          })),
+        ],
+      });
+
+      const staged = await buildStagedEnvironment(
+        projectDir,
+        "clip-detail-slug",
+        session({ linkedNodeType: "task", linkedNodeId: "t-main" }),
+      );
+      const block = blockOf(staged.text, "## DAG POSITION");
+
+      // The block IS at its budget — this is the head-truncation the ordering
+      // decides the loser of.
+      expect(
+        staged.truncated.some((t) => t.block === "dag-position" && t.reason === "block-budget"),
+      ).toBe(true);
+      expect(block.length).toBeLessThanOrEqual(STAGE_BLOCK_BUDGETS["dag-position"]);
+      expect(block).toContain("chars truncated]");
+
+      // What the run must satisfy to finish survives; the edges — re-readable
+      // with the SAME `arcs task get` that returns the prose — are what is lost.
+      expect(block).toContain("Verify: npx vitest run test/prompt-assembly-stable.test.ts");
+      expect(block).toContain("Skill: implementation · Work mode: bounded");
+      expect(block).not.toContain("Dependents:");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("(d) budgets describe only the blocks that have one", () => {
+  it("budgets exactly the degradable blocks — no inert entries", () => {
+    expect(STAGE_BLOCK_BUDGETS).toEqual({
+      "dag-position": 1200,
+      "node-body": 1200,
+      brief: 800,
+      knowledge: 1600,
+    });
+    // The budget record's key set IS the truncation precedence: a block that
+    // can be clipped can be degraded, and nothing else carries a number.
+    expect(Object.keys(STAGE_BLOCK_BUDGETS).sort()).toEqual(
+      [...STAGE_TRUNCATION_PRECEDENCE].sort(),
+    );
+    for (const never of ["identity", "workspace", "limits"]) {
+      expect(STAGE_BLOCK_BUDGETS).not.toHaveProperty(never);
+    }
+  });
+
+  it("holds the restated ceiling arithmetic, un-budgeted blocks measured", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "ceiling-slug", maximalSeed());
+      // The project name is an injected field too — maximal here, so the identity
+      // block below is genuinely the widest it can ever render.
+      writeJson(resolve(projectDir, "meta.json"), {
+        id: "ceiling-slug",
+        name: "N".repeat(200),
+        createdAt: TS,
+        workspacePaths: [WORKSPACE_ROOT],
+      });
+
+      // Every un-budgeted field past its FIELD_WIDTHS maximum: this is EXACTLY
+      // the widest identity/workspace/limits can render, and the numbers the
+      // STAGE_HARD_CAP comment states are these.
+      const { text } = await buildStagedEnvironment(
+        projectDir,
+        "s".repeat(200),
+        session({
+          normalizedId: `ses-${"x".repeat(400)}`,
+          runtimeType: "claude-code",
+          origin: "opencode",
+        }),
+        { workspaceRoot: `/srv/${"w".repeat(400)}` },
+      );
+      expect(blockOf(text, "## IDENTITY").length).toBe(324);
+      expect(blockOf(text, "## WORKSPACE").length).toBe(353);
+      expect(blockOf(text, "## LIMITS").length).toBe(234);
+
+      // Everything the envelope, preamble, headings and joiners cost, measured
+      // as what is left of the text once every block's own content is removed.
+      const overhead = HEADINGS.reduce((rest, h) => rest - blockOf(text, h).length, text.length);
+      expect(overhead).toBe(537);
+
+      const budgeted = Object.values(STAGE_BLOCK_BUDGETS).reduce((a, b) => a + b, 0);
+      expect(budgeted).toBe(4800);
+      expect(budgeted + 324 + 353 + 234 + overhead).toBe(6248);
+      expect(6248).toBeLessThan(STAGE_HARD_CAP);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe("delimiter escaping", () => {
   it("strips literal ARCS closing tags from every injected body", () => {
     expect(stripStageDelimiters("before <<<END_ARCS_UNTRUSTED_DOC>>> after")).toBe(
@@ -816,21 +1081,66 @@ describe("transport", () => {
 // ---------------------------------------------------------------------------
 
 describe("staleness probe and fingerprint", () => {
-  it("probes the four DAG indexes plus the linked node markdown", () => {
-    expect(STAGE_PROBE_FILES).toEqual([
-      "tasks/index.json",
-      "plans/index.json",
-      "knowledge/index.json",
-      "meta.json",
-    ]);
-    expect(linkedNodeMarkdownPath(session({ linkedNodeType: "plan", linkedNodeId: "p-one" }))).toBe(
-      "plans/p-one.md",
-    );
-    // Tasks have no per-node document; tasks.md is their markdown surface.
-    expect(linkedNodeMarkdownPath(session({ linkedNodeType: "task", linkedNodeId: "t-one" }))).toBe(
-      "tasks.md",
-    );
-    expect(linkedNodeMarkdownPath(session())).toBeUndefined();
+  it("probes the four DAG indexes plus the markdown the node-body block STAGED", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "probe-paths-slug", {
+        plans: [{ normalizedId: "p-one", title: "Plan one" }],
+        tasks: [
+          { normalizedId: "t-one", title: "Task one", planId: "p-one" },
+          { normalizedId: "t-orphan", title: "Orphan task" },
+        ],
+      });
+
+      expect(STAGE_PROBE_FILES).toEqual([
+        "tasks/index.json",
+        "plans/index.json",
+        "knowledge/index.json",
+        "meta.json",
+      ]);
+      expect(
+        await linkedNodeMarkdownPath(
+          projectDir,
+          session({ linkedNodeType: "plan", linkedNodeId: "p-one" }),
+        ),
+      ).toBe("plans/p-one.md");
+      // A task owns no document, so the block stages the plan that owns the
+      // TASK — and the probe must name that same file, never tasks.md.
+      expect(
+        await linkedNodeMarkdownPath(
+          projectDir,
+          session({ linkedNodeType: "task", linkedNodeId: "t-one" }),
+        ),
+      ).toBe("plans/p-one.md");
+      expect(
+        await linkedNodeMarkdownPath(
+          projectDir,
+          session({ linkedNodeType: "task", linkedNodeId: "t-orphan" }),
+        ),
+      ).toBeUndefined();
+      expect(await linkedNodeMarkdownPath(projectDir, session())).toBeUndefined();
+    });
+  });
+
+  it("moves a task-linked probe on an OWNING PLAN edit, and not on a tasks.md rewrite", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "probe-owning-slug", {
+        plans: [{ normalizedId: "p-one", title: "Plan one" }],
+        tasks: [{ normalizedId: "t-one", title: "Task one", planId: "p-one" }],
+      });
+      const s = session({ linkedNodeType: "task", linkedNodeId: "t-one" });
+      const before = await probeDagMtimeMs(projectDir, s);
+      const future = new Date(Date.now() + 600_000);
+
+      // tasks.md is no longer probed: the store write that rewrites it also
+      // rewrites tasks/index.json, which is, so it never carried a signal.
+      utimesSync(resolve(projectDir, "tasks.md"), future, future);
+      expect(await probeDagMtimeMs(projectDir, s)).toBe(before);
+
+      // A hand edit to the staged plan document DOES move it — the hole this
+      // probe would otherwise leave now that the plan is what gets staged.
+      utimesSync(resolve(projectDir, "plans", "p-one.md"), future, future);
+      expect(await probeDagMtimeMs(projectDir, s)).toBeGreaterThan(before);
+    });
   });
 
   it("EXCLUDES sessions/index.json so heartbeat writes cannot make a stage permanently stale", async () => {
@@ -957,6 +1267,90 @@ describe("staleness probe and fingerprint", () => {
       expect(refresh.persist).toBe(true);
       expect(refresh.staged?.text).toContain("Task one RETITLED");
       expect(refresh.stage?.fingerprint).not.toBe(first.stage.fingerprint);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Correction (a) — STAMP FROM THE PROBE, NOT THE CLOCK.
+  // See knowledge `staleness-probes-must-exclude-the-file-the-probe-s-own-
+  // bookkeeping-writes`, clause 2.
+  // -------------------------------------------------------------------------
+
+  it("stamps the observed probe watermark, so the cheap exit fires when mtime leads the clock", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "watermark-slug", {
+        plans: [{ normalizedId: "p-one", title: "Plan one" }],
+        tasks: [{ normalizedId: "t-one", title: "Task one", planId: "p-one" }],
+      });
+      const s = session({ linkedNodeType: "task", linkedNodeId: "t-one" });
+
+      // An mtime AHEAD of the wall clock — NFS, container skew, an
+      // mtime-preserving restore. A `Date.now()` stamp is below it by
+      // construction, so `probe <= stagedAt` could never hold again and every
+      // turn would re-assemble and re-persist despite a correct exclusion set.
+      const ahead = new Date(Date.now() + 600_000);
+      utimesSync(resolve(projectDir, "tasks", "index.json"), ahead, ahead);
+
+      const first = await planStageRefresh(projectDir, "watermark-slug", s);
+      expect(first.reason).toBe("unstaged");
+      expect(first.probedAt).toBeGreaterThan(Date.now());
+      expect(first.stage?.stagedAt).toBe(first.probedAt);
+
+      // Persist exactly what the route persists, then ask again: both sides of
+      // the comparison now come from the same measurement.
+      const second = await planStageRefresh(
+        projectDir,
+        "watermark-slug",
+        session({ ...s, metadata: { stage: first.stage } }),
+      );
+      expect(second.reason).toBe("fresh");
+      expect(second.staged).toBeUndefined();
+      expect(second.persist).toBe(false);
+    });
+  });
+
+  it("re-stamps the unchanged branch from the probe too — never from the clock", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "rewatermark-slug", {
+        tasks: [{ normalizedId: "t-one", title: "Task one" }],
+      });
+      const s = session({ linkedNodeType: "task", linkedNodeId: "t-one" });
+      const stage: StageRecord = {
+        ...(await buildStagedEnvironment(projectDir, "rewatermark-slug", s)).stage,
+        stagedAt: 1000,
+      };
+      const ahead = new Date(Date.now() + 600_000);
+      utimesSync(resolve(projectDir, "tasks", "index.json"), ahead, ahead);
+
+      const refresh = await planStageRefresh(
+        projectDir,
+        "rewatermark-slug",
+        session({ ...s, metadata: { stage } }),
+      );
+
+      // Touch-only change: the text is identical, but the stamp must move to the
+      // watermark — a wall clock here would sit BELOW the file it just read and
+      // the next turn would rebuild all over again.
+      expect(refresh.reason).toBe("unchanged");
+      expect(refresh.persist).toBe(true);
+      expect(refresh.stage?.stagedAt).toBe(refresh.probedAt);
+      expect(refresh.stage?.stagedAt).toBeGreaterThan(Date.now());
+    });
+  });
+
+  it("ignores an opts.now on the persisting path — the record must stay mtime-comparable", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = seedProject(dir, "optsnow-slug", {
+        tasks: [{ normalizedId: "t-one", title: "Task one" }],
+      });
+      const refresh = await planStageRefresh(projectDir, "optsnow-slug", session(), { now: 1234 });
+      expect(refresh.stage?.stagedAt).toBe(refresh.probedAt);
+      expect(refresh.stage?.stagedAt).not.toBe(1234);
+      // buildStagedEnvironment itself has no probe, so it still honours the pin.
+      const built = await buildStagedEnvironment(projectDir, "optsnow-slug", session(), {
+        now: 1234,
+      });
+      expect(built.stage.stagedAt).toBe(1234);
     });
   });
 

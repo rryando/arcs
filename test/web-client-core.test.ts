@@ -2,11 +2,12 @@
  * Unit tests for the web client's pure shortcut-matching core, its API request
  * builder, its session-state vocabulary (the sessions filter, the live counter,
  * the composer's resume gate and the badge they must all agree with about every
- * row), the server's SSE change classifier, and the
- * dev-only vite plugin that supplies the token in `vite dev`.
+ * row) and the zero-import leaf that vocabulary lives in, the server's SSE
+ * change classifier, and the dev-only vite plugin that supplies the token in
+ * `vite dev`.
  */
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Plugin, resolveConfig } from "vite";
@@ -370,6 +371,62 @@ describe("session state filter vs badge", () => {
     expect(isSessionAttached(phaseless)).toBe(false);
     expect(isSessionLive({ status: "active" })).toBe(true);
     expect(isSessionAttached({ status: "active" })).toBe(true);
+  });
+});
+
+/**
+ * The block above drives `web/src/components/SessionStatusBadge.tsx`, which
+ * imports `src/shared/session-vocabulary.ts` directly by relative path across
+ * the workspace boundary. There is no alias and no third package, so that
+ * module's being a LEAF — not the directory it sits in — is the entire reason
+ * `vite build` does not pull the CLI's transitive graph into the browser
+ * bundle. Today only an in-file comment says so.
+ *
+ * No CI step would notice it stop being one. A stray value import of, say,
+ * `src/utils/session-store.js` is a legal src/ import under the root tsconfig,
+ * resolves under web's `moduleResolution: "bundler"` with no alias, and runs
+ * fine under vitest's Node environment — typecheck, lint and test all stay
+ * green. `build:web` runs only from `prepack`, so the break surfaces at release
+ * time, or as a silently broken shell nobody loads until a user does. This test
+ * is the only guard.
+ */
+describe("session vocabulary leaf", () => {
+  it("keeps src/shared/session-vocabulary.ts a zero-import leaf", () => {
+    const source = readFileSync(
+      new URL("../src/shared/session-vocabulary.ts", import.meta.url),
+      "utf-8",
+    );
+    // Match against code only. The leaf's own prose argues about imports at
+    // length — it contains the literal text "an import (forbidden above)",
+    // which the dynamic-import shape below matches verbatim.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+    // Non-vacuity first, and on the STRIPPED text as well as the raw read: a
+    // regex that matches nothing passes forever, so prove the file was read, is
+    // still this module, and survived stripping before trusting its silence.
+    expect(source.length).toBeGreaterThan(0);
+    for (const declaration of [
+      "export interface SessionStateSource",
+      "export function sessionState",
+      "export function isSessionLive",
+      "export function isSessionAttached",
+    ]) {
+      expect(source).toContain(declaration);
+      expect(code).toContain(declaration);
+    }
+
+    // Four shapes, because the obvious one misses two: any line OPENING an
+    // import (covers `import x from`, `import type {`, a bare `import "./x.js"`
+    // and the first line of a wrapped one), a single-line re-export, the
+    // closing line of a wrapped re-export, and a dynamic `import(`.
+    //
+    // `import type` is caught deliberately. A type-only import cannot reach the
+    // bundle by itself, but the file's own contract forbids every import
+    // outright, and one permitted type import is one `verbatimModuleSyntax`
+    // slip away from a value import — the distinction is not worth encoding.
+    expect(
+      code.match(/^\s*import\b|^\s*export\b.*\bfrom\b|^\s*\}\s*from\b|\bimport\s*\(/m),
+    ).toBeNull();
   });
 });
 

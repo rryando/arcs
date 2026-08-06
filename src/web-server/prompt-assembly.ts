@@ -14,9 +14,14 @@
  * A headless `claude -p` run starts with no ambient project knowledge: it does
  * not know which DAG node it is on, where the workspace root is, or what the
  * project already learned. This module renders that context once, as a single
- * ordered block that rides `--append-system-prompt` through
- * `permission-policy.ts` (`buildPermissionArgv({ stagedSystemPrompt })`). This
- * module emits TEXT only — it never produces argv, and never spawns anything.
+ * ordered block that rides `--append-system-prompt`. The run route
+ * (`routes/sessions.ts`) appends that flag/value pair directly today:
+ * `permission-policy.ts`'s `buildPermissionArgv` owns the flag but returns a
+ * WHOLE tool/permission segment keyed on an `intent` the run route does not
+ * have, so emitting it there would restrict what today's runs may do. When
+ * POST /turns introduces intents, this same text becomes its
+ * `stagedSystemPrompt` and the direct pair goes away. This module emits TEXT
+ * only — it never produces argv, and never spawns anything.
  *
  * STABLE means byte-identical across turns for an unchanged DAG. That is the
  * whole economics of the tier: an unchanged prefix is a cache hit upstream, so
@@ -94,9 +99,37 @@ export const STAGE_MANUAL_CHECKS = [
 // Caps and budgets
 // ---------------------------------------------------------------------------
 
-/** Degradation starts above this. */
+/**
+ * Degradation starts above this.
+ *
+ * MEASURED, against the live ARCS project (130 tasks, 18 plans), with the
+ * budgets below: the widest real block is 5812 chars task-linked and 5011
+ * plan-linked, and the ladder fires for 0 of 130 nodes. It is HEADROOM, not a
+ * live path — a test reaches it only by passing `softCap`.
+ *
+ * That is a measurement, not a property, and it is the number to re-take when a
+ * budget or a block's content changes. It has already caught one: staging the
+ * owning plan for task-linked sessions put real content into a node-body block
+ * whose 1800-char budget had been sized for content that never existed, which
+ * took the widest real node to 6412 and made the ladder fire for 62 of 130 —
+ * paying for the plan by DELETING the whole knowledge digest. The budget was
+ * sized to the content instead (see STAGE_BLOCK_BUDGETS["node-body"]).
+ */
 export const STAGE_SOFT_CAP = 6000;
-/** Never exceeded. Held by construction: see STAGE_BLOCK_BUDGETS. */
+/**
+ * Never exceeded. Held by construction, and the arithmetic is:
+ *   budgeted blocks (STAGE_BLOCK_BUDGETS)            = 4800
+ * + un-budgeted blocks at their widest (identity 324,
+ *   workspace 353, limits 234 — width-normalized at
+ *   input by FIELD_WIDTHS, never truncated)          =  911
+ * + envelope, preamble, headings and joiners         =  537
+ *                                                    ------
+ *                                                    = 6248
+ * which leaves 1752 chars of slack under this cap. The un-budgeted numbers are
+ * the widths their fields are bounded to, so they cannot grow without a
+ * FIELD_WIDTHS constant moving; `test/prompt-assembly-stable.test.ts` asserts
+ * all three against a maximal-field build.
+ */
 export const STAGE_HARD_CAP = 8000;
 
 export type StageBlockId =
@@ -107,6 +140,19 @@ export type StageBlockId =
   | "brief"
   | "knowledge"
   | "limits";
+
+/**
+ * The blocks the ladder may degrade and a per-block budget applies to.
+ *
+ * `identity`, `workspace` and `limits` are deliberately NOT here and carry no
+ * budget at all: they are never degraded, and their variable fields are
+ * width-normalized at input (FIELD_WIDTHS) instead, which bounds them by
+ * construction. Budgets for them used to exist and were inert — excluded from
+ * every code path that reads a budget, and all three exceeded the numbers they
+ * stated (324/353/234 against 120/120/200), so the invariant they documented
+ * was false as written.
+ */
+export type StageBudgetedBlockId = "dag-position" | "node-body" | "brief" | "knowledge";
 
 /** Render order. Fixed — the prefix must be stable for the cache to hit. */
 export const STAGE_BLOCK_ORDER: readonly StageBlockId[] = [
@@ -120,30 +166,33 @@ export const STAGE_BLOCK_ORDER: readonly StageBlockId[] = [
 ];
 
 /**
- * Per-block character budgets. Sum = 5840, plus a fixed envelope/header
- * overhead well under 700, so the assembled text cannot reach STAGE_HARD_CAP.
+ * Per-block character budgets. Keyed by StageBudgetedBlockId, so a block with
+ * no budget cannot be given an inert one. Sum = 4800; see STAGE_HARD_CAP for
+ * the full ceiling arithmetic this feeds.
+ *
+ * `node-body` is 1200, not the 1800 it carried while the block was empty for
+ * every task-linked run. 1800 is what the widest real DAG cannot afford: it
+ * takes the largest task-linked block to 6412 and makes the soft-cap ladder fire
+ * for 62 of 130 real nodes, whose first two rungs zero the knowledge digest — a
+ * curated 6-entry index traded for 600 more chars of one plan document. At 1200
+ * the widest real node is 5812 and the ladder fires for none, so both blocks
+ * survive. Measured across the whole live DAG at 1800/1500/1400/1300/1200:
+ * 62/34/14/0/0 nodes degraded.
  */
-export const STAGE_BLOCK_BUDGETS: Record<StageBlockId, number> = {
-  identity: 120,
-  workspace: 120,
+export const STAGE_BLOCK_BUDGETS: Record<StageBudgetedBlockId, number> = {
   "dag-position": 1200,
-  "node-body": 1800,
+  "node-body": 1200,
   brief: 800,
   knowledge: 1600,
-  limits: 200,
 };
 
 /**
- * Fixed truncation precedence. Cheapest-to-lose context goes first; the DAG
- * position survives longest because it is the one thing the run cannot rederive
- * without tool calls.
- *
- * `identity`, `workspace` and `limits` are deliberately absent — they are never
- * degraded. Their variable fields are width-normalized at input instead (see
- * FIELD_WIDTHS), which bounds them by construction without ever truncating the
- * rendered block.
+ * Fixed truncation precedence — exactly the budgeted blocks, cheapest-to-lose
+ * first. The DAG position survives longest because it carries what the run must
+ * satisfy to finish (its scope, acceptance and verify command) alongside its
+ * edges; everything above it can be re-read on demand from the DAG or the repo.
  */
-export const STAGE_TRUNCATION_PRECEDENCE: readonly StageBlockId[] = [
+export const STAGE_TRUNCATION_PRECEDENCE: readonly StageBudgetedBlockId[] = [
   "knowledge",
   "brief",
   "node-body",
@@ -256,19 +305,45 @@ export const STAGE_PROBE_FILES: readonly string[] = [
 export const STAGE_PROBE_EXCLUDED: readonly string[] = ["sessions/index.json"];
 
 /**
- * The markdown document belonging to the linked node, as a project-relative
- * path. Derived from the session alone — no store read — so the probe stays
- * cheap on the hot path.
+ * The markdown document STAGED for the linked node, as a project-relative path.
+ * It must name the same file `readSources` copies into the node-body block, or
+ * an edit to that file would not invalidate the stage.
  *
- * Plans own `plans/<id>.md`. Tasks have no per-node document in ARCS: the task
- * store renders the aggregate `tasks.md`, which is rewritten on every task
- * write, so that is the task's markdown surface.
+ * Plans own `plans/<id>.md`. A task owns no document at all, so the block stages
+ * the plan that owns the TASK — and this therefore resolves to that same
+ * `plans/<planId>.md` rather than to the aggregate `tasks.md` it used to name
+ * (`tasks.md` was never load-bearing: it is rewritten by the same store write
+ * that rewrites the already-probed `tasks/index.json`).
+ *
+ * DELIBERATE COST, chosen over a silent staleness hole: resolving a task's plan
+ * needs the task index, so this is no longer derivable from the session alone
+ * and the probe is no longer stats-only. The read is one 192 KB JSON parse on
+ * the live ARCS project (~2 ms), paid ONCE PER RUN — the probe runs at spawn
+ * time, not per poll — against a `claude -p` subprocess that costs three orders
+ * of magnitude more. The alternative (persist the path on the stage record and
+ * read it back) removes the read but points the probe at the PREVIOUS build's
+ * file, which is a subtler thing to reason about for a saving that is invisible
+ * next to the spawn.
+ *
+ * `readJsonSafe`, never `listTasks`: the store readers self-repair a drifted
+ * index on read, and a probe that can WRITE a file it probes is a
+ * self-invalidating cache (the same failure `STAGE_PROBE_EXCLUDED` exists for).
+ *
+ * The one gap left: a hand-edited `plans/index.json` whose `file` does not
+ * follow `plans/<normalizedId>.md`. Every store-written index does, and a
+ * store-mediated body edit rewrites the probed index anyway.
  */
-export function linkedNodeMarkdownPath(session: SessionMeta): string | undefined {
+export async function linkedNodeMarkdownPath(
+  projectDir: string,
+  session: SessionMeta,
+): Promise<string | undefined> {
   if (!session.linkedNodeType || !session.linkedNodeId) return undefined;
-  return session.linkedNodeType === "plan"
-    ? join("plans", `${session.linkedNodeId}.md`)
-    : "tasks.md";
+  if (session.linkedNodeType === "plan") return join("plans", `${session.linkedNodeId}.md`);
+  const index = await readJsonSafe<{ tasks?: Array<{ normalizedId?: string; planId?: string }> }>(
+    join(projectDir, "tasks", "index.json"),
+  );
+  const planId = index?.tasks?.find((t) => t.normalizedId === session.linkedNodeId)?.planId;
+  return planId ? join("plans", `${planId}.md`) : undefined;
 }
 
 async function mtimeMs(path: string): Promise<number> {
@@ -285,7 +360,7 @@ async function mtimeMs(path: string): Promise<number> {
  * Returns 0 when nothing in the set exists.
  */
 export async function probeDagMtimeMs(projectDir: string, session: SessionMeta): Promise<number> {
-  const nodeMd = linkedNodeMarkdownPath(session);
+  const nodeMd = await linkedNodeMarkdownPath(projectDir, session);
   const paths = [...STAGE_PROBE_FILES, ...(nodeMd ? [nodeMd] : [])];
   const stamps = await Promise.all(paths.map((rel) => mtimeMs(join(projectDir, rel))));
   return stamps.reduce((max, value) => (value > max ? value : max), 0);
@@ -304,6 +379,9 @@ export interface StageRecord {
    * `metadata.run`, which is already epoch ms. (Top-level SessionMeta
    * timestamps are ISO; `metadata.*` timestamps are epoch ms. This follows its
    * neighbours, not its grandparent.)
+   *
+   * On the path that persists it (`planStageRefresh`) this is the OBSERVED
+   * PROBE WATERMARK, never the wall clock — see that function's clause 2.
    */
   stagedAt: number;
   transport: StageTransport;
@@ -325,7 +403,7 @@ export function readStageRecord(session: SessionMeta): StageRecord | undefined {
 // ---------------------------------------------------------------------------
 
 export interface StageTruncation {
-  block: StageBlockId;
+  block: StageBudgetedBlockId;
   /** `block-budget` — the block exceeded its own budget. `soft-cap` — the
    *  assembled text exceeded STAGE_SOFT_CAP and this block paid for it. */
   reason: "block-budget" | "soft-cap";
@@ -347,7 +425,11 @@ export interface StageOptions {
   /** Knowledge audience filter. Default `implementer`. */
   audience?: string;
   transport?: StageTransport;
-  /** Epoch ms for `stage.stagedAt`. Tests pin it; nothing else should. */
+  /**
+   * Epoch ms for `stage.stagedAt`. Tests pin it; nothing else should —
+   * `planStageRefresh` OVERRIDES it with the probe watermark, because a record
+   * it returns is a record a caller persists and compares against mtimes.
+   */
   now?: number;
   /**
    * Overrides STAGE_SOFT_CAP. Exists so the truncation precedence can be driven
@@ -416,9 +498,13 @@ interface DagPosition {
   dependentsTotal: number;
   /**
    * The node's long prose fields (scope/acceptance/verify/skill). Rendered
-   * AFTER the graph edges on purpose: this block is head-truncated at its
-   * budget, and an edge list the run cannot rederive without tool calls must
-   * outrank prose it can re-read from the DAG.
+   * immediately after the identity lines and BEFORE the edge lists.
+   *
+   * This block is head-truncated at its budget, so the tail is what gets lost —
+   * and a measured probe with the edges first dropped the Verify and Skill lines
+   * to keep `id=status` pairs, i.e. sacrificed what the run must satisfy to
+   * finish in order to keep graph trivia. The old rationale ("edges cost tool
+   * calls, prose does not") was simply false: one `arcs task get` returns both.
    */
   detail: string[];
 }
@@ -427,7 +513,9 @@ interface StageSources {
   identity: string;
   workspace: string;
   dag: DagPosition;
-  nodeBody?: { source: string; content: string };
+  /** `name` is the wrapper's label: a plan-linked session stages the plan
+   *  itself, a task-linked one stages the plan that OWNS the task. */
+  nodeBody?: { name: string; source: string; content: string };
   brief: { lines: string[]; summary?: string };
   knowledge: KnowledgeMeta[];
 }
@@ -542,14 +630,35 @@ async function readSources(
   let dag = UNLINKED_POSITION;
   let nodeBody: StageSources["nodeBody"];
 
+  /** The plan's markdown as a wrapped body, or nothing when it has none. */
+  const planDocument = async (
+    plan: { file: string } | undefined,
+    name: string,
+  ): Promise<StageSources["nodeBody"]> => {
+    if (!plan) return undefined;
+    const content = body(await readFile(join(projectDir, plan.file), "utf-8").catch(() => ""));
+    return content ? { name, source: plan.file, content } : undefined;
+  };
+
   if (session.linkedNodeType === "task" && session.linkedNodeId) {
     const task = tasks.find((t) => t.normalizedId === session.linkedNodeId);
-    dag = task
-      ? renderTaskPosition(task, tasks)
-      : {
-          ...UNLINKED_POSITION,
-          head: [`Linked node: task ${field(session.linkedNodeId, 96)} — not found in the DAG.`],
-        };
+    if (task) {
+      dag = renderTaskPosition(task, tasks);
+      // A task has NO per-node markdown, so this block used to be dead weight on
+      // every task-linked run — a whole node-body budget spent saying so — while
+      // the run lost the plan context it most needs. The owning plan is staged
+      // instead, under the same heading and probed by the same path
+      // (`linkedNodeMarkdownPath`), so editing it invalidates the stage.
+      nodeBody = await planDocument(
+        planIndex.plans.find((p) => p.normalizedId === task.planId),
+        "owning-plan-document",
+      );
+    } else {
+      dag = {
+        ...UNLINKED_POSITION,
+        head: [`Linked node: task ${field(session.linkedNodeId, 96)} — not found in the DAG.`],
+      };
+    }
   } else if (session.linkedNodeType === "plan" && session.linkedNodeId) {
     const plan = planIndex.plans.find((p) => p.normalizedId === session.linkedNodeId);
     if (plan) {
@@ -559,8 +668,7 @@ async function readSources(
         plan.status,
         tasks.filter((t) => t.planId === plan.normalizedId),
       );
-      const content = body(await readFile(join(projectDir, plan.file), "utf-8").catch(() => ""));
-      if (content) nodeBody = { source: plan.file, content };
+      nodeBody = await planDocument(plan, "linked-node-document");
     } else {
       dag = {
         ...UNLINKED_POSITION,
@@ -629,14 +737,16 @@ interface Degradation {
 
 /** Ordered exactly as STAGE_TRUNCATION_PRECEDENCE. Each rung reports which
  *  block paid, so `truncated[]` names the loser and not merely the cap. */
-const DEGRADATION_LADDER: ReadonlyArray<{ block: StageBlockId; apply: (d: Degradation) => void }> =
-  [
-    { block: "knowledge", apply: (d) => (d.knowledgeMax = 3) },
-    { block: "knowledge", apply: (d) => (d.knowledgeMax = 0) },
-    { block: "brief", apply: (d) => (d.includeBriefSummary = false) },
-    { block: "node-body", apply: (d) => (d.includeNodeBody = false) },
-    { block: "dag-position", apply: (d) => (d.includeDependsOn = false) },
-  ];
+const DEGRADATION_LADDER: ReadonlyArray<{
+  block: StageBudgetedBlockId;
+  apply: (d: Degradation) => void;
+}> = [
+  { block: "knowledge", apply: (d) => (d.knowledgeMax = 3) },
+  { block: "knowledge", apply: (d) => (d.knowledgeMax = 0) },
+  { block: "brief", apply: (d) => (d.includeBriefSummary = false) },
+  { block: "node-body", apply: (d) => (d.includeNodeBody = false) },
+  { block: "dag-position", apply: (d) => (d.includeDependsOn = false) },
+];
 
 /** Names the wrapper WITHOUT emitting its literal delimiter syntax — an
  *  ARCS-authored line must never look like a real open or close tag. */
@@ -654,7 +764,9 @@ const LIMITS_BLOCK =
   "supersedes it.";
 
 function renderDagPosition(dag: DagPosition, d: Degradation): string {
-  const lines = [...dag.head];
+  // Identity, then what the run must satisfy, THEN the edges — the block is
+  // head-truncated, so this order decides what a clipped block keeps.
+  const lines = [...dag.head, ...dag.detail];
   if (dag.dependsOnTotal > 0) {
     if (!d.includeDependsOn) {
       lines.push(`Depends on: ${dag.dependsOnTotal} node(s) (list omitted for length)`);
@@ -667,7 +779,6 @@ function renderDagPosition(dag: DagPosition, d: Degradation): string {
     const more = dag.dependentsTotal - dag.dependents.length;
     lines.push(`Dependents: ${dag.dependents.join(", ")}${more > 0 ? ` +${more} more` : ""}`);
   }
-  lines.push(...dag.detail);
   return lines.join("\n");
 }
 
@@ -702,11 +813,9 @@ function renderBrief(brief: StageSources["brief"], d: Degradation): string {
 
 function renderNodeBody(nodeBody: StageSources["nodeBody"], d: Degradation): string {
   if (!nodeBody) {
-    return (
-      "No per-node document. ARCS stores task text as the scope/acceptance/verify " +
-      "fields shown above and renders only the aggregate tasks.md; plans own a " +
-      "plans/<id>.md document."
-    );
+    // One line, not a paragraph: the old text spent ~170 chars explaining an
+    // ARCS storage detail to a consumer that can do nothing with it.
+    return "No document staged for this node.";
   }
   if (!d.includeNodeBody) {
     // Not an attribute, but the same untrusted value in an ARCS-AUTHORED line —
@@ -715,7 +824,7 @@ function renderNodeBody(nodeBody: StageSources["nodeBody"], d: Degradation): str
     // reads the same string here as in the wrapper this replaces.
     return `Omitted for length. Source: ${attr(nodeBody.source, DOC_ATTR_WIDTH)}.`;
   }
-  return untrustedDoc("linked-node-document", nodeBody.source, nodeBody.content);
+  return untrustedDoc(nodeBody.name, nodeBody.source, nodeBody.content);
 }
 
 const BLOCK_HEADINGS: Record<StageBlockId, string> = {
@@ -728,13 +837,13 @@ const BLOCK_HEADINGS: Record<StageBlockId, string> = {
   limits: "## LIMITS",
 };
 
-/** Blocks the ladder may degrade and the per-block budget applies to. */
-const BUDGETED_BLOCKS: readonly StageBlockId[] = [
-  "dag-position",
-  "node-body",
-  "brief",
-  "knowledge",
-];
+/** Blocks the ladder may degrade and the per-block budget applies to — the
+ *  budget record's own key set, so the two cannot drift apart. */
+const BUDGETED_BLOCKS = Object.keys(STAGE_BLOCK_BUDGETS) as StageBudgetedBlockId[];
+
+function isBudgeted(id: StageBlockId): id is StageBudgetedBlockId {
+  return (BUDGETED_BLOCKS as readonly StageBlockId[]).includes(id);
+}
 
 function assemble(
   sources: StageSources,
@@ -754,7 +863,7 @@ function assemble(
   const sections: string[] = [ENVELOPE_OPEN, ENVELOPE_PREAMBLE];
   for (const id of STAGE_BLOCK_ORDER) {
     let content = raw[id];
-    if (BUDGETED_BLOCKS.includes(id)) {
+    if (isBudgeted(id)) {
       const clipped = clip(content, STAGE_BLOCK_BUDGETS[id]);
       if (clipped.dropped > 0) {
         budgetTruncations.push({
@@ -867,7 +976,22 @@ export interface StageRefresh {
  *
  * Step 4's stagedAt bump writes to sessions/index.json, which is exactly why
  * that file must stay out of the probe set: otherwise the bump would invalidate
- * itself on the next call.
+ * itself on the next call. That exclusion is clause 1 of the pattern, and it is
+ * NOT sufficient alone.
+ *
+ * Clause 2 — STAMP FROM THE PROBE, NOT THE CLOCK. `stagedAt` is the `probedAt`
+ * watermark this function observed, so step 3 compares two values from the same
+ * measurement. Stamping `Date.now()` instead mixes two clocks that need not
+ * agree: anywhere mtime can exceed wall clock (NFS, container skew, an
+ * mtime-preserving restore) `probe <= stagedAt` never holds, the cheap exit
+ * never fires, and step 4 re-assembles and re-persists on EVERY turn despite a
+ * perfectly correct exclusion set.
+ *
+ * It also closes a read-then-stamp TOCTOU window. The probe runs before
+ * `readSources`; a wall clock sampled after would absorb a write landing in
+ * between and leave the stage stale until the NEXT write. Stamping the
+ * watermark leaves that write above the stamp, so the next call rebuilds and
+ * the fingerprint compare decides.
  */
 export async function planStageRefresh(
   projectDir: string,
@@ -880,7 +1004,14 @@ export async function planStageRefresh(
   const previous = readStageRecord(session);
 
   const build = async (reason: StageRefreshReason, restage: boolean): Promise<StageRefresh> => {
-    const staged = await buildStagedEnvironment(projectDir, slug, session, { ...opts, transport });
+    const staged = await buildStagedEnvironment(projectDir, slug, session, {
+      ...opts,
+      transport,
+      // Clause 2 above. `opts.now` is overridden rather than preferred: this
+      // record is the one a caller persists and step 3 compares against mtimes,
+      // so it must come from the same measurement as the probe.
+      now: probedAt,
+    });
     return { reason, restage, persist: true, stage: staged.stage, staged, probedAt };
   };
 

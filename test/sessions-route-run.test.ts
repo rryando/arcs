@@ -11,7 +11,7 @@
  * runner's own lifecycle (covered by test/claude-runner.test.ts).
  */
 
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readSessionTurns } from "../src/utils/claude-transcript.js";
@@ -223,6 +223,30 @@ interface SessionView extends SessionMeta {
   phase?: string;
 }
 
+/** The envelope the staged environment always opens with (W2). */
+const STAGE_OPEN = "<<<ARCS_STAGED_ENVIRONMENT>>>";
+
+/**
+ * The run route's argv: the mode-selected tokens, then the staged-environment
+ * pair when one was injected.
+ *
+ * Asserted in two halves rather than as one literal because the staged text is
+ * ~3.5 KB of assembled context — pinning it whole would assert prompt-assembly's
+ * output from here. `staged` says whether the pair is expected AT ALL, which is
+ * the route's actual decision: a spawn that starts a new conversation always
+ * carries the block, a spawn that continues one carries it only on a restage.
+ */
+function expectRunArgv(job: ClaudeJobInput, base: string[], staged: boolean): void {
+  if (!staged) {
+    expect(job.argv).toEqual(base);
+    return;
+  }
+  expect(job.argv.slice(0, base.length)).toEqual(base);
+  expect(job.argv).toHaveLength(base.length + 2);
+  expect(job.argv[base.length]).toBe("--append-system-prompt");
+  expect(job.argv[base.length + 1]).toContain(STAGE_OPEN);
+}
+
 async function getSessions(base: string): Promise<SessionView[]> {
   const res = await fetch(`${base}/api/p/demo/sessions`, {
     headers: { "X-ARCS-Token": currentWebToken() ?? "" },
@@ -286,10 +310,16 @@ describe("POST /api/p/:slug/sessions/:id/run — resume", () => {
       // toMatchObject: the job also carries the route-registered onSettled
       // write-back (T005 seam) alongside argv/cwd/writeTargetKey.
       expect(capturedJobs[0]).toMatchObject({
-        argv: ["-p", "carry on", "--resume", "cc_idle_1", "--output-format", "json"],
         cwd: WORKSPACE,
         writeTargetKey: session.normalizedId,
       });
+      // First run on this record: nothing was staged yet, so the block goes out
+      // with it whatever the mode.
+      expectRunArgv(
+        capturedJobs[0],
+        ["-p", "carry on", "--resume", "cc_idle_1", "--output-format", "json"],
+        true,
+      );
 
       await expectRunRegistered(projectDir, session.normalizedId, "resume");
       // Mode 1 never appends — the exit-time write-back (T005) owns the sidecar.
@@ -388,10 +418,14 @@ describe("POST /api/p/:slug/sessions/:id/run — resume", () => {
       expect(envelope.data?.run).toEqual({ accepted: true, mode: "resume" });
       expect(capturedJobs).toHaveLength(1);
       expect(capturedJobs[0]).toMatchObject({
-        argv: ["-p", "carry on", "--resume", "cc_default_1", "--output-format", "json"],
         cwd: WORKSPACE,
         writeTargetKey: session.normalizedId,
       });
+      expectRunArgv(
+        capturedJobs[0],
+        ["-p", "carry on", "--resume", "cc_default_1", "--output-format", "json"],
+        true,
+      );
     });
   });
 
@@ -468,10 +502,10 @@ describe("POST /api/p/:slug/sessions/:id/run — oneshot", () => {
       expect(first.envelope.data?.run).toEqual({ accepted: true, mode: "oneshot" });
 
       expect(capturedJobs[0]).toMatchObject({
-        argv: ["-p", "summarize", "--output-format", "json"],
         cwd: WORKSPACE,
         writeTargetKey: "arcs-oneshot-demo",
       });
+      expectRunArgv(capturedJobs[0], ["-p", "summarize", "--output-format", "json"], true);
       await expectRunRegistered(projectDir, "arcs-oneshot-demo", "oneshot");
 
       // A second call re-creates the same deterministic record — never a dup.
@@ -482,7 +516,9 @@ describe("POST /api/p/:slug/sessions/:id/run — oneshot", () => {
       expect(second.status).toBe(202);
       expect(second.envelope.data?.session?.normalizedId).toBe("arcs-oneshot-demo");
       expect(capturedJobs).toHaveLength(2);
-      expect(capturedJobs[1].argv).toEqual(["-p", "again", "--output-format", "json"]);
+      // Oneshot ALWAYS starts a fresh conversation, so the block rides every
+      // spawn — even the one whose stage the probe called fresh.
+      expectRunArgv(capturedJobs[1], ["-p", "again", "--output-format", "json"], true);
 
       const all = await listSessions(projectDir);
       expect(all.filter((s) => s.runtimeSessionId === "arcs-oneshot-demo")).toHaveLength(1);
@@ -612,14 +648,11 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
       expect(claudeSessionId).toMatch(BARE_UUID);
 
       // First spawn seeds the thread with --session-id <bare uuid> only.
-      expect(capturedJobs[0].argv).toEqual([
-        "-p",
-        "start the thread",
-        "--session-id",
-        claudeSessionId,
-        "--output-format",
-        "json",
-      ]);
+      expectRunArgv(
+        capturedJobs[0],
+        ["-p", "start the thread", "--session-id", claudeSessionId, "--output-format", "json"],
+        true,
+      );
       expect(capturedJobs[0].writeTargetKey).toBe(threadId);
 
       // The first successful spawn marks the thread initialized.
@@ -636,15 +669,14 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
       expect(second.status).toBe(202);
       expect(second.envelope.data?.run?.threadId).toBe(threadId);
       // Later spawns continue the same uuid with --resume ALONE: claude >= 2.x
-      // refuses --session-id alongside --resume.
-      expect(capturedJobs[1].argv).toEqual([
-        "-p",
-        "continue",
-        "--resume",
-        claudeSessionId,
-        "--output-format",
-        "json",
-      ]);
+      // refuses --session-id alongside --resume. They also continue the seeded
+      // CONVERSATION, which already carries the block, so a fresh stage is not
+      // re-injected.
+      expectRunArgv(
+        capturedJobs[1],
+        ["-p", "continue", "--resume", claudeSessionId, "--output-format", "json"],
+        false,
+      );
       expect(capturedJobs[1].argv).not.toContain("--session-id");
 
       // The conversation accumulates in the one sidecar, in order: each run's
@@ -689,14 +721,11 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
       const claudeSessionId = claimed.metadata?.claudeSessionId as string;
       expect(claudeSessionId).toMatch(BARE_UUID);
       expect(claudeSessionId).not.toBe("cc_ext_1");
-      expect(capturedJobs[0].argv).toEqual([
-        "-p",
-        "use this thread",
-        "--session-id",
-        claudeSessionId,
-        "--output-format",
-        "json",
-      ]);
+      expectRunArgv(
+        capturedJobs[0],
+        ["-p", "use this thread", "--session-id", claudeSessionId, "--output-format", "json"],
+        true,
+      );
     });
   });
 
@@ -732,27 +761,21 @@ describe("POST /api/p/:slug/sessions/:id/run — stable", () => {
       const afterSecond = await getSession(projectDir, threadId);
       expect(afterSecond.metadata?.claudeSessionId).toBe(claudeSessionId);
       expect(afterSecond.metadata?.threadInitialized).toBe(true);
-      expect(capturedJobs[1].argv).toEqual([
-        "-p",
-        "two",
-        "--resume",
-        claudeSessionId,
-        "--output-format",
-        "json",
-      ]);
+      expectRunArgv(
+        capturedJobs[1],
+        ["-p", "two", "--resume", claudeSessionId, "--output-format", "json"],
+        false,
+      );
 
       // A third send keeps resuming the same uuid — never re-seeding it
       // (claude answers "already in use" when --session-id names a known id).
       const third = await postRun(base, threadId, { mode: "stable", message: "three" });
       expect(third.status).toBe(202);
-      expect(capturedJobs[2].argv).toEqual([
-        "-p",
-        "three",
-        "--resume",
-        claudeSessionId,
-        "--output-format",
-        "json",
-      ]);
+      expectRunArgv(
+        capturedJobs[2],
+        ["-p", "three", "--resume", claudeSessionId, "--output-format", "json"],
+        false,
+      );
       const afterThird = await getSession(projectDir, threadId);
       expect(afterThird.metadata?.claudeSessionId).toBe(claudeSessionId);
     });
@@ -1407,6 +1430,191 @@ describe("POST /api/p/:slug/sessions/:id/run — assistant reply write-back (T00
         expect(turns.map((t) => t.id)).toEqual([-1]);
         expect(turns.map((t) => t.type)).toEqual(["user"]);
       });
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/run — staged environment (W2)", () => {
+  const TASK_ID = "wire-the-staged-environment";
+
+  /** A one-task DAG for the write target to be linked to. */
+  function seedTask(projectDir: string): void {
+    mkdirSync(resolve(projectDir, "tasks"), { recursive: true });
+    writeFileSync(
+      resolve(projectDir, "tasks", "index.json"),
+      JSON.stringify({
+        tasks: [
+          {
+            id: TASK_ID,
+            normalizedId: TASK_ID,
+            title: "Wire the staged environment into the run route",
+            status: "in_progress",
+            priority: "high",
+            scope: "src/web-server/routes/sessions.ts",
+            acceptance: "the run route stages, injects and persists",
+            verify: "npm run typecheck",
+            skill: "implementation",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+      "utf-8",
+    );
+  }
+
+  /** The staged text the route appended to a captured job, if it appended one. */
+  function stagedText(job: ClaudeJobInput): string | undefined {
+    const at = job.argv.indexOf("--append-system-prompt");
+    return at === -1 ? undefined : job.argv[at + 1];
+  }
+
+  /** The probe watermark as the filesystem reports it. Read back rather than
+   *  computed from the Date handed to `utimesSync`: mtimeMs is a float and does
+   *  not always round-trip the millisecond it was set from. */
+  function taskIndexMtimeMs(projectDir: string): number {
+    return statSync(resolve(projectDir, "tasks", "index.json")).mtimeMs;
+  }
+
+  /** `metadata.stage` as the store holds it — untyped on disk. */
+  async function storedStage(
+    projectDir: string,
+    id: string,
+  ): Promise<{ fingerprint?: string; stagedAt?: number; transport?: string } | undefined> {
+    const stored = await getSession(projectDir, id);
+    return stored.metadata?.stage as
+      | { fingerprint?: string; stagedAt?: number; transport?: string }
+      | undefined;
+  }
+
+  it("appends the block, stating the write target's DAG position and the spawn cwd", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      seedTask(projectDir);
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_stage_1",
+        status: "idle",
+        metadata: { directory: WORKSPACE },
+      });
+      await updateSession(projectDir, {
+        id: session.normalizedId,
+        linkedNodeType: "task",
+        linkedNodeId: TASK_ID,
+      });
+
+      const { status } = await postRun(base, session.normalizedId, {
+        mode: "resume",
+        message: "carry on",
+      });
+      expect(status).toBe(202);
+
+      const text = stagedText(capturedJobs[0]) ?? "";
+      expect(text.startsWith(STAGE_OPEN)).toBe(true);
+      expect(text).toContain(`Linked node: task ${TASK_ID}`);
+      expect(text).toContain("Acceptance: the run route stages, injects and persists");
+      // The workspace root is the directory the child ACTUALLY runs in — the
+      // resumed session's own, not the project's primary path.
+      expect(text).toContain(`Workspace root: ${WORKSPACE}`);
+      expect(capturedJobs[0].cwd).toBe(WORKSPACE);
+
+      // Staging must not narrow what a run may do: this task wires the context
+      // block only, so no tool/permission flag is emitted with it.
+      expect(capturedJobs[0].argv).not.toContain("--tools");
+      expect(capturedJobs[0].argv).not.toContain("--permission-mode");
+    });
+  });
+
+  it("persists metadata.stage, stamped from the PROBE and not the wall clock", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      seedTask(projectDir);
+      // An index mtime ahead of the wall clock — NFS, container skew, an
+      // mtime-preserving restore. A Date.now() stamp would sit below it and the
+      // cheap exit could never fire again.
+      const ahead = new Date(Date.now() + 600_000);
+      utimesSync(resolve(projectDir, "tasks", "index.json"), ahead, ahead);
+
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_stage_2",
+        status: "idle",
+        metadata: { directory: WORKSPACE },
+      });
+
+      const { status } = await postRun(base, session.normalizedId, {
+        mode: "resume",
+        message: "stage me",
+      });
+      expect(status).toBe(202);
+
+      const stage = await storedStage(projectDir, session.normalizedId);
+      expect(stage?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(stage?.transport).toBe("system");
+      expect(stage?.stagedAt).toBe(taskIndexMtimeMs(projectDir));
+      expect(stage?.stagedAt).toBeGreaterThan(Date.now());
+      // The claim's own sibling key is untouched by the stage write.
+      const stored = await getSession(projectDir, session.normalizedId);
+      expect(stored.metadata?.runDeadlineAt).toBeTypeOf("number");
+    });
+  });
+
+  it("writes metadata.stage ONLY when the refresh asks: a fresh stage is neither re-persisted nor re-injected", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      seedTask(projectDir);
+      const session = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_stage_3",
+        status: "idle",
+        metadata: { directory: WORKSPACE },
+      });
+
+      await postRun(base, session.normalizedId, { mode: "resume", message: "one" });
+      const first = await storedStage(projectDir, session.normalizedId);
+      expect(first?.stagedAt).toBeTypeOf("number");
+      expect(stagedText(capturedJobs[0])).toContain(STAGE_OPEN);
+
+      // Nothing in the DAG moved, and resume CONTINUES the conversation that
+      // already carries the block: no re-injection, and no re-stamp of the
+      // record the next freshness decision is made against.
+      await postRun(base, session.normalizedId, { mode: "resume", message: "two" });
+      expect(stagedText(capturedJobs[1])).toBeUndefined();
+      expect(await storedStage(projectDir, session.normalizedId)).toEqual(first);
+
+      // A DAG write does move it: the block is rebuilt, re-injected and
+      // re-stamped in the same run.
+      const later = new Date(Date.now() + 600_000);
+      utimesSync(resolve(projectDir, "tasks", "index.json"), later, later);
+      await postRun(base, session.normalizedId, { mode: "resume", message: "three" });
+      expect(stagedText(capturedJobs[2])).toContain(STAGE_OPEN);
+      const third = await storedStage(projectDir, session.normalizedId);
+      expect(third?.stagedAt).toBe(taskIndexMtimeMs(projectDir));
+      expect(third?.stagedAt).toBeGreaterThan(first?.stagedAt ?? 0);
+      expect(third?.fingerprint).toBe(first?.fingerprint);
+    });
+  });
+
+  it("carries the block on every spawn that STARTS a conversation, fresh stage or not", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      seedTask(projectDir);
+      const seed = await createSession(projectDir, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "cc_stage_4",
+      });
+
+      // Two oneshot runs against the same deterministic write target: the second
+      // takes the cheap exit, but its child is a brand-new `claude -p` with no
+      // history at all, so it must still be told where it is.
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "one" });
+      await postRun(base, seed.normalizedId, { mode: "oneshot", message: "two" });
+      expect(stagedText(capturedJobs[0])).toContain(STAGE_OPEN);
+      expect(stagedText(capturedJobs[1])).toContain(STAGE_OPEN);
+      // Byte-identical across turns — that is the prompt-cache economics the
+      // stable tier exists for.
+      expect(stagedText(capturedJobs[1])).toBe(stagedText(capturedJobs[0]));
+
+      // The cheap exit still held: the second run re-assembled but persisted
+      // nothing, so the record is exactly the one the first run wrote.
+      const stage = await storedStage(projectDir, "arcs-oneshot-demo");
+      expect(stage?.stagedAt).toBeTypeOf("number");
     });
   });
 });
