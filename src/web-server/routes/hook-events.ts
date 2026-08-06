@@ -11,18 +11,28 @@
  * emits, so each one stamps `lastCheckpointAt` — the field the session's derived
  * phase reads to decide whether a terminal is still working.
  *
- * The response stays ARCS-shaped (`{sessionId, queuedMessages}`); turning that
- * into Claude Code's `hookSpecificOutput` envelope is the hook script's job, so
- * a change to Claude Code's wire format never reaches the server.
+ * `SessionStart` additionally answers with `stagedContext`: the same staged
+ * environment an ARCS-owned headless run carries on `--append-system-prompt`,
+ * so a terminal a human drives knows its project, its workspace and its DAG
+ * position without the human setting the stage by hand. See
+ * `sessionStartContext` for what differs from the owned path.
+ *
+ * The response stays ARCS-shaped (`{sessionId, queuedMessages, stagedContext?}`);
+ * turning that into Claude Code's `hookSpecificOutput` envelope is the hook
+ * script's job, so a change to Claude Code's wire format never reaches the
+ * server.
  *
  * Unlike every other route here this one is not browser-facing, so it sits
  * behind `requireHookToken` in addition to the global loopback check.
  */
 
+import { join } from "node:path";
 import { Hono } from "hono";
 import { z } from "zod";
 import { mirrorSessionTranscript } from "../../utils/claude-transcript.js";
 import { HOOK_EVENTS } from "../../utils/hook-contract.js";
+import { readJsonSafe } from "../../utils/json.js";
+import { readPlanIndex } from "../../utils/plan-store.js";
 import {
   drainSessionMessageQueue,
   getSession,
@@ -30,6 +40,9 @@ import {
   updateSession,
   upsertSession,
 } from "../../utils/session-store.js";
+import { listTasks } from "../../utils/task-store.js";
+import { deriveOperatingBrief } from "../../utils/workflow-policy.js";
+import { buildStagedEnvironment, stripStageDelimiters } from "../prompt-assembly.js";
 import { parseBody, requireProjectDir, respond } from "../respond.js";
 
 export const hookEventsRoute = new Hono();
@@ -59,6 +72,12 @@ interface HookEventResult {
   sessionId: string;
   /** Always present; empty for every event except a drained UserPromptSubmit. */
   queuedMessages: string[];
+  /**
+   * SessionStart only, and absent when staging failed — the hook script's
+   * degradation is silence, so an omitted field and a failed build look the
+   * same to it on purpose.
+   */
+  stagedContext?: string;
 }
 
 /**
@@ -156,10 +175,150 @@ async function resolveCheckpointSession(
   }
 }
 
-async function handleHookEvent(projectDir: string, event: HookEvent): Promise<HookEventResult> {
+// ---------------------------------------------------------------------------
+// SessionStart staged context
+// ---------------------------------------------------------------------------
+
+/**
+ * Ceiling on the block a SessionStart mirrors into a terminal, in characters.
+ *
+ * Deliberately far below `STAGE_SOFT_CAP` (6000): that budget is spent inside a
+ * headless `claude -p` process nobody is watching, whereas this text lands at
+ * the head of a live session a human is about to type into. Anything wider buys
+ * context nobody asked for at the cost of the window they did.
+ *
+ * Enforced by SELECTION, never by clipping — see `sessionStartContext`.
+ * `scripts/claude-code-session-hook.mjs` carries its own, wider refusal bound
+ * (`MAX_CONTEXT_CHARS`), pinned against this constant by
+ * `test/claude-code-hook-script.test.ts`.
+ */
+export const SESSION_START_STAGE_CAP = 2500;
+
+/** Width for one value interpolated into the degraded block. */
+const DEGRADED_FIELD_WIDTH = 160;
+
+/**
+ * Normalizes one untrusted value for an ARCS-authored line: delimiter-stripped,
+ * whitespace-collapsed, width-bounded. Mirrors prompt-assembly's `field` (not
+ * exported), and applies to EVERY slot below rather than to the values that
+ * look risky — a project name and a task title are both agent- or user-authored
+ * text arriving in the controller's voice.
+ */
+function degradedField(value: string, width = DEGRADED_FIELD_WIDTH): string {
+  const clean = stripStageDelimiters(value).replace(/\s+/g, " ").trim();
+  return clean.length <= width ? clean : `${clean.slice(0, width - 1)}…`;
+}
+
+/**
+ * The two lines a session with nothing staged for it still deserves.
+ *
+ * An observed session carries no `linkedNodeId` until a human sets one —
+ * discovery never links — so this is the COMMON case at SessionStart, not an
+ * edge. It therefore states what is true and useful (which project this
+ * workspace is, how to read its DAG, and what the operating brief says the
+ * project is currently on) instead of apologising for the missing link.
+ *
+ * No wrapper, and none needed: nothing here is a quoted body. The two variable
+ * values are stripped, collapsed and width-bounded through `degradedField`,
+ * exactly as prompt-assembly treats the same task title in its own brief block.
+ */
+async function degradedStagedContext(projectDir: string, slug: string): Promise<string> {
+  const [projectMeta, tasks, planIndex] = await Promise.all([
+    readJsonSafe<{ name?: string }>(join(projectDir, "meta.json")),
+    listTasks(projectDir),
+    readPlanIndex(projectDir),
+  ]);
+  const operating = deriveOperatingBrief({
+    tasks: tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      planId: t.planId,
+      priority: t.priority,
+      dependsOn: t.dependsOn,
+    })),
+    plans: planIndex.plans.map((p) => ({ id: p.id, title: p.title, status: p.status })),
+  });
+  return [
+    `This workspace is tracked by ARCS as project ${degradedField(slug)} ` +
+      `"${degradedField(projectMeta?.name ?? slug)}" — read its DAG with ` +
+      `\`arcs brief ${degradedField(slug)} --lean --json\`. Link this session to a task in the ` +
+      "ARCS web UI to stage that task's scope, acceptance and verify command here.",
+    `Project current focus: ${degradedField(operating.currentFocus)} · ` +
+      `Next action: ${degradedField(operating.nextAction)}`,
+  ].join("\n");
+}
+
+/**
+ * The staged block a SessionStart answers with, or nothing at all.
+ *
+ * Same builder as an ARCS-owned headless run (`buildStagedEnvironment`), and
+ * deliberately NOT the same call:
+ *  - no references — those are attached per SEND, and a session that has not
+ *    started yet has none;
+ *  - no argv, no permission segment — the terminal's user owns their own
+ *    permissions and ARCS does not get to narrow them from here;
+ *  - a much tighter cap (see SESSION_START_STAGE_CAP);
+ *  - STATELESS — no fingerprint, no `metadata.stage`, no CONTEXT UPDATED delta.
+ *    The staleness machinery exists to avoid re-injecting an unchanged block
+ *    across turns of one conversation; a SessionStart IS turn zero, so there is
+ *    nothing to compare against and nothing to persist.
+ *
+ * The cap is enforced by SELECTION — the whole assembled text, or the whole
+ * degraded block — never by clipping the assembled text. A head truncation
+ * would keep an untrusted body's opener and sever its closer, putting every
+ * later ARCS-authored line (including the one stating the controller's own
+ * scope) inside an unterminated untrusted region. `softCap` lets the builder's
+ * own ladder degrade gracefully first; the degraded block is the floor for the
+ * DAG wide enough that even a fully degraded build does not fit.
+ *
+ * Any failure returns `undefined`: the hook script's hard rule is that a broken
+ * bridge is invisible, so a staging error must reach it as an absent field, not
+ * as a 500.
+ *
+ * KNOWN INACCURACY, accepted to keep ONE builder: the shared LIMITS block says
+ * "tool and permission scope is fixed by ARCS argv". For a terminal a human
+ * drives that is false — ARCS emits no argv here, the user's own Claude Code
+ * settings decide. The sentence's DIRECTION still holds (quoted content cannot
+ * widen what the session may do), so this is wording, not a hole; rewording it
+ * belongs in prompt-assembly, conditioned on the session's origin.
+ */
+async function sessionStartContext(
+  projectDir: string,
+  slug: string,
+  session: SessionMeta,
+  event: HookEvent,
+): Promise<string | undefined> {
+  try {
+    if (session.linkedNodeType && session.linkedNodeId) {
+      const staged = await buildStagedEnvironment(projectDir, slug, session, {
+        // Claude Code's own cwd: the directory this terminal is actually in,
+        // which is a truer workspace root than the project's registered first
+        // path when a project spans more than one checkout.
+        ...(event.cwd && { workspaceRoot: event.cwd }),
+        softCap: SESSION_START_STAGE_CAP,
+      });
+      if (staged.text.length <= SESSION_START_STAGE_CAP) return staged.text;
+    }
+    return await degradedStagedContext(projectDir, slug);
+  } catch {
+    return undefined;
+  }
+}
+
+async function handleHookEvent(
+  projectDir: string,
+  slug: string,
+  event: HookEvent,
+): Promise<HookEventResult> {
   if (event.hook_event_name === "SessionStart") {
     const session = await registerSession(projectDir, event);
-    return { sessionId: session.normalizedId, queuedMessages: [] };
+    const stagedContext = await sessionStartContext(projectDir, slug, session, event);
+    return {
+      sessionId: session.normalizedId,
+      queuedMessages: [],
+      ...(stagedContext !== undefined && { stagedContext }),
+    };
   }
 
   if (event.hook_event_name === "UserPromptSubmit") {
@@ -201,7 +360,10 @@ async function handleHookEvent(projectDir: string, event: HookEvent): Promise<Ho
 
 hookEventsRoute.post("/api/hook/:slug/event", async (c) =>
   respond(c, async () => {
-    const projectDir = requireProjectDir(c.req.param("slug"));
-    return handleHookEvent(projectDir, await parseBody(c, hookEventSchema));
+    const slug = c.req.param("slug");
+    // Validates the slug before it is threaded on to the stager, which uses it
+    // both as a knowledge-selection key and as an interpolated identity value.
+    const projectDir = requireProjectDir(slug);
+    return handleHookEvent(projectDir, slug, await parseBody(c, hookEventSchema));
   }),
 );

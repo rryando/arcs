@@ -13,9 +13,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { stat, unlink } from "node:fs/promises";
+import { type FileHandle, open, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { isSessionAttached } from "../../shared/session-vocabulary.js";
 import {
@@ -62,8 +63,13 @@ import {
   sendOpencodeMessage,
 } from "../opencode-client.js";
 import { buildStagedEnvironment, planStageRefresh } from "../prompt-assembly.js";
-import { parseBody, requireProjectDir, respond } from "../respond.js";
-import { foldRunEventLog, pruneRunEventLogs } from "../run-event-log.js";
+import { fail, parseBody, requireProjectDir, respond } from "../respond.js";
+import {
+  foldRunEventLog,
+  pruneRunEventLogs,
+  RUN_EVENT_LOG_MAX_BYTES,
+  runEventLogPath,
+} from "../run-event-log.js";
 import { isProcessAlive, reconcileSessionPhases } from "../session-reconciler.js";
 
 export const sessionsRoute = new Hono();
@@ -1023,3 +1029,329 @@ sessionsRoute.get("/api/p/:slug/sessions/:id/transcript", async (c) =>
     return { turns: await readSessionTurns(projectDir, session.normalizedId), mirroredAt };
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Run event stream — a stateless tail of one run's event log
+// ---------------------------------------------------------------------------
+
+/**
+ * How often an attached tail re-reads the log.
+ *
+ * Sized against the DAG stream's 250ms debounce (`watcher.ts`, feeding
+ * `routes/events.ts`), which is exactly what makes that channel unusable for
+ * tokens and why this is a second channel at all: a quarter second of
+ * coalescing is invisible on a graph repaint and jarring on text arriving word
+ * by word. This is a different channel with a different budget, so it polls
+ * rather than debounces, and it polls an order faster.
+ *
+ * Polling rather than `fs.watch`: watch semantics vary by platform and
+ * filesystem (and still need a poll fallback to be total), and a watcher is
+ * per-connection state — the one thing this route may not hold.
+ */
+const RUN_TAIL_POLL_MS = 100;
+
+/** The framing byte. A line is only a record once THIS terminates it. */
+const RUN_LOG_NEWLINE = 0x0a;
+
+/** What the tail can tell about a run without holding anything of its own. */
+interface RunTailState {
+  /** Nothing will ever be appended to this run's log again. */
+  settled: boolean;
+  /** `metadata.run.outcome`, when this run still owns the session's run record. */
+  outcome?: string;
+  /**
+   * Whether the log is the WHOLE stream, when this run still owns the record.
+   *
+   * `undefined` means UNKNOWN, never "complete": a newer run has replaced
+   * `metadata.run`, so this run's `eventLogTruncated` is no longer readable and
+   * the tail must not manufacture a `false` for it.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * Whether the run is still live, read from the SESSION RECORD rather than from
+ * the runner's in-memory `liveRuns` map.
+ *
+ * The claim is the only liveness signal that survives a restart, and it is what
+ * keeps this route stateless: `isRunLive` would answer "no" for every run
+ * inherited from a dead server process, closing a stream whose child is still
+ * writing. The claim also settles exactly once, under the store lock, in the
+ * same write that stamps the outcome — so "claim gone" and "outcome readable"
+ * can never disagree.
+ */
+async function readRunTailState(
+  projectDir: string,
+  sessionId: string,
+  runId: string,
+): Promise<RunTailState> {
+  let session: SessionMeta;
+  try {
+    session = await getSession(projectDir, sessionId);
+  } catch {
+    // Deleted under the tail — nothing will ever append to that log again.
+    // A transient read failure lands here too and ends the stream early, which
+    // is the cheap direction precisely because of the offset contract: the
+    // client reconnects at the offset it holds and loses not one line. Guessing
+    // "still live" instead would keep a stream open on a session that is gone.
+    return { settled: true };
+  }
+  if (sessionRunClaim(session) === runId) return { settled: false };
+
+  const run = runMetadata(session);
+  // A newer run owns the record: this one is over (its claim is gone), but its
+  // outcome and completeness are no longer on disk to report.
+  if (run.runId !== runId) return { settled: true };
+  return {
+    settled: true,
+    ...(typeof run.outcome === "string" && { outcome: run.outcome }),
+    // Only ever written as `true` (claude-runner omits it otherwise), so its
+    // absence on THIS run's own record means the log is whole.
+    truncated: run.eventLogTruncated === true,
+  };
+}
+
+/** Complete lines read out of the log, and how many bytes they consumed. */
+interface RunTailRead {
+  lines: string[];
+  /** Bytes consumed — always lands just past a newline, or 0. */
+  bytes: number;
+}
+
+const EMPTY_TAIL_READ: RunTailRead = { lines: [], bytes: 0 };
+
+/**
+ * Every COMPLETE line the log holds at or after `byteOffset`.
+ *
+ * The trailing-partial rule is the whole point of this function. While a run is
+ * live the file's last bytes may be a record the child is still writing, and the
+ * log also leaves an orphaned fragment behind wherever it lost bytes and refused
+ * to extend the open line. Both look identical from here — unterminated bytes at
+ * EOF — so neither is ever emitted: consumption stops AT the last newline and
+ * `bytes` reports only that much, leaving the fragment to be re-read by the next
+ * poll once (and if) it completes. Emitting it would fabricate a record the child
+ * never wrote, and a fabricated record is undetectable downstream.
+ *
+ * Decoding only the consumed region is also what keeps multi-byte UTF-8 intact:
+ * `0x0a` cannot appear inside a multi-byte sequence, so a cut at a newline is
+ * always a character boundary however the child chunked its writes.
+ *
+ * Total, like everything else that touches this log: a file that is not there
+ * yet (the claim is written BEFORE the child spawns), was pruned, or cannot be
+ * read reads as nothing new.
+ */
+async function readRunLogLines(path: string, byteOffset: number): Promise<RunTailRead> {
+  let handle: FileHandle;
+  try {
+    handle = await open(path, "r");
+  } catch {
+    return EMPTY_TAIL_READ;
+  }
+  try {
+    const { size } = await handle.stat();
+    // Clamped exactly as `foldRunEventLog` clamps: the writer can never take the
+    // file past this ceiling, so bytes beyond it were not written by the log and
+    // are not tailed as if they were. It bounds this allocation too — the read
+    // region can never exceed the log's own maximum size.
+    const end = Math.min(size, RUN_EVENT_LOG_MAX_BYTES);
+    // Nothing new. `<` rather than `===` covers the file shrinking under us,
+    // which an append-only log cannot do — but reading a negative length could.
+    if (end <= byteOffset) return EMPTY_TAIL_READ;
+
+    const buffer = Buffer.allocUnsafe(end - byteOffset);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, byteOffset);
+    const chunk = buffer.subarray(0, bytesRead);
+
+    const lines: string[] = [];
+    let consumed = 0;
+    for (;;) {
+      const at = chunk.indexOf(RUN_LOG_NEWLINE, consumed);
+      if (at === -1) break;
+      // Verbatim, terminator excluded: the log is the source of truth and this
+      // is a view of it, so nothing here trims, parses or repairs a line.
+      lines.push(chunk.toString("utf-8", consumed, at));
+      consumed = at + 1;
+    }
+    return { lines, bytes: consumed };
+  } catch {
+    return EMPTY_TAIL_READ;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+/**
+ * Where the tail starts, as an ABSOLUTE line offset into the log.
+ *
+ * The same contract `mirrorOffset` implements for transcript mirroring
+ * (`src/utils/claude-transcript.ts`): the value is the index of the next line
+ * the client has NOT seen — last seen offset + 1 — so a reconnect at it can
+ * neither duplicate nor skip. The log is append-only, so a line's index is fixed
+ * forever and the offset means the same thing to every connection.
+ *
+ * Two sources, and the LARGER wins. `from` is what an explicit reconnect passes;
+ * `Last-Event-ID` is what a browser `EventSource` replays automatically on its
+ * own reconnect, where the URL (and therefore `from`) is frozen at whatever the
+ * first connect used. Both are lower bounds on "lines I already hold", so their
+ * max is the only value that satisfies both — honouring `from` alone would make
+ * every automatic reconnect re-deliver the whole run.
+ *
+ * Garbage is REFUSED rather than clamped: the only clamp available is 0, which
+ * silently replays the entire log — precisely the duplicate storm the offset
+ * exists to prevent.
+ */
+function parseRunTailOffset(from: string | undefined, lastEventId: string | undefined): number {
+  const parse = (raw: string | undefined, label: string): number => {
+    if (raw === undefined || raw === "") return 0;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+      throw new DagError(
+        "INVALID_RUN_STREAM_OFFSET",
+        `${label} must be a non-negative integer line offset, got "${raw}"`,
+      );
+    }
+    return value;
+  };
+  return Math.max(parse(from, "from"), parse(lastEventId, "Last-Event-ID"));
+}
+
+/**
+ * Answers a pre-stream resolution failure as JSON rather than as a stream.
+ *
+ * `respond` cannot be reused: it wraps the SUCCESS path in the envelope too, and
+ * this route's success is an event stream with no envelope at all. The refusals
+ * still speak the shared envelope, because a client that asked for a pruned run
+ * needs a 404 it can read off `res.status` — not a 200 stream that says nothing
+ * and closes, which is what a run whose child was silent looks like.
+ */
+function runStreamFailure(c: Context, err: unknown): Response {
+  if (err instanceof DagError) {
+    return c.json(fail(err.code, err.message), err.code.includes("NOT_FOUND") ? 404 : 400);
+  }
+  console.error("[arcs-web] run stream preflight failed", err);
+  return c.json(fail("internal_error", "Unexpected server error"), 500);
+}
+
+/**
+ * Tails one run's durable event log as SSE, live or after the fact.
+ *
+ * The log is the source of truth and this is a VIEW of it — a stateless tail,
+ * not a subscription. Every frame is derived from `?from=` plus the file, the
+ * only state is two numbers on this request's own stack, and nothing keyed on a
+ * run or a connection exists anywhere in this module. That is what makes a
+ * server restart cost exactly one client reconnect: the new process can answer
+ * the same GET with the same bytes, because it never knew anything the file did
+ * not already say.
+ *
+ * Frames, all of them carrying an absolute line offset:
+ *  - `line`  `{ offset, line }` — the log's line at `offset`, verbatim.
+ *  - `end`   `{ offset, outcome?, truncated? }` — the run has settled and the
+ *            log is drained; `offset` is the log's total complete-line count,
+ *            i.e. the `from` that would now return nothing.
+ *
+ * The SSE `id` field is the RESUME cursor rather than the frame's own index
+ * (`offset + 1` on a line, `offset` on the end frame), which is what makes an
+ * `EventSource` auto-reconnect land exactly where it left off with no client
+ * arithmetic. Note that an `EventSource` reconnects on ANY stream end, `end`
+ * frame included — the client is expected to `close()` on `end`; the reconnect
+ * is harmless (it replays nothing and closes again) but it is the client's job
+ * to stop it.
+ *
+ * Ordering that carries the whole live/settled distinction: the settle is
+ * observed BEFORE the read, never after. A run settled at that instant appends
+ * nothing later, so the read that follows is guaranteed to see the log whole —
+ * the other order loses every line written between the read and the check. A GET
+ * issued after settle therefore takes exactly one pass: replay from `from`, one
+ * `end` frame, close.
+ *
+ * `truncated` on the `end` frame is how a consumer tells "I reached the end of
+ * the stream" from "I reached a hole the log refused to fill" — a capped log
+ * ends on a line boundary and is indistinguishable from a complete one by
+ * reading it. It is only readable at settle: while the run is live the flag
+ * lives in the writer's memory and reaches disk (as
+ * `metadata.run.eventLogTruncated`) only when the write-back stamps the outcome,
+ * so a live tail cannot report it and does not pretend to.
+ *
+ * A read route by construction — it opens nothing, spawns nothing and writes
+ * nothing — so it sits behind the loopback check alone, exactly like every other
+ * GET here, and the `X-ARCS-Token` mutation gate passes it through on method.
+ */
+sessionsRoute.get("/api/p/:slug/sessions/:id/runs/:runId/stream", async (c) => {
+  const runId = c.req.param("runId");
+  let projectDir: string;
+  let sessionId: string;
+  let logPath: string;
+  let fromOffset: number;
+  try {
+    projectDir = requireProjectDir(c.req.param("slug"));
+    const session = await getSession(projectDir, c.req.param("id"));
+    sessionId = session.normalizedId;
+    fromOffset = parseRunTailOffset(c.req.query("from"), c.req.header("last-event-id"));
+    // Keyed on the canonical id, exactly as the writer keys it; the run id
+    // reaches a filename through `runEventLogSegment`, which sanitizes it, so a
+    // traversal-shaped runId cannot address anything outside the sessions dir.
+    logPath = runEventLogPath(projectDir, sessionId, runId);
+
+    let logged = false;
+    try {
+      logged = (await stat(logPath)).isFile();
+    } catch {
+      // Not written yet — the claim lands BEFORE the child spawns, so a tail
+      // that connects on the 202 legitimately arrives ahead of the file.
+    }
+    // Neither a log nor a claim: the run never existed under this id, or
+    // retention has already pruned it. Refused rather than answered with an
+    // empty stream, for the same reason `eventLogTruncated` exists — absent
+    // evidence must never look like evidence of silence.
+    if (!logged && sessionRunClaim(session) !== runId) {
+      throw new DagError(
+        "RUN_EVENT_LOG_NOT_FOUND",
+        `no event log for run "${runId}" on session "${sessionId}" — it is not the ` +
+          `session's live run and its log is not on disk (pruned, or never written)`,
+      );
+    }
+  } catch (err) {
+    return runStreamFailure(c, err);
+  }
+
+  return streamSSE(c, async (stream) => {
+    /** Absolute index of the next line at `byteOffset`. */
+    let lineOffset = 0;
+    /** Bytes of the log already framed into lines — never inside a record. */
+    let byteOffset = 0;
+
+    while (!stream.aborted) {
+      const state = await readRunTailState(projectDir, sessionId, runId);
+      const { lines, bytes } = await readRunLogLines(logPath, byteOffset);
+      byteOffset += bytes;
+
+      for (const line of lines) {
+        const offset = lineOffset;
+        lineOffset += 1;
+        // Counted but not sent: the client already holds it. Counting is what
+        // keeps offsets ABSOLUTE — a skipped line still occupies its index.
+        if (offset < fromOffset) continue;
+        await stream.writeSSE({
+          event: "line",
+          id: String(offset + 1),
+          data: JSON.stringify({ offset, line }),
+        });
+      }
+
+      if (state.settled) {
+        await stream.writeSSE({
+          event: "end",
+          id: String(lineOffset),
+          data: JSON.stringify({
+            offset: lineOffset,
+            ...(state.outcome !== undefined && { outcome: state.outcome }),
+            ...(state.truncated !== undefined && { truncated: state.truncated }),
+          }),
+        });
+        return;
+      }
+
+      await stream.sleep(RUN_TAIL_POLL_MS);
+    }
+  });
+});

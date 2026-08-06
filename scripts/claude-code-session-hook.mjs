@@ -7,6 +7,12 @@
  * Claude Code writes to stdin. Install with `arcs hooks install-claude-code
  * <slug>`, which generates the token and prints the snippet to paste.
  *
+ * Two of the four can put text in front of the model: SessionStart mirrors
+ * ARCS's staged environment (project, workspace, DAG position) into the new
+ * session, and UserPromptSubmit delivers messages queued from the web UI. Both
+ * emit Claude Code's `hookSpecificOutput` envelope on stdout; the other two
+ * print nothing.
+ *
  * HARD RULE: this script never blocks the session. Any failure — ARCS not
  * running, token rejected, timeout, malformed JSON — is swallowed, nothing is
  * printed, and the exit code stays 0. Exit code 2 (the "block" signal) is never
@@ -30,6 +36,18 @@ const DEFAULT_URL = "http://127.0.0.1:4173";
 /** Short by design: a hung ARCS server must not stall prompt submission. */
 const TIMEOUT_MS = 1500;
 const EVENTS = new Set(["SessionStart", "UserPromptSubmit", "SessionEnd", "Stop"]);
+/**
+ * Refusal bound on a context block the server sends, in characters.
+ *
+ * The server caps the SessionStart block at 2500 (`SESSION_START_STAGE_CAP` in
+ * `src/web-server/routes/hook-events.ts`); this is the CLIENT's own limit, so a
+ * misbehaving, mismatched or hostile ARCS cannot shove an unbounded body into
+ * the head of the user's live session. Over the bound the block is dropped
+ * whole rather than clipped — a clip would sever a wrapper's closing delimiter.
+ * `test/claude-code-hook-script.test.ts` parses this literal and fails if the
+ * server's cap ever climbs above it, so the two cannot silently cross.
+ */
+const MAX_CONTEXT_CHARS = 4000;
 
 /** Never rejects: an unreadable stdin yields "" and the run turns into a no-op. */
 function readStdin() {
@@ -95,11 +113,33 @@ async function main() {
   });
   if (!response.ok) return;
 
-  // Only UserPromptSubmit can inject context; the other events are pure
-  // notifications and answer with empty stdout.
-  if (eventName !== "UserPromptSubmit") return;
+  // Two events can inject context: SessionStart mirrors ARCS's staged
+  // environment into the fresh session, UserPromptSubmit delivers whatever the
+  // web UI queued. SessionEnd and Stop are pure notifications and answer with
+  // empty stdout.
+  if (eventName !== "SessionStart" && eventName !== "UserPromptSubmit") return;
 
   const envelope = await response.json();
+
+  if (eventName === "SessionStart") {
+    const staged = envelope?.data?.stagedContext;
+    // Every rejection here is a silent no-op, never a repair: an absent field,
+    // a non-string, an empty string and an oversized body all mean "ARCS has
+    // nothing usable to stage", and the session proceeds exactly as if the
+    // bridge were not installed.
+    if (typeof staged !== "string" || staged === "" || staged.length > MAX_CONTEXT_CHARS) return;
+
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: staged,
+        },
+      }),
+    );
+    return;
+  }
+
   const messages = envelope?.data?.queuedMessages;
   if (!Array.isArray(messages) || messages.length === 0) return;
 

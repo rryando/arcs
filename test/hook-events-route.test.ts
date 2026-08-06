@@ -10,14 +10,18 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { writeHookToken } from "../src/utils/hook-token-store.js";
+import { createPlan } from "../src/utils/plan-store.js";
 import {
   createSession,
   deriveSessionPhase,
   enqueueSessionMessage,
   getSession,
   listSessions,
+  updateSession,
 } from "../src/utils/session-store.js";
+import { createTask, deleteTask } from "../src/utils/task-store.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
+import { SESSION_START_STAGE_CAP } from "../src/web-server/routes/hook-events.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 const TOKEN = "test-hook-token-0123456789";
@@ -29,7 +33,7 @@ interface Ctx {
 
 interface HookEnvelope {
   ok: boolean;
-  data?: { sessionId: string; queuedMessages: string[] };
+  data?: { sessionId: string; queuedMessages: string[]; stagedContext?: string };
   code?: string;
   message?: string;
 }
@@ -686,6 +690,286 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
       expect(status).toBe(400);
       expect(envelope.code).toBe("INVALID_BODY");
       expect(await listSessions(projectDir)).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SessionStart staged context
+// ---------------------------------------------------------------------------
+
+/**
+ * The delimiter scan REDECLARED rather than imported from prompt-assembly: this
+ * is the pattern a downstream consumer (or an attacker) would run over the
+ * block, so weakening the module's own export must not weaken the assertion
+ * with it.
+ */
+const DELIMITER_SCAN = /<<<\s*(?:END_)?ARCS_[A-Z0-9_]*[^>]*>>>/gi;
+
+function delimiterTokens(text: string): string[] {
+  return [...text.matchAll(DELIMITER_SCAN)].map((match) => match[0]);
+}
+
+/**
+ * Every genuine delimiter in a staged block, and nothing else: one envelope
+ * pair wrapping everything, and every untrusted-body opener closed before the
+ * next opener or the envelope close.
+ *
+ * The load-bearing case is a CLIPPED block. A head truncation through a wrapper
+ * keeps the opener and severs the closer, after which every later ARCS-authored
+ * line — including LIMITS, which asserts who owns the tool scope — reads as
+ * quoted reference data. The 2500-char ceiling makes clipping the common case
+ * here, so this runs over the capped output rather than an unclipped fixture.
+ */
+function expectDelimiterInvariant(text: string): void {
+  const tokens = delimiterTokens(text);
+  expect(tokens.filter((t) => t === "<<<ARCS_STAGED_ENVIRONMENT>>>")).toHaveLength(1);
+  expect(tokens.filter((t) => t === "<<<END_ARCS_STAGED_ENVIRONMENT>>>")).toHaveLength(1);
+  expect(tokens.at(0)).toBe("<<<ARCS_STAGED_ENVIRONMENT>>>");
+  expect(tokens.at(-1)).toBe("<<<END_ARCS_STAGED_ENVIRONMENT>>>");
+
+  let depth = 0;
+  for (const token of tokens.slice(1, -1)) {
+    if (token === "<<<END_ARCS_UNTRUSTED_DOC>>>") {
+      depth -= 1;
+    } else {
+      // An opener must be well-formed: both attribute values attribute-safe
+      // (so a hostile `source` cannot terminate the tag it sits in), and the
+      // governing note ON the tag rather than only in the envelope preamble.
+      expect(token).toMatch(
+        /^<<<ARCS_UNTRUSTED_DOC name="[^"<>]*" source="[^"<>]*" note="[^"<>]*">>>$/,
+      );
+      depth += 1;
+    }
+    // Never negative (a closer without its opener), never nested (a wrapper
+    // inside a wrapper would mean a body forged one).
+    expect(depth).toBeGreaterThanOrEqual(0);
+    expect(depth).toBeLessThanOrEqual(1);
+  }
+  expect(depth).toBe(0);
+}
+
+/** A small, realistic DAG: one in-progress plan owning one in-progress task. */
+async function seedDag(
+  projectDir: string,
+  task: Partial<Parameters<typeof createTask>[1]> = {},
+  planContent = "# Ship the bridge\n\nMirror the staged environment into observed sessions.",
+): Promise<string> {
+  await createPlan(projectDir, {
+    id: "bridge",
+    title: "Ship the bridge",
+    status: "in_progress",
+    keywords: ["bridge"],
+    content: planContent,
+  });
+  const created = await createTask(projectDir, {
+    title: "Wire the SessionStart mirror",
+    status: "in_progress",
+    planId: "bridge",
+    scope: "scripts/claude-code-session-hook.mjs and the hook-events route",
+    acceptance: "SessionStart answers with stagedContext",
+    verify: "npx vitest run test/hook-events-route.test.ts",
+    skill: "implementation",
+    ...task,
+  });
+  return created.normalizedId;
+}
+
+async function linkSession(projectDir: string, sessionId: string, taskId: string): Promise<void> {
+  await createSession(projectDir, { runtimeType: "claude-code", runtimeSessionId: sessionId });
+  await updateSession(projectDir, {
+    id: sessionId,
+    linkedNodeType: "task",
+    linkedNodeId: taskId,
+  });
+}
+
+describe("POST /api/hook/:slug/event — SessionStart staged context", () => {
+  it("stages the full environment for a task-linked session, default-ON", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const taskId = await seedDag(projectDir);
+      await linkSession(projectDir, "cc-linked", taskId);
+
+      // No opt-in flag, no query parameter, no header: the plain event the
+      // installed hook already sends is what turns this on.
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-linked",
+        cwd: "/work/demo",
+        source: "startup",
+      });
+
+      expect(status).toBe(200);
+      const staged = envelope.data?.stagedContext ?? "";
+      // The same builder the ARCS-owned headless path uses, so the same blocks.
+      expect(staged).toContain("## IDENTITY");
+      expect(staged).toContain("## WORKSPACE");
+      expect(staged).toContain("Workspace root: /work/demo");
+      expect(staged).toContain("## DAG POSITION");
+      expect(staged).toContain(`Linked node: task ${taskId}`);
+      expect(staged).toContain("Acceptance: SessionStart answers with stagedContext");
+      expect(staged).toContain("## LIMITS");
+      expect(staged.length).toBeLessThanOrEqual(SESSION_START_STAGE_CAP);
+      expectDelimiterInvariant(staged);
+    });
+  });
+
+  it("stages a degraded two-line block for a session with no linked node", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      await seedDag(projectDir);
+
+      // The common case: discovery never links, so an observed terminal has no
+      // linked node until a human sets one.
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-unlinked",
+        cwd: "/work/demo",
+        source: "startup",
+      });
+
+      expect(status).toBe(200);
+      const staged = envelope.data?.stagedContext ?? "";
+      const lines = staged.split("\n");
+      expect(lines).toHaveLength(2);
+      // Line 1 — identity and how to read the rest, not an apology.
+      expect(lines[0]).toContain('ARCS as project demo "Demo"');
+      expect(lines[0]).toContain("arcs brief demo --lean --json");
+      // Line 2 — what the project is actually on right now.
+      expect(lines[1]).toBe(
+        "Project current focus: Wire the SessionStart mirror · " +
+          "Next action: Continue task wire-the-sessionstart-mirror",
+      );
+      // ARCS-authored throughout, so it quotes no body and needs no wrapper.
+      expect(delimiterTokens(staged)).toEqual([]);
+      expect(staged.length).toBeLessThanOrEqual(SESSION_START_STAGE_CAP);
+    });
+  });
+
+  it("falls back to the degraded block when even a fully degraded build overflows", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      // Every budgeted field at (or past) its input width, so the soft-cap
+      // ladder runs out of rungs before the text fits.
+      const taskId = await seedDag(projectDir, {
+        title: `Wide ${"w".repeat(400)}`,
+        scope: `Scope ${"s".repeat(600)}`,
+        acceptance: `Acceptance ${"a".repeat(900)}`,
+        verify: `Verify ${"v".repeat(400)}`,
+        skill: `Skill ${"k".repeat(200)}`,
+      });
+      await linkSession(projectDir, "cc-wide", taskId);
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-wide",
+        // A workspace root at its own input width, so nothing un-budgeted is
+        // understated either.
+        cwd: `/work/${"d".repeat(400)}`,
+      });
+
+      expect(status).toBe(200);
+      const staged = envelope.data?.stagedContext ?? "";
+      expect(staged.length).toBeLessThanOrEqual(SESSION_START_STAGE_CAP);
+      // The floor is the whole degraded block, NEVER a head-truncated staged
+      // one: clipping the assembled text is what severs a wrapper's closer.
+      expect(staged.split("\n")).toHaveLength(2);
+      expect(delimiterTokens(staged)).toEqual([]);
+      expect(staged).toContain('ARCS as project demo "Demo"');
+    });
+  });
+
+  it("keeps the delimiter invariant when the cap forces a mid-wrapper clip", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      // An overview paragraph comfortably past the brief block's 800-char
+      // budget, so its wrapper is clipped THROUGH rather than dropped whole —
+      // the one path a delimiter-balance assertion on an unclipped fixture
+      // never exercises.
+      const taskId = await seedDag(projectDir, {}, "");
+      writeFileSync(
+        join(projectDir, "overview.md"),
+        `# Demo\n\n${"the project overview says a great deal. ".repeat(40)}`,
+        "utf-8",
+      );
+      await linkSession(projectDir, "cc-clipped", taskId);
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-clipped",
+        cwd: "/work/demo",
+      });
+
+      expect(status).toBe(200);
+      const staged = envelope.data?.stagedContext ?? "";
+      expect(staged.length).toBeLessThanOrEqual(SESSION_START_STAGE_CAP);
+      // The clip landed inside a wrapped body…
+      expect(staged).toContain("chars truncated]");
+      // …and that wrapper is still closed, with the ARCS-authored LIMITS block
+      // outside it rather than swallowed into an unterminated untrusted region.
+      expectDelimiterInvariant(staged);
+      const lastClose = staged.lastIndexOf("<<<END_ARCS_UNTRUSTED_DOC>>>");
+      expect(lastClose).toBeGreaterThan(-1);
+      expect(staged.indexOf("## LIMITS")).toBeGreaterThan(lastClose);
+    });
+  });
+
+  it("survives a SessionStart for a session linked to a node that no longer exists", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const taskId = await seedDag(projectDir);
+      await linkSession(projectDir, "cc-dangling", taskId);
+      // Linkage is validated at write time, so the dangling state only arises
+      // the way it does in production: the node is deleted afterwards.
+      await deleteTask(projectDir, taskId);
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-dangling",
+      });
+
+      expect(status).toBe(200);
+      const staged = envelope.data?.stagedContext ?? "";
+      expect(staged).toContain(`Linked node: task ${taskId} — not found in the DAG.`);
+      expectDelimiterInvariant(staged);
+    });
+  });
+
+  it("answers 200 with no stagedContext at all when staging fails", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      // A regular file where the plans directory belongs: the index read falls
+      // through to a rebuild, and the rebuild's readdir throws ENOTDIR.
+      writeFileSync(join(projectDir, "plans"), "not a directory", "utf-8");
+
+      const { status, envelope } = await postEvent(base, {
+        hook_event_name: "SessionStart",
+        session_id: "cc-broken-dag",
+      });
+
+      // The session is still registered and the hook still gets a clean 200 —
+      // its degradation is silence, so an absent field is the only signal.
+      expect(status).toBe(200);
+      expect(envelope.data?.stagedContext).toBeUndefined();
+      expect((await getSession(projectDir, "cc-broken-dag")).runtimeType).toBe("claude-code");
+    });
+  });
+
+  it("never attaches stagedContext to a checkpoint or a teardown event", async () => {
+    await withHookCtx(async ({ base, projectDir }) => {
+      const taskId = await seedDag(projectDir);
+      await linkSession(projectDir, "cc-other-events", taskId);
+
+      for (const event of [
+        { hook_event_name: "UserPromptSubmit", prompt: "what next?" },
+        { hook_event_name: "Stop" },
+        { hook_event_name: "SessionEnd", reason: "logout" },
+      ]) {
+        const { status, envelope } = await postEvent(base, {
+          ...event,
+          session_id: "cc-other-events",
+        });
+
+        expect(status).toBe(200);
+        // Staging is per SESSION, not per turn: re-sending it at every
+        // checkpoint would re-inject the same block on every prompt.
+        expect(envelope.data?.stagedContext).toBeUndefined();
+      }
     });
   });
 });
