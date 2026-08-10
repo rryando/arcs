@@ -2,10 +2,8 @@
  * Sessions view — live agent runtime sessions discovered for this project.
  *
  * The table mirrors whatever the session bridge has written into the session
- * store, plus the DAG link a human attached to a session. Sessions whose
- * runtime accepts messages can also be prompted from here. Runtimes the UI does
- * not currently surface are filtered out client-side (`isVisibleSession`) — the
- * API still returns them.
+ * store, plus the DAG link a human attached to a session. Any session can also
+ * be prompted from here — a send forks it into a new ARCS thread.
  */
 
 import { useParams } from "@tanstack/react-router";
@@ -20,7 +18,7 @@ import { useToaster } from "../components/Toaster";
 import { sessionName } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
 import { SessionLinkModal } from "./SessionLinkModal";
-import { canSendMessage, isVisibleSession, SessionMessageForm } from "./SessionMessageForm";
+import { SessionMessageForm } from "./SessionMessageForm";
 import { useSessionPanel } from "./SessionPanel";
 import {
   filterSessionsByState,
@@ -32,7 +30,6 @@ import {
 } from "./SessionStatusBadge";
 
 const RUNTIME_LABEL: Record<string, string> = {
-  opencode: "opencode",
   "claude-code": "claude code",
 };
 
@@ -56,9 +53,7 @@ export function SessionsView() {
   const [linkTarget, setLinkTarget] = useState<SessionMeta | null>(null);
   const [messageTarget, setMessageTarget] = useState<SessionMeta | null>(null);
 
-  // The API returns every runtime; the view shows only the ones the UI
-  // currently surfaces, so the counts below describe what the user can see.
-  const sessions = useMemo(() => (data?.sessions ?? []).filter(isVisibleSession), [data]);
+  const sessions = useMemo(() => data?.sessions ?? [], [data]);
 
   /**
    * DECISION: the chips filter on the same `sessionState()` the status column
@@ -128,31 +123,20 @@ export function SessionsView() {
         title: "status",
         className: "w-36",
         sortValue: (s) => sessionStateRank(sessionState(s)),
-        render: (s) => {
-          const queued = s.messageQueue?.length ?? 0;
-          return (
-            <span
-              className="inline-flex items-center gap-1"
-              // Names which axis the badge is on, so the raw status stays
-              // readable without ever being the thing a control acts on.
-              title={
-                s.phase
-                  ? `live phase — the record's own status is "${s.status}"`
-                  : `the record's own status — no live phase was sent for this session`
-              }
-            >
-              <SessionStatusBadge session={s} />
-              {queued > 0 && (
-                <span
-                  title={`${queued} message${queued === 1 ? "" : "s"} queued — waiting for the session's next checkpoint`}
-                  className="text-term-amber"
-                >
-                  ✉{queued}
-                </span>
-              )}
-            </span>
-          );
-        },
+        render: (s) => (
+          <span
+            className="inline-flex items-center gap-1"
+            // Names which axis the badge is on, so the raw status stays
+            // readable without ever being the thing a control acts on.
+            title={
+              s.phase
+                ? `live phase — the record's own status is "${s.status}"`
+                : `the record's own status — no live phase was sent for this session`
+            }
+          >
+            <SessionStatusBadge session={s} />
+          </span>
+        ),
       },
       {
         key: "runtime",
@@ -173,19 +157,17 @@ export function SessionsView() {
             >
               ▤
             </button>
-            {canSendMessage(s) && (
-              <button
-                type="button"
-                title="send message"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMessageTarget(s);
-                }}
-                className="text-term-dim hover:text-term-green"
-              >
-                ✉
-              </button>
-            )}
+            <button
+              type="button"
+              title="send message"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMessageTarget(s);
+              }}
+              className="text-term-dim hover:text-term-green"
+            >
+              ✉
+            </button>
           </span>
         ),
       },
@@ -325,16 +307,12 @@ export function SessionsView() {
               {
                 keys: "v",
                 description: "view conversation",
-                // Every runtime has a conversation view — no canSendMessage gate.
                 run: (s) => openSession(s.normalizedId),
               },
               {
                 keys: "m",
                 description: "send message",
-                // Runtimes without a delivery channel simply have no action.
-                run: (s) => {
-                  if (canSendMessage(s)) setMessageTarget(s);
-                },
+                run: (s) => setMessageTarget(s),
               },
             ]}
             emptyMessage="no sessions — run `claude` in a linked directory to register one"

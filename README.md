@@ -362,7 +362,7 @@ The web UI's session panel delivers a prompt through one of four modes (the "del
 
 | Mode | Runtime target | Memory |
 |------|----------------|--------|
-| **native** | The live runtime behind the session — live inject for opencode, checkpoint-queued for Claude Code | The session's own history |
+| **fork via turns** | A new ARCS-owned thread forked from the referenced Claude Code session (`POST /sessions/:id/turns` + `--fork-session`) — ARCS never injects into the live session itself | The fork inherits the session's context; later turns accumulate on the fork's own sidecar |
 | **headless resume** | The referenced Claude Code session's runtime thread, resumed headlessly (`--resume`) | The session's thread; **idle sessions only** |
 | **headless one-shot** | A fresh `claude -p` against an ARCS-owned `arcs-oneshot-<slug>` record | None — a fresh Claude every call |
 | **headless thread** | A persistent ARCS-owned thread (`arcs-thread-<slug>-<uuid4>`), minted once then reused | Accumulates in one sidecar |

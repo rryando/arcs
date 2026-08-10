@@ -1,9 +1,9 @@
 /**
  * Session CRUD storage for ARCS projects.
  *
- * Tracks agent runtime sessions (opencode, claude-code) that are attached to a
- * project. Unlike tasks/plans/knowledge these records are volatile runtime
- * state: they carry no markdown mirror and never invalidate the graph cache.
+ * Tracks agent runtime sessions attached to a project. Unlike
+ * tasks/plans/knowledge these records are volatile runtime state: they carry no
+ * markdown mirror and never invalidate the graph cache.
  */
 
 import { join } from "node:path";
@@ -21,6 +21,7 @@ import {
   ensureDir,
   fileExists,
   nowISO,
+  SESSION_RUNTIME_TYPES,
   validateSessionLinkedNodeType,
   validateSessionRuntimeType,
   validateSessionStatus,
@@ -51,12 +52,10 @@ export {
  * Where a session record came from — its provenance, not its state.
  *
  * - `observed` — a runtime session ARCS merely watches: a terminal `claude`
- *   session announcing itself through the hook bridge, or an opencode session
- *   discovered (or created) on a live opencode server. ARCS can nudge it, but
- *   something outside ARCS drives it.
+ *   session announcing itself through the hook bridge. Something outside ARCS
+ *   drives it.
  * - `arcs` — a record ARCS minted for itself (the headless oneshot/stable
- *   threads). No terminal is attached, so nothing ever drains its message
- *   queue; it is driven by headless runs only.
+ *   threads). No terminal is attached; it is driven by headless runs only.
  *
  * Declared here rather than in storage-utils alongside the other session enums
  * because origin is derived by this module (legacy promotion below) and every
@@ -73,7 +72,7 @@ export interface SessionMeta {
   id: string;
   normalizedId: string;
   runtimeType: import("./storage-utils.js").SessionRuntimeType;
-  /** Runtime-native session id, verbatim (e.g. opencode "ses_04f…"). */
+  /** Runtime-native session id, verbatim (e.g. a claude-code session uuid). */
   runtimeSessionId: string;
   /**
    * Provenance of the record. Persisted, never client-settable, and never
@@ -94,12 +93,6 @@ export interface SessionMeta {
   linkedNodeType?: import("./storage-utils.js").SessionLinkedNodeType;
   /** Normalized task/plan id — never a diagram node id (T001…). */
   linkedNodeId?: string;
-  /**
-   * Messages accepted from the web UI but not yet delivered. Only runtimes
-   * without a live channel (claude-code) ever populate this: the runtime drains
-   * the queue itself at its next checkpoint. Absent means "nothing pending".
-   */
-  messageQueue?: string[];
   /**
    * Id of the headless run currently claimed on this record — written when the
    * run is spawned and cleared when it settles (`beginSessionRun` /
@@ -153,8 +146,8 @@ export interface CreateSessionInput {
   /**
    * Provenance, set once at creation and defaulting to `observed`. Only the
    * ARCS-minted headless threads pass `arcs`. Deliberately absent from every
-   * request schema: origin is what capability is derived from, so a client that
-   * could set it could talk itself out of the queue refusal below.
+   * request schema: provenance is a fact about who created the record, never
+   * something a client hands in.
    */
   origin?: SessionOrigin;
   status?: import("./storage-utils.js").SessionStatus;
@@ -187,12 +180,6 @@ export interface UpdateSessionInput {
   linkedNodeType?: import("./storage-utils.js").SessionLinkedNodeType | null;
   /** Normalized task/plan id — validated against the task/plan store. */
   linkedNodeId?: string | null;
-  /**
-   * Whole-queue replacement (`null` clears it). Appending/draining goes through
-   * `enqueueSessionMessage`/`drainSessionMessageQueue` instead — a shallow merge
-   * cannot express those safely under concurrent access.
-   */
-  messageQueue?: string[] | null;
   now?: string;
 }
 
@@ -235,25 +222,17 @@ export async function readSessionIndex(projectDir: string): Promise<SessionIndex
   if (!index || !Array.isArray(index.sessions)) {
     return { sessions: [] };
   }
-  // Every read path in this module funnels through here, so the promotion is
-  // applied exactly once — reads, writes and capability checks all agree.
-  return { sessions: index.sessions.map(withDerivedOrigin) };
-}
-
-/**
- * Capability: may a message be handed to this session through `messageQueue`?
- *
- * Queued delivery only works when something drains the queue, and the only
- * drainer is the Claude Code hook script running inside a real terminal
- * session — an `observed` claude-code record. An `arcs`-origin thread has no
- * terminal attached, so a message queued for it would sit there forever
- * (that black hole is what the queue refusal on POST /message closes), and
- * opencode records take live injection instead of ever queueing.
- *
- * Derived from `origin`, never from a metadata string.
- */
-export function canQueue(session: SessionMeta): boolean {
-  return session.origin === "observed" && session.runtimeType === "claude-code";
+  // A hand-edited index could hold anything, so validate rather than trust: a
+  // record whose runtimeType is not a known member is dropped, not repaired —
+  // there is no correct value to guess, and no code path could drive such a
+  // session anyway. Dropped records are invisible to every read and physically
+  // removed by the next whole-index write (write-back attrition).
+  const known = index.sessions.filter((session) =>
+    (SESSION_RUNTIME_TYPES as readonly string[]).includes(session.runtimeType),
+  );
+  // Every read path in this module funnels through here, so the filter and the
+  // promotion are applied exactly once — reads and writes agree.
+  return { sessions: known.map(withDerivedOrigin) };
 }
 
 // ---------------------------------------------------------------------------
@@ -479,9 +458,9 @@ async function upsertSessionUnlocked(
   const existing = index.sessions[existingIndex];
   // `origin` is deliberately absent from this merge: it is provenance, so the
   // creating writer fixes it for good. A hook observation must not demote an
-  // ARCS-owned thread (that would reopen the queue black hole), and an ARCS run
-  // claiming an existing record as its write-target must not erase the fact
-  // that a real terminal session is attached to it.
+  // ARCS-owned thread, and an ARCS run claiming an existing record as its
+  // write-target must not erase the fact that a real terminal session is
+  // attached to it.
   const merged: SessionMeta = {
     ...existing,
     runtimeType: input.runtimeType,
@@ -586,13 +565,6 @@ async function updateSessionUnlocked(
       session.metadata = { ...session.metadata, ...input.metadata };
     }
   }
-  if (input.messageQueue !== undefined) {
-    if (input.messageQueue === null || input.messageQueue.length === 0) {
-      delete session.messageQueue;
-    } else {
-      session.messageQueue = [...input.messageQueue];
-    }
-  }
   if (input.linkedNodeType !== undefined || input.linkedNodeId !== undefined) {
     const clearing =
       input.linkedNodeType === null || input.linkedNodeId === null || input.linkedNodeId === "";
@@ -633,87 +605,6 @@ function findSessionIndex(index: SessionIndex, sessionId: string): number {
     throw itemNotFound("session", sessionId);
   }
   return position;
-}
-
-async function enqueueSessionMessageUnlocked(
-  projectDir: string,
-  sessionId: string,
-  message: string,
-): Promise<SessionMeta> {
-  const index = await readSessionIndex(projectDir);
-  const position = findSessionIndex(index, sessionId);
-  const session = index.sessions[position];
-
-  session.messageQueue = [...(session.messageQueue ?? []), message];
-  session.updatedAt = nowISO();
-
-  index.sessions[position] = session;
-  await writeSessionState(projectDir, index);
-  return session;
-}
-
-/**
- * Appends a message to a session's pending queue.
- *
- * Deliberately not part of `updateSession`: the generic path shallow-merges
- * whatever the caller passes, which would let two concurrent senders read the
- * same array and write back a queue missing one message. Append happens inside
- * the store lock, so the read-modify-write is atomic.
- *
- * The message is stored verbatim — callers validate content (the route rejects
- * empty strings before it gets here).
- */
-export async function enqueueSessionMessage(
-  projectDir: string,
-  sessionId: string,
-  message: string,
-): Promise<SessionMeta> {
-  await ensureDir(join(projectDir, "sessions"));
-  return withLock(sessionStoreLockPath(projectDir), () =>
-    enqueueSessionMessageUnlocked(projectDir, sessionId, message),
-  );
-}
-
-async function drainSessionMessageQueueUnlocked(
-  projectDir: string,
-  sessionId: string,
-): Promise<string[]> {
-  const index = await readSessionIndex(projectDir);
-  const position = findSessionIndex(index, sessionId);
-  const session = index.sessions[position];
-
-  const drained = session.messageQueue ?? [];
-  if (drained.length === 0) {
-    // Nothing pending — the common case at a checkpoint. Skip the write so an
-    // idle session's index.json does not churn on every prompt.
-    return [];
-  }
-
-  delete session.messageQueue;
-  session.lastMessageAt = nowISO();
-  session.updatedAt = session.lastMessageAt;
-
-  index.sessions[position] = session;
-  await writeSessionState(projectDir, index);
-  return drained;
-}
-
-/**
- * Reads and clears a session's pending queue in one lock acquisition.
- *
- * Read-then-clear must be atomic: a checkpoint that read the queue and cleared
- * it in two calls would drop any message enqueued in between. Delivery is
- * at-most-once — a consumer that crashes after draining loses the batch, which
- * is the accepted trade for never replaying a message twice into a session.
- */
-export async function drainSessionMessageQueue(
-  projectDir: string,
-  sessionId: string,
-): Promise<string[]> {
-  await ensureDir(join(projectDir, "sessions"));
-  return withLock(sessionStoreLockPath(projectDir), () =>
-    drainSessionMessageQueueUnlocked(projectDir, sessionId),
-  );
 }
 
 // ---------------------------------------------------------------------------

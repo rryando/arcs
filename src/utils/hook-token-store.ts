@@ -2,9 +2,11 @@
  * Per-project auth token for the Claude Code session-bridge hook endpoint.
  *
  * Loopback-only is not enough on its own: every process on the machine shares
- * localhost, so any local program could otherwise register sessions or drain a
- * project's message queue. The token proves the caller is the hook script that
- * `arcs hooks install-claude-code` provisioned for this project.
+ * localhost, so any local program could otherwise register sessions, write
+ * checkpoints, and hit the SessionStart path — whose answer is injected into a
+ * live agent session as `additionalContext`. The token proves the caller is
+ * the hook script that `arcs hooks install-claude-code` provisioned for this
+ * project.
  *
  * Intentionally not a CRUD store — one token per project, rotated by rerunning
  * the install command. No index, no markdown mirror, no lock (a rotation races

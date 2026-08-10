@@ -75,7 +75,7 @@ export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "disconnected"] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
-export const SESSION_RUNTIME_TYPES = ["opencode", "claude-code"] as const;
+export const SESSION_RUNTIME_TYPES = ["claude-code"] as const;
 export type SessionRuntimeType = (typeof SESSION_RUNTIME_TYPES)[number];
 
 /**

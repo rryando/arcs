@@ -10,12 +10,9 @@ import { createPlan } from "../src/utils/plan-store.js";
 import {
   beginSessionRun,
   CHECKPOINT_TTL_MS,
-  canQueue,
   createSession,
   deleteSession,
   deriveSessionPhase,
-  drainSessionMessageQueue,
-  enqueueSessionMessage,
   getSession,
   listSessions,
   RUN_HEARTBEAT_TTL_MS,
@@ -26,6 +23,7 @@ import {
 } from "../src/utils/session-store.js";
 import { createTask } from "../src/utils/task-store.js";
 import { classifyChange } from "../src/web-server/watcher.js";
+import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 const tempDirs: string[] = [];
 
@@ -42,10 +40,10 @@ afterEach(() => {
 });
 
 describe("session-store: create", () => {
-  it("creates an opencode session with defaults", async () => {
+  it("creates a claude-code session with defaults", async () => {
     const dir = makeProjectDir();
     const session = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_044c13d2dffeggKIOZf9LscKxX",
     });
 
@@ -59,7 +57,7 @@ describe("session-store: create", () => {
 
   it("writes a flat sessions/index.json", async () => {
     const dir = makeProjectDir();
-    await createSession(dir, { runtimeType: "opencode", runtimeSessionId: "ses_one" });
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "ses_one" });
 
     const raw = readFileSync(resolve(dir, "sessions", "index.json"), "utf-8");
     expect(raw.endsWith("\n")).toBe(true);
@@ -68,9 +66,9 @@ describe("session-store: create", () => {
 
   it("rejects a duplicate runtime session id", async () => {
     const dir = makeProjectDir();
-    await createSession(dir, { runtimeType: "opencode", runtimeSessionId: "ses_one" });
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "ses_one" });
     await expect(
-      createSession(dir, { runtimeType: "opencode", runtimeSessionId: "ses_one" }),
+      createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "ses_one" }),
     ).rejects.toThrow("already exists");
   });
 
@@ -88,7 +86,7 @@ describe("session-store: create", () => {
     const dir = makeProjectDir();
     await expect(
       createSession(dir, {
-        runtimeType: "opencode",
+        runtimeType: "claude-code",
         runtimeSessionId: "ses_one",
         status: "zombie" as never,
       }),
@@ -98,7 +96,7 @@ describe("session-store: create", () => {
   it("rejects a runtime session id that normalizes to nothing", async () => {
     const dir = makeProjectDir();
     await expect(
-      createSession(dir, { runtimeType: "opencode", runtimeSessionId: "___" }),
+      createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "___" }),
     ).rejects.toThrow("Invalid runtime session id");
   });
 });
@@ -113,7 +111,7 @@ describe("session-store: read", () => {
   it("gets a session by raw runtime id or normalized id", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_ABC",
     });
 
@@ -128,9 +126,9 @@ describe("session-store: read", () => {
 
   it("filters by status and runtime type", async () => {
     const dir = makeProjectDir();
-    await createSession(dir, { runtimeType: "opencode", runtimeSessionId: "ses_a" });
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "ses_a" });
     await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_b",
       status: "idle",
     });
@@ -141,8 +139,8 @@ describe("session-store: read", () => {
     });
 
     expect(await listSessions(dir, { status: "idle" })).toHaveLength(2);
-    expect(await listSessions(dir, { runtimeType: "opencode" })).toHaveLength(2);
-    expect(await listSessions(dir, { status: "idle", runtimeType: "claude-code" })).toHaveLength(1);
+    expect(await listSessions(dir, { runtimeType: "claude-code" })).toHaveLength(3);
+    expect(await listSessions(dir, { status: "idle", runtimeType: "claude-code" })).toHaveLength(2);
   });
 });
 
@@ -150,13 +148,13 @@ describe("session-store: upsert", () => {
   it("creates on first sight and updates in place afterwards", async () => {
     const dir = makeProjectDir();
     const first = await upsertSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       startedAt: "2026-01-01T00:00:00.000Z",
       metadata: { title: "first" },
     });
     const second = await upsertSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       status: "idle",
       metadata: { directory: "/repo" },
@@ -172,12 +170,12 @@ describe("session-store: upsert", () => {
   it("keeps the existing status when the upsert omits one", async () => {
     const dir = makeProjectDir();
     await upsertSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       status: "failed",
     });
     const updated = await upsertSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       lastMessageAt: "2026-01-02T00:00:00.000Z",
     });
@@ -259,8 +257,7 @@ describe("session-store: origin", () => {
       origin: "observed",
     });
 
-    // A hook observation of an ARCS thread must not demote it — that would
-    // reopen the queue black hole.
+    // A hook observation of an ARCS thread must not demote it.
     const observedAgain = await upsertSession(dir, {
       runtimeType: "claude-code",
       runtimeSessionId: "arcs-thread-demo-2",
@@ -320,34 +317,33 @@ describe("session-store: origin", () => {
   });
 });
 
-describe("session-store: canQueue", () => {
-  it("is true only for an observed claude-code session", async () => {
-    const dir = makeProjectDir();
-    const observed = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_queueable",
-    });
-    const owned = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "arcs-thread-demo-3",
-      origin: "arcs",
-    });
-    // opencode takes live injection, so its queue is never the delivery channel.
-    const opencode = await createSession(dir, {
-      runtimeType: "opencode",
-      runtimeSessionId: "ses_live",
-    });
+describe("session-store: unknown runtime types", () => {
+  it("drops an index record whose runtimeType is not a known member", async () => {
+    await withTempDataDir(async (dataDir) => {
+      const dir = resolve(dataDir, "projects", "demo");
+      writeLegacyIndex(dir, [
+        legacyRecord({}),
+        legacyRecord({
+          id: "cc-bogus",
+          normalizedId: "cc-bogus",
+          runtimeSessionId: "cc-bogus",
+          runtimeType: "bogus",
+        }),
+      ]);
 
-    expect(canQueue(observed)).toBe(true);
-    expect(canQueue(owned)).toBe(false);
-    expect(canQueue(opencode)).toBe(false);
-  });
+      // A hand-edited index could hold anything — the funnel validates rather
+      // than trusts, and drops rather than repairs: there is no correct
+      // runtimeType to guess, so the record is invisible to every read path.
+      expect((await readSessionIndex(dir)).sessions.map((s) => s.normalizedId)).toEqual([
+        "cc-legacy",
+      ]);
+      expect((await listSessions(dir)).map((s) => s.normalizedId)).toEqual(["cc-legacy"]);
+      await expect(getSession(dir, "cc-bogus")).rejects.toThrow("Could not find session");
 
-  it("is false for a legacy arcs-owned record, through the derived origin", async () => {
-    const dir = makeProjectDir();
-    writeLegacyIndex(dir, [legacyRecord({ metadata: { control: "arcs-owned" } })]);
-
-    expect(canQueue(await getSession(dir, "cc-legacy"))).toBe(false);
+      // Write-back attrition: the next whole-index write physically removes it.
+      await updateSession(dir, { id: "cc-legacy", status: "idle" });
+      expect(rawSessions(dir).map((s) => s.normalizedId)).toEqual(["cc-legacy"]);
+    });
   });
 });
 
@@ -540,7 +536,7 @@ describe("session-store: derived phase", () => {
   it("reads a session with no evidence at all as idle", async () => {
     const dir = makeProjectDir();
     const session = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_new",
     });
 
@@ -612,7 +608,7 @@ describe("session-store: update and delete", () => {
   it("updates status and merges metadata", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       metadata: { title: "probe" },
     });
@@ -632,7 +628,7 @@ describe("session-store: update and delete", () => {
   it("clears nullable fields", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       lastMessageAt: "2026-01-01T00:00:00.000Z",
       userEmail: "dev@example.com",
@@ -654,7 +650,7 @@ describe("session-store: update and delete", () => {
   it("rejects an unknown status on update", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
     await expect(
@@ -671,8 +667,8 @@ describe("session-store: update and delete", () => {
 
   it("deletes a session and leaves the rest intact", async () => {
     const dir = makeProjectDir();
-    await createSession(dir, { runtimeType: "opencode", runtimeSessionId: "ses_a" });
-    const b = await createSession(dir, { runtimeType: "opencode", runtimeSessionId: "ses_b" });
+    await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "ses_a" });
+    const b = await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "ses_b" });
 
     await deleteSession(dir, b.normalizedId);
 
@@ -687,7 +683,7 @@ describe("session-store: dag linkage", () => {
     const dir = makeProjectDir();
     const task = await createTask(dir, { title: "Wire the bridge" });
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -710,7 +706,7 @@ describe("session-store: dag linkage", () => {
       keywords: ["sessions"],
     });
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -727,7 +723,7 @@ describe("session-store: dag linkage", () => {
   it("rejects linking to a task id that does not exist", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -744,7 +740,7 @@ describe("session-store: dag linkage", () => {
   it("rejects linking to a plan id that does not exist", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -760,7 +756,7 @@ describe("session-store: dag linkage", () => {
   it("rejects an unknown linked node type", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -776,7 +772,7 @@ describe("session-store: dag linkage", () => {
   it("rejects a half link when nothing is linked yet", async () => {
     const dir = makeProjectDir();
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -793,7 +789,7 @@ describe("session-store: dag linkage", () => {
     const first = await createTask(dir, { title: "First" });
     const second = await createTask(dir, { title: "Second" });
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
 
@@ -815,7 +811,7 @@ describe("session-store: dag linkage", () => {
     const dir = makeProjectDir();
     const task = await createTask(dir, { title: "Wire the bridge" });
     const created = await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
     await updateSession(dir, {
@@ -845,7 +841,7 @@ describe("session-store: dag linkage", () => {
     const dir = makeProjectDir();
     const task = await createTask(dir, { title: "Wire the bridge" });
     const created = await upsertSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
     });
     await updateSession(dir, {
@@ -855,7 +851,7 @@ describe("session-store: dag linkage", () => {
     });
 
     const refreshed = await upsertSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses_one",
       status: "idle",
       metadata: { directory: "/repo" },
@@ -864,109 +860,6 @@ describe("session-store: dag linkage", () => {
     expect(refreshed.linkedNodeType).toBe("task");
     expect(refreshed.linkedNodeId).toBe(task.normalizedId);
     expect(refreshed.status).toBe("idle");
-  });
-});
-
-describe("session-store: message queue", () => {
-  it("appends messages in order and starts from no queue at all", async () => {
-    const dir = makeProjectDir();
-    const created = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_one",
-    });
-    expect(created.messageQueue).toBeUndefined();
-
-    await enqueueSessionMessage(dir, created.normalizedId, "first");
-    const queued = await enqueueSessionMessage(dir, created.normalizedId, "second");
-
-    expect(queued.messageQueue).toEqual(["first", "second"]);
-    expect((await getSession(dir, created.normalizedId)).messageQueue).toEqual(["first", "second"]);
-  });
-
-  it("keeps every message when senders enqueue concurrently", async () => {
-    const dir = makeProjectDir();
-    const created = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_race",
-    });
-
-    const messages = ["a", "b", "c", "d", "e"];
-    await Promise.all(messages.map((m) => enqueueSessionMessage(dir, created.normalizedId, m)));
-
-    const stored = await getSession(dir, created.normalizedId);
-    expect(stored.messageQueue?.slice().sort()).toEqual(messages);
-  });
-
-  it("drains the queue and clears it in one shot", async () => {
-    const dir = makeProjectDir();
-    const created = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_drain",
-    });
-    await enqueueSessionMessage(dir, created.normalizedId, "one");
-    await enqueueSessionMessage(dir, created.normalizedId, "two");
-
-    expect(await drainSessionMessageQueue(dir, created.normalizedId)).toEqual(["one", "two"]);
-
-    const drained = await getSession(dir, created.normalizedId);
-    expect(drained.messageQueue).toBeUndefined();
-    expect(drained.lastMessageAt).toBeTruthy();
-    // At-most-once: a second checkpoint must not replay the same batch.
-    expect(await drainSessionMessageQueue(dir, created.normalizedId)).toEqual([]);
-  });
-
-  it("delivers each message to exactly one of two concurrent drains", async () => {
-    const dir = makeProjectDir();
-    const created = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_double_drain",
-    });
-    await enqueueSessionMessage(dir, created.normalizedId, "only-once");
-
-    const [first, second] = await Promise.all([
-      drainSessionMessageQueue(dir, created.normalizedId),
-      drainSessionMessageQueue(dir, created.normalizedId),
-    ]);
-
-    expect([...first, ...second]).toEqual(["only-once"]);
-  });
-
-  it("leaves an idle session untouched when there is nothing queued", async () => {
-    const dir = makeProjectDir();
-    const created = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_idle",
-    });
-
-    expect(await drainSessionMessageQueue(dir, created.normalizedId)).toEqual([]);
-
-    const stored = await getSession(dir, created.normalizedId);
-    expect(stored.updatedAt).toBe(created.updatedAt);
-    expect(stored.lastMessageAt).toBeUndefined();
-  });
-
-  it("replaces or clears the whole queue through updateSession", async () => {
-    const dir = makeProjectDir();
-    const created = await createSession(dir, {
-      runtimeType: "claude-code",
-      runtimeSessionId: "cc_replace",
-    });
-    await enqueueSessionMessage(dir, created.normalizedId, "stale");
-
-    const replaced = await updateSession(dir, {
-      id: created.normalizedId,
-      messageQueue: ["fresh"],
-    });
-    expect(replaced.messageQueue).toEqual(["fresh"]);
-
-    const cleared = await updateSession(dir, { id: created.normalizedId, messageQueue: null });
-    expect(cleared.messageQueue).toBeUndefined();
-  });
-
-  it("rejects queue operations on a session that does not exist", async () => {
-    const dir = makeProjectDir();
-    await expect(enqueueSessionMessage(dir, "cc_missing", "hi")).rejects.toThrow("Could not find");
-    await expect(drainSessionMessageQueue(dir, "cc_missing")).rejects.toThrow("Could not find");
   });
 });
 

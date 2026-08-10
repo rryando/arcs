@@ -1,15 +1,13 @@
 /**
  * Session routes — full CRUD over the per-project session index.
  *
- * Sessions are runtime records for agent sessions (opencode, claude-code)
- * attached to a project. All mutations go through the locked session-store,
- * so the opencode discovery bridge and the web UI cannot clobber each other.
+ * Sessions are runtime records for claude-code agent sessions attached to a
+ * project. All mutations go through the locked session-store, so concurrent
+ * writers (the hook-event bridge and the web UI) cannot clobber each other.
  *
- * Two routes reach outside the store, and they partition the session space
- * rather than overlapping: `POST /sessions/:id/message` DELIVERS a prompt to a
- * session something else drives (live injection for opencode, a queue the
- * terminal drains for claude-code), while `POST /sessions/:id/turns` RUNS a
- * headless `claude -p` turn against a thread ARCS owns. Every route here is
+ * One route reaches outside the store: `POST /sessions/:id/turns` RUNS a
+ * headless `claude -p` turn against a thread ARCS owns, forking an observed
+ * session into such a thread on first contact. Every route here is
  * browser-facing and therefore already behind the global loopback-only
  * `secureLocalRequest` middleware — no per-route auth.
  */
@@ -32,11 +30,9 @@ import { DagError } from "../../utils/errors.js";
 import { readJsonSafe } from "../../utils/json.js";
 import {
   beginSessionRun,
-  canQueue,
   createSession,
   deleteSession,
   deriveSessionPhase,
-  enqueueSessionMessage,
   getSession,
   listSessions,
   SESSION_LINKED_NODE_TYPES,
@@ -58,11 +54,6 @@ import {
   resolveTimeoutMs,
   runClaudeJob,
 } from "../claude-runner.js";
-import {
-  createOpencodeSession,
-  readOpencodeConfig,
-  sendOpencodeMessage,
-} from "../opencode-client.js";
 import { buildPermissionArgv, RUN_INTENTS, type RunIntent } from "../permission-policy.js";
 import { buildStagedEnvironment, planStageRefresh, renderReferences } from "../prompt-assembly.js";
 import { fail, parseBody, requireProjectDir, respond } from "../respond.js";
@@ -146,10 +137,9 @@ const nodeReferenceSchema = z.object({
 });
 
 /**
- * Something the caller is pointing the session at. When present, the delivery
- * call is followed by an ARCS-authored reference turn in the session's
- * transcript sidecar (see `appendReference`). Shared by POST /message and POST
- * /turns so both routes accept byte-identical reference payloads.
+ * Something the caller is pointing the session at. Each entry is followed by an
+ * ARCS-authored reference turn in the session's transcript sidecar (see
+ * `appendReference`) once the turn is accepted.
  *
  * A discriminated union on `type`, so an unknown variant is REJECTED (400
  * INVALID_BODY naming the three tags) rather than coerced into the nearest
@@ -180,19 +170,12 @@ const sessionReferenceSchema = z
     }
   });
 
-const sendMessageSchema = z.object({
-  message: z.string().min(1),
-  reference: sessionReferenceSchema.optional(),
-});
-
 /**
  * Payload for POST /sessions/:id/turns — one turn of a headless conversation.
  *
  * `intent` is a PERMISSION POLICY, not a delivery mode: it selects the tool set
  * and permission mode `buildPermissionArgv` emits (`ask` → read-only + plan,
- * `change` → the edit surface + acceptEdits) and decides nothing else. Native
- * delivery (`POST /:id/message`) has no intent at all — ARCS authors no argv
- * there, so the two are orthogonal and never collapse into one enum.
+ * `change` → the edit surface + acceptEdits) and decides nothing else.
  *
  * `threadRef` names an ARCS thread RECORD to continue — never a claude uuid,
  * and never an observed session (that is what adoption is for). `refs` are the
@@ -209,14 +192,9 @@ const turnSchema = z.object({
   guards: z.record(z.unknown()).optional(),
 });
 
-const createOpencodeSessionSchema = z.object({
-  title: z.string().min(1).optional(),
-});
-
 /**
- * Records a delivered reference on the session's transcript sidecar. Shared by
- * POST /message and POST /turns so both write the same record for the same
- * payload.
+ * Records a delivered reference on the session's transcript sidecar, one turn
+ * per `refs` entry on POST /turns.
  *
  * A `doc` reference writes exactly the fields this route has always written —
  * `text`, `ts`, `section`, `source`, in that order — so the serialized line is
@@ -248,24 +226,11 @@ function sessionDirectory(session: SessionMeta): string | undefined {
   return typeof directory === "string" && directory ? directory : undefined;
 }
 
-function requireOpencodeConfig() {
-  const config = readOpencodeConfig();
-  if (!config) {
-    throw new DagError(
-      "OPENCODE_NOT_CONFIGURED",
-      "No opencode endpoint configured — set OPENCODE_PORT (or ARCS_OPENCODE_URL) " +
-        "so ARCS can reach a running `opencode serve`.",
-    );
-  }
-  return config;
-}
-
 /**
- * The worktree a newly created session should run in.
+ * The worktree a newly minted thread should run in.
  *
- * Guessing is not an option: opencode happily creates a session in its own
- * working directory when no directory is supplied, which would silently point
- * the agent at the wrong repository. An unregistered project is an error.
+ * Guessing is not an option: a turn run in the wrong directory would silently
+ * point the agent at the wrong repository. An unregistered project is an error.
  */
 async function primaryWorkspacePath(projectDir: string, slug: string): Promise<string> {
   const meta = await readJsonSafe<{ workspacePaths?: string[] }>(resolve(projectDir, "meta.json"));
@@ -610,44 +575,6 @@ sessionsRoute.post("/api/p/:slug/sessions", async (c) =>
   ),
 );
 
-/**
- * Creates a live opencode session in the project's primary workspace.
- *
- * The new session is mirrored into the index straight away rather than waiting
- * for the discovery stream to notice it, so the caller can select and message
- * it immediately. The stream's own `session.created` event lands moments later
- * and merges into the same record.
- *
- * There is deliberately no claude-code counterpart: a Claude Code session only
- * exists once a user runs `claude` in a linked directory, so there is nothing
- * for ARCS to create remotely.
- */
-sessionsRoute.post("/api/p/:slug/sessions/opencode/new", async (c) =>
-  respond(
-    c,
-    async () => {
-      const slug = c.req.param("slug");
-      const projectDir = requireProjectDir(slug);
-      const { title } = await parseBody(c, createOpencodeSessionSchema);
-      const directory = await primaryWorkspacePath(projectDir, slug);
-      const config = requireOpencodeConfig();
-
-      const created = await createOpencodeSession(config, {
-        directory,
-        ...(title && { title }),
-      });
-
-      return upsertSession(projectDir, {
-        runtimeType: "opencode",
-        runtimeSessionId: created.runtimeSessionId,
-        status: "active",
-        metadata: { directory, ...(created.title && { title: created.title }) },
-      });
-    },
-    201,
-  ),
-);
-
 sessionsRoute.get("/api/p/:slug/sessions/:id", async (c) =>
   respond(c, async () => {
     const projectDir = requireProjectDir(c.req.param("slug"));
@@ -662,80 +589,6 @@ sessionsRoute.patch("/api/p/:slug/sessions/:id", async (c) =>
     const projectDir = requireProjectDir(c.req.param("slug"));
     const input = await parseBody(c, updateSessionSchema);
     return updateSession(projectDir, { id: c.req.param("id"), ...input });
-  }),
-);
-
-/**
- * Sends a message to the runtime behind a session.
- *
- * Delivery is asymmetric by runtime, and deliberately so: opencode sessions get
- * live injection (the running agent picks the prompt up mid-turn), while Claude
- * Code sessions get queued delivery (the session itself drains the queue at its
- * next hook checkpoint — Claude Code exposes no live channel to inject into).
- * Both answer with the updated session, so the caller can tell them apart by
- * `messageQueue` rather than by branching on `runtimeType` itself.
- *
- * Queued delivery needs a terminal session to drain the queue, so it is gated
- * on the `canQueue` capability derived from the session's persisted origin. An
- * `arcs`-origin thread has nothing attached that would ever read the queue:
- * accepting the message would make this route a black hole that answers 200 and
- * silently drops the prompt, so it is refused outright and the caller is sent to
- * `POST /turns`, which actually drives such a thread.
- *
- * The refusal holds by CONSTRUCTION rather than by a second check: `canQueue`
- * reads `origin`, and every record `POST /turns` writes to is `arcs`-origin.
- * The two routes therefore partition the session space — native delivery serves
- * exactly the observed sessions the headless path refuses to write to, which is
- * why `native` is a delivery channel and not a run intent.
- *
- * A `reference` body field appends an ARCS-authored reference turn to the
- * session's transcript sidecar, but only after delivery has succeeded — a
- * failed send must never leave a dangling reference behind. The append is a
- * swallowed no-op on failure (the message itself was already delivered).
- */
-sessionsRoute.post("/api/p/:slug/sessions/:id/message", async (c) =>
-  respond(c, async () => {
-    const projectDir = requireProjectDir(c.req.param("slug"));
-    const { message, reference } = await parseBody(c, sendMessageSchema);
-    const session = await getSession(projectDir, c.req.param("id"));
-
-    let updated: SessionMeta;
-    if (session.runtimeType === "claude-code") {
-      if (!canQueue(session)) {
-        throw new DagError(
-          "SESSION_QUEUE_UNSUPPORTED",
-          `cannot queue a message for session "${session.normalizedId}": it is an ARCS-owned ` +
-            `thread with no terminal session attached, so nothing would ever drain the queue — ` +
-            `drive it with POST /api/p/<slug>/sessions/${session.normalizedId}/turns instead.`,
-        );
-      }
-      // Queued, not sent: `lastMessageAt` stays untouched until the session
-      // actually drains this at a checkpoint.
-      updated = await enqueueSessionMessage(projectDir, session.normalizedId, message);
-    } else {
-      await sendOpencodeMessage(
-        requireOpencodeConfig(),
-        {
-          runtimeSessionId: session.runtimeSessionId,
-          ...(sessionDirectory(session) && { directory: sessionDirectory(session) }),
-        },
-        message,
-      );
-
-      updated = await updateSession(projectDir, {
-        id: session.normalizedId,
-        lastMessageAt: new Date().toISOString(),
-      });
-    }
-
-    // Delivery succeeded (or was accepted into the queue) — record the
-    // reference turn against the session's transcript sidecar, carrying the
-    // payload verbatim so the web UI can render click-through.
-    if (reference !== undefined) {
-      await appendReference(projectDir, session.normalizedId, reference);
-    }
-
-    return updated;
   }),
 );
 
@@ -851,13 +704,6 @@ async function resolveTurnTarget(
     threadId = session.runtimeSessionId;
     existing = session;
   } else {
-    if (session.runtimeType !== "claude-code") {
-      throw new DagError(
-        "CLAUDE_RUN_TARGET_INVALID",
-        `cannot drive session "${session.normalizedId}" headlessly: only a claude-code session ` +
-          `carries a claude thread to fork`,
-      );
-    }
     threadId = `arcs-thread-${slug}-${randomUUID()}`;
     adoptedFrom = session.normalizedId;
     adoptedClaudeSessionId = session.runtimeSessionId;
@@ -974,9 +820,7 @@ function turnTargetingArgv(prompt: string, target: TurnTarget): string[] {
  * WHAT THE CALLER CHOOSES is an INTENT (`ask` | `change`), never a targeting
  * mode. Where the turn lands is derived from the record it is addressed to (see
  * `resolveTurnTarget`): an ARCS thread continues, an observed session is forked
- * into a new one. Delivery is the orthogonal axis and lives on the other route —
- * `POST /:id/message` queues into a terminal session, for which ARCS authors no
- * argv and an intent would mean nothing.
+ * into a new one.
  *
  * ARGV OWNERSHIP, which is the safety property: every tool and permission token
  * comes from `buildPermissionArgv` and this route builds none. It keeps only
@@ -1260,13 +1104,27 @@ interface RunTailState {
  *
  * Re-deriving the index path here (rather than asking the store) is the whole
  * point: the store's own reader is the thing that cannot distinguish these.
+ *
+ * One agreement with that reader IS mirrored: a listed record whose
+ * `runtimeType` is not a member of `SESSION_RUNTIME_TYPES` answers ABSENT.
+ * `readSessionIndex` drops such records before any read sees them, so to the
+ * store the session genuinely does not exist — counting it as "listed" here
+ * would make every `getSession` not-found for it look like an index that
+ * cannot answer, wedging the caller in retry until attrition happens to
+ * compact the record away.
  */
 async function sessionIndexAnswered(projectDir: string, sessionId: string): Promise<boolean> {
   try {
     const raw = await readFile(resolve(projectDir, "sessions", "index.json"), "utf-8");
-    const parsed = JSON.parse(raw) as { sessions?: { normalizedId?: string }[] };
+    const parsed = JSON.parse(raw) as {
+      sessions?: { normalizedId?: string; runtimeType?: string }[];
+    };
     if (!Array.isArray(parsed.sessions)) return false;
-    return !parsed.sessions.some((s) => s?.normalizedId === sessionId);
+    return !parsed.sessions.some(
+      (s) =>
+        s?.normalizedId === sessionId &&
+        (SESSION_RUNTIME_TYPES as readonly string[]).includes(s.runtimeType ?? ""),
+    );
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT";
   }

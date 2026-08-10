@@ -235,8 +235,9 @@ export async function promptAndInstallClaudeCodeHook(options: {
 
   p.note(
     [
-      "The session-bridge hook lets the ARCS web UI see your Claude Code",
-      "sessions and queue messages for them (delivered at the next prompt).",
+      "The session-bridge hook lets ARCS discover your Claude Code sessions,",
+      "stage project context at session start, and mirror transcripts — the",
+      "web UI drives work by forking a session into a new ARCS thread.",
       "",
       `Writes ${color.cyan(settingsPath)} only — never your global config.`,
     ].join("\n"),

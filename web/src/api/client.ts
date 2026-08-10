@@ -147,15 +147,14 @@ export interface TaskMeta {
 }
 
 export type SessionStatus = "active" | "idle" | "completed" | "failed" | "disconnected";
-export type SessionRuntimeType = "opencode" | "claude-code";
+export type SessionRuntimeType = "claude-code";
 export type SessionLinkedNodeType = "task" | "plan";
 
 /** Provenance of a session record, persisted server-side.
- *  - `observed` — a runtime session ARCS watches (terminal `claude` via the hook
- *    bridge, or a live opencode session). It can be messaged.
- *  - `arcs` — a headless thread ARCS minted for itself. Nothing drains its
- *    message queue, so `POST /sessions/:id/message` refuses it with
- *    `SESSION_QUEUE_UNSUPPORTED`; drive it with `POST /sessions/:id/turns`. */
+ *  - `observed` — a terminal `claude` session ARCS watches via the hook bridge.
+ *  - `arcs` — a headless thread ARCS minted for itself. Both are driven with
+ *    `POST /sessions/:id/turns`: an ARCS thread continues, an observed session
+ *    is forked into a new thread. */
 export type SessionOrigin = "observed" | "arcs";
 
 /** What a session is doing right now, derived server-side per response from the
@@ -228,9 +227,6 @@ export interface SessionMeta {
   linkedNodeType?: SessionLinkedNodeType;
   /** Normalized task/plan id — never a diagram node id (T001…). */
   linkedNodeId?: string;
-  /** Messages awaiting the session's next checkpoint; the key is absent (never
-   *  an empty array) once the session drains it. */
-  messageQueue?: string[];
   metadata?: SessionMetadata;
 }
 
@@ -582,13 +578,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  /** Starts a real opencode session in the project's primary workspace. There is
-   *  no claude-code equivalent — those only exist once a user runs `claude`. */
-  createOpencodeSession: (slug: string, input: { title?: string } = {}) =>
-    request<SessionMeta>(`/api/p/${slug}/sessions/opencode/new`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
   updateSession: (slug: string, id: string, input: SessionUpdateInput) =>
     request<SessionMeta>(`/api/p/${slug}/sessions/${id}`, {
       method: "PATCH",
@@ -596,15 +585,6 @@ export const api = {
     }),
   deleteSession: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/sessions/${id}`, { method: "DELETE" }),
-  /** Live-injects a prompt into the runtime behind the session (opencode only).
-   *  An optional `reference` (whatever the caller is pointing the session at —
-   *  a doc section, a file slice or a DAG node) is included in the body ONLY
-   *  when present — absent, the body stays byte-identical to `{ message }`. */
-  sendSessionMessage: (slug: string, id: string, message: string, reference?: SessionReference) =>
-    request<SessionMeta>(`/api/p/${slug}/sessions/${id}/message`, {
-      method: "POST",
-      body: JSON.stringify(reference === undefined ? { message } : { message, reference }),
-    }),
   /** Runs one headless `claude -p` turn against the session (claude-code only).
    *  Optional keys are included in the body ONLY when present — absent, the
    *  body stays `{ intent, message }`. Accepted as 202; the run settles

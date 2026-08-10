@@ -35,7 +35,6 @@ interface Stub {
   body: string | null;
   /** Delay before answering, to trip the client-side timeout. */
   delayMs: number;
-  queuedMessages: string[];
   close: () => Promise<void>;
 }
 
@@ -55,7 +54,6 @@ async function startStub(): Promise<Stub> {
     status: 200,
     body: null as string | null,
     delayMs: 0,
-    queuedMessages: [] as string[],
   };
 
   const server: Server = createServer((req, res) => {
@@ -74,7 +72,7 @@ async function startStub(): Promise<Stub> {
           state.body ??
             JSON.stringify({
               ok: state.status < 400,
-              data: { sessionId: "cc-1", queuedMessages: state.queuedMessages },
+              data: { sessionId: "cc-1" },
             }),
         );
       };
@@ -106,12 +104,6 @@ async function startStub(): Promise<Stub> {
     },
     set delayMs(value: number) {
       state.delayMs = value;
-    },
-    get queuedMessages() {
-      return state.queuedMessages;
-    },
-    set queuedMessages(value: string[]) {
-      state.queuedMessages = value;
     },
     close: () =>
       new Promise<void>((closed) => {
@@ -161,7 +153,7 @@ function hookEnv(baseUrl: string) {
 function stagedBody(stagedContext: unknown): string {
   return JSON.stringify({
     ok: true,
-    data: { sessionId: "cc-1", queuedMessages: [], stagedContext },
+    data: { sessionId: "cc-1", stagedContext },
   });
 }
 
@@ -215,9 +207,12 @@ describe("claude-code-session-hook: wire format", () => {
     });
   });
 
-  it("injects queued messages as UserPromptSubmit additionalContext", async () => {
+  it("posts the UserPromptSubmit checkpoint and emits no stdout, whatever the reply carries", async () => {
     stub = await startStub();
-    stub.queuedMessages = ["check T004", "then report back"];
+    // UserPromptSubmit is a pure checkpoint: the event must still reach the
+    // server (it drives lastCheckpointAt and transcript mirroring), but the
+    // reply is never read, so even a context-bearing body injects nothing.
+    stub.body = stagedBody("a block a checkpoint must never inject");
 
     const result = await runHook(
       JSON.stringify({
@@ -230,16 +225,15 @@ describe("claude-code-session-hook: wire format", () => {
     );
 
     expect(result.code).toBe(0);
-    const output = JSON.parse(result.stdout) as {
-      hookSpecificOutput: { hookEventName: string; additionalContext: string };
-    };
-    expect(output.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
-    expect(output.hookSpecificOutput.additionalContext).toContain("ARCS web UI");
-    expect(output.hookSpecificOutput.additionalContext).toContain("[1] check T004");
-    expect(output.hookSpecificOutput.additionalContext).toContain("[2] then report back");
+    expect(result.stdout).toBe("");
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0].body).toEqual({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "cc-1",
+    });
   });
 
-  it("prints nothing when the queue is empty", async () => {
+  it("emits no stdout for a plain UserPromptSubmit", async () => {
     stub = await startStub();
     const result = await runHook(
       JSON.stringify({ session_id: "cc-1", hook_event_name: "UserPromptSubmit", prompt: "hi" }),
@@ -250,24 +244,10 @@ describe("claude-code-session-hook: wire format", () => {
     expect(result.stdout).toBe("");
   });
 
-  it("never leaks the queue into SessionStart, whatever the reply carries", async () => {
-    stub = await startStub();
-    // The drain belongs to UserPromptSubmit alone: a SessionStart that answered
-    // with queued messages must still print nothing, because it never drained
-    // them and the message would then be delivered twice.
-    stub.queuedMessages = ["should not appear"];
-
-    const result = await runHook(sessionStartEvent(), hookEnv(stub.baseUrl));
-
-    expect(result.code).toBe(0);
-    expect(result.stdout).toBe("");
-  });
-
-  it("never emits context for SessionEnd or Stop", async () => {
-    for (const hookEventName of ["SessionEnd", "Stop"]) {
+  it("never emits context for UserPromptSubmit, SessionEnd or Stop", async () => {
+    for (const hookEventName of ["UserPromptSubmit", "SessionEnd", "Stop"]) {
       stub = await startStub();
       stub.body = stagedBody("staged block that must not be echoed");
-      stub.queuedMessages = ["should not appear"];
 
       const result = await runHook(
         JSON.stringify({ session_id: "cc-1", hook_event_name: hookEventName, reason: "other" }),
@@ -283,7 +263,6 @@ describe("claude-code-session-hook: wire format", () => {
 
   it("forwards a Stop event with its transcript_path and prints nothing", async () => {
     stub = await startStub();
-    stub.queuedMessages = ["should not appear"];
 
     const result = await runHook(
       JSON.stringify({

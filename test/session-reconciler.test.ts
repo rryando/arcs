@@ -260,7 +260,7 @@ describe("session-reconciler: reconcileSessionPhases", () => {
     await createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "cc-b" });
     await updateSession(dir, { id: "cc-b", lastCheckpointAt: nowIso() });
     await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses-old",
       status: "completed",
     });
@@ -283,7 +283,7 @@ describe("session-reconciler: reconcileSessionPhases", () => {
     const dir = makeProjectDir();
     // Terminal — answered by the stored status alone.
     await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses-done",
       status: "completed",
     });
@@ -333,7 +333,7 @@ describe("session-reconciler: reconcileSessionPhases", () => {
     await updateSession(dir, { id: "cc-closed", lastCheckpointAt: nowIso() });
     // Alongside records that answer without it.
     await createSession(dir, {
-      runtimeType: "opencode",
+      runtimeType: "claude-code",
       runtimeSessionId: "ses-done",
       status: "completed",
     });

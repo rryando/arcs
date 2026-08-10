@@ -571,12 +571,10 @@ describe("byte-identity across turns (prompt-cache economics)", () => {
           linkedNodeType: "task",
           linkedNodeId: "t-one",
           lastMessageAt: "2026-08-06T12:00:00.000Z",
-          messageQueue: ["a queued message that must not be staged"],
         }),
       );
 
       expect(text).not.toContain("2026-08-06T12:00:00.000Z");
-      expect(text).not.toContain("a queued message that must not be staged");
       expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
     });
   });

@@ -14,7 +14,6 @@ import { createPlan } from "../src/utils/plan-store.js";
 import {
   createSession,
   deriveSessionPhase,
-  enqueueSessionMessage,
   getSession,
   listSessions,
   updateSession,
@@ -33,7 +32,7 @@ interface Ctx {
 
 interface HookEnvelope {
   ok: boolean;
-  data?: { sessionId: string; queuedMessages: string[]; stagedContext?: string };
+  data?: { sessionId: string; stagedContext?: string };
   code?: string;
   message?: string;
 }
@@ -173,7 +172,6 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
       });
 
       expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
 
       const session = await getSession(projectDir, envelope.data?.sessionId ?? "");
       expect(session.runtimeType).toBe("claude-code");
@@ -193,44 +191,15 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
     });
   });
 
-  it("drains the queue on UserPromptSubmit and leaves it empty afterwards", async () => {
-    await withHookCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc-drain",
-      });
-      await enqueueSessionMessage(projectDir, session.normalizedId, "check T004");
-      await enqueueSessionMessage(projectDir, session.normalizedId, "then report back");
-
-      const { status, envelope } = await postEvent(base, {
-        hook_event_name: "UserPromptSubmit",
-        session_id: "cc-drain",
-        prompt: "what next?",
-      });
-
-      expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual(["check T004", "then report back"]);
-
-      const second = await postEvent(base, {
-        hook_event_name: "UserPromptSubmit",
-        session_id: "cc-drain",
-        prompt: "and now?",
-      });
-      expect(second.envelope.data?.queuedMessages).toEqual([]);
-      expect((await getSession(projectDir, session.normalizedId)).messageQueue).toBeUndefined();
-    });
-  });
-
   it("registers an unknown session on UserPromptSubmit instead of dropping the checkpoint", async () => {
     await withHookCtx(async ({ base, projectDir }) => {
-      const { status, envelope } = await postEvent(base, {
+      const { status } = await postEvent(base, {
         hook_event_name: "UserPromptSubmit",
         session_id: "cc-never-started",
         cwd: "/work/demo",
       });
 
       expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
 
       const session = await getSession(projectDir, "cc-never-started");
       expect(session.runtimeType).toBe("claude-code");
@@ -292,47 +261,19 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
     });
   });
 
-  it("auto-registers an unknown session on Stop and answers an empty queue", async () => {
+  it("auto-registers an unknown session on Stop", async () => {
     await withHookCtx(async ({ base, projectDir }) => {
-      const { status, envelope } = await postEvent(base, {
+      const { status } = await postEvent(base, {
         hook_event_name: "Stop",
         session_id: "cc-stop-unknown",
         cwd: "/work/demo",
       });
 
       expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
 
       const session = await getSession(projectDir, "cc-stop-unknown");
       expect(session.runtimeType).toBe("claude-code");
       expect(session.status).toBe("active");
-    });
-  });
-
-  it("answers an empty queue on Stop without draining queued messages", async () => {
-    await withHookCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc-stop-queued",
-      });
-      await enqueueSessionMessage(
-        projectDir,
-        session.normalizedId,
-        "keep me until the next prompt",
-      );
-
-      const { status, envelope } = await postEvent(base, {
-        hook_event_name: "Stop",
-        session_id: "cc-stop-queued",
-      });
-
-      expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
-
-      // Stop never drains: the message survives for the next UserPromptSubmit.
-      const stored = await getSession(projectDir, session.normalizedId);
-      expect(stored.status).toBe("active");
-      expect(stored.messageQueue).toEqual(["keep me until the next prompt"]);
     });
   });
 
@@ -371,14 +312,13 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
         "utf-8",
       );
 
-      const { status, envelope } = await postEvent(base, {
+      const { status } = await postEvent(base, {
         hook_event_name: "Stop",
         session_id: "cc-stop-mirror",
         transcript_path: transcriptPath,
       });
 
       expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
 
       const sidecarPath = join(projectDir, "sessions", "cc-stop-mirror.transcript.jsonl");
       expect(existsSync(sidecarPath)).toBe(true);
@@ -397,20 +337,19 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
 
   it("answers 200 on Stop without a transcript_path and creates no sidecar", async () => {
     await withHookCtx(async ({ base, projectDir }) => {
-      const { status, envelope } = await postEvent(base, {
+      const { status } = await postEvent(base, {
         hook_event_name: "Stop",
         session_id: "cc-stop-plain",
       });
 
       expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
       expect(existsSync(join(projectDir, "sessions", "cc-stop-plain.transcript.jsonl"))).toBe(
         false,
       );
     });
   });
 
-  it("mirrors the transcript on UserPromptSubmit before draining", async () => {
+  it("mirrors the transcript on UserPromptSubmit", async () => {
     await withHookCtx(async ({ base, projectDir }) => {
       const transcriptPath = resolve(projectDir, "cc-prompt-transcript.jsonl");
       writeFileSync(
@@ -522,14 +461,13 @@ describe("POST /api/hook/:slug/event — session lifecycle", () => {
         origin: "arcs",
       });
 
-      const { status, envelope } = await postEvent(base, {
+      const { status } = await postEvent(base, {
         hook_event_name: "UserPromptSubmit",
         session_id: "cc-owned",
         transcript_path: transcriptPath,
       });
 
       expect(status).toBe(200);
-      expect(envelope.data?.queuedMessages).toEqual([]);
 
       // The persisted origin suppresses transcript mirroring entirely…
       expect(existsSync(join(projectDir, "sessions", "cc-owned.transcript.jsonl"))).toBe(false);

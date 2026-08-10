@@ -1,26 +1,17 @@
 /**
  * Persistent split-panel conversation view — "chat but not really".
  *
- * One generic pane over the transcript GET + message POST. Per-runtime
- * differences live only in delivery copy (`messageDelivery()`: live=opencode /
- * queued=claude-code) and the claude-code-only transcript section. The
- * asymmetry is deliberate and never fudged: opencode prompts inject directly
- * (and opencode has no mirror), while claude-code messages queue for the
- * session's next checkpoint and its transcript is checkpoint-mirrored, never
- * live.
+ * One pane over the transcript GET + headless turn POST. The composer has ONE
+ * delivery channel: every send dispatches a headless `claude -p` turn via
+ * `POST /sessions/:id/turns`. INTENT is the only control — what the turn is
+ * allowed to do (`ask` inspects, `change` edits). Turns are asynchronous by
+ * contract — the panel says the reply appears when the job finishes, never
+ * "sent". The transcript is checkpoint-mirrored, never live.
  *
- * The composer can also dispatch a headless `claude -p` turn instead of a
- * native send. That is TWO orthogonal controls, not one list: DELIVERY says
- * which channel carries the message (native — the session's own runtime — or
- * headless), and INTENT says what a headless turn is allowed to do (`ask`
- * inspects, `change` edits). They cannot be folded together: native has no
- * intent because ARCS authors no argv for it, and a headless turn always has
- * one. Headless is asynchronous by contract — the panel says the reply appears
- * when the job finishes, never "sent".
- *
- * Where a headless turn LANDS is not a control at all: the server derives it
- * from the selected record (an ARCS thread continues; an observed session is
- * forked into a new thread), and the 202 names the write target it chose.
+ * Where a turn LANDS is not a control at all: the server derives it from the
+ * selected record (an ARCS thread continues; an observed terminal session is
+ * forked into a new ARCS thread — the reply lands in this panel, never in the
+ * user's terminal), and the 202 names the write target it chose.
  *
  * A dispatched job is WATCHED rather than merely awaited: the 202 names the
  * run, and the panel tails that run's event log over its own SSE channel
@@ -28,24 +19,19 @@
  * ticker. The live block and the run's folded sidecar turns are the same
  * content reaching the panel by two routes, so the turn list is composed once
  * (`composeTurnList`) and holds exactly one of them.
- *
- * opencode is temporarily hidden from the UI (`isVisibleSession`): its sessions
- * are absent from the picker, and a selection still pointing at one (deep link,
- * stale state) gets a "coming soon" placeholder instead of the composer. The
- * per-runtime branches below stay intact for when it comes back.
  */
 
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
 import type { RunIntent, SessionReference, SessionRunMeta, SessionTurn } from "../api/client";
-import { useSendSessionMessage, useSendSessionTurn, useSessionTranscript } from "../api/hooks";
+import { useSendSessionTurn, useSessionTranscript } from "../api/hooks";
 import { type RunStreamState, runStreamText, useRunStream } from "../api/sse";
 import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
-import { isVisibleSession, MAX_LENGTH, messageDelivery, WARN_LENGTH } from "./SessionMessageForm";
+import { MAX_LENGTH, WARN_LENGTH } from "./SessionMessageForm";
 import { useToaster } from "./Toaster";
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer";
 
@@ -118,21 +104,6 @@ export function useSessionPanel(): SessionPanelContextValue {
 // Panel
 // ---------------------------------------------------------------------------
 
-/** Composer delivery channel: hand the message to the session's own runtime
- *  (native — injected for opencode, queued for a claude-code terminal) or run a
- *  headless `claude -p` turn against a thread ARCS owns. Headless is async by
- *  contract, so its copy never claims instant delivery. */
-type DeliverVia = "native" | "headless";
-
-/** The option values the delivery <select> may emit — exactly the DeliverVia
- *  members. Typed so a future member/value drift fails to compile. */
-const DELIVER_VIA_VALUES: readonly DeliverVia[] = ["native", "headless"];
-
-/** Sound narrowing for <select> onChange: unknown values fall back to "native"
- *  instead of being cast through to the API. */
-const isDeliverVia = (value: string): value is DeliverVia =>
-  (DELIVER_VIA_VALUES as readonly string[]).includes(value);
-
 /** The option values the intent <select> may emit — exactly `RunIntent`, which
  *  mirrors the server's `RUN_INTENTS` enum. An unknown value falls back to the
  *  read-only `ask` rather than being cast through to the API: the server's zod
@@ -189,35 +160,26 @@ export function SessionPanel() {
   const { open, selectedSessionId, pendingRef, openSession, openWithRef, clearRef, close } =
     useSessionPanel();
   const { push } = useToaster();
-  const sendMessage = useSendSessionMessage(slug);
   const sendTurn = useSendSessionTurn(slug);
   const [message, setMessage] = useState("");
-  const [deliverVia, setDeliverVia] = useState<DeliverVia>("native");
-  // Independent of `deliverVia`: intent describes what a HEADLESS turn may do,
-  // and defaults to the read-only policy so widening is always a deliberate act.
+  // Intent describes what a turn may do, and defaults to the read-only policy
+  // so widening is always a deliberate act.
   const [intent, setIntent] = useState<RunIntent>("ask");
   const [watchedRun, setWatchedRun] = useState<WatchedRun | null>(null);
 
   // Shared picker list — unfiltered, linked sessions sorted first. The panel
   // itself does not filter to linked sessions (see the "sort by linkage, never
-  // filter by it" gotcha); it does drop runtimes the UI hides.
-  const allCandidates = useSessionCandidates(slug, "");
-  const candidates = useMemo(() => allCandidates.filter(isVisibleSession), [allCandidates]);
-  // Resolved against the UNFILTERED list so a deep link (or a stale selection)
-  // pointing at a hidden runtime is detectable instead of silently "no session".
-  const selected = useMemo(
-    () => allCandidates.find((s) => s.normalizedId === selectedSessionId) ?? null,
-    [allCandidates, selectedSessionId],
+  // filter by it" gotcha).
+  const candidates = useSessionCandidates(slug, "");
+  const selectedSession = useMemo(
+    () => candidates.find((s) => s.normalizedId === selectedSessionId) ?? null,
+    [candidates, selectedSessionId],
   );
-  const hiddenSelection = selected !== null && !isVisibleSession(selected);
-  // Everything downstream (delivery copy, composer, transcript) treats a hidden
-  // selection as no selection — the placeholder note takes the composer's slot.
-  const selectedSession = hiddenSelection ? null : selected;
 
   const transcript = useSessionTranscript(slug, selectedSessionId, {
-    // Mounted only while the panel is open AND a claude-code session is
-    // selected — opencode has no mirror, and a closed panel must not poll.
-    enabled: open && selectedSessionId !== null && selectedSession?.runtimeType === "claude-code",
+    // Mounted only while the panel is open AND a session is selected — a
+    // closed panel must not poll.
+    enabled: open && selectedSessionId !== null && selectedSession !== null,
   });
 
   // Tails the accepted run wherever it landed, INDEPENDENTLY of what is on
@@ -232,10 +194,10 @@ export function SessionPanel() {
     [transcript.data?.turns, liveRun],
   );
 
-  // ARCS-owned records are headless bookkeeping — no terminal session is
-  // attached, so a native send would land in a queue nothing ever drains.
+  // ARCS-owned records are headless bookkeeping ARCS minted itself: a turn
+  // CONTINUES them, while a turn against an observed terminal session FORKS it.
+  // The hint copy below states which of the two the send will do.
   const arcsOwned = selectedSession?.metadata?.control === "arcs-owned";
-  const queuedCount = selectedSession?.messageQueue?.length ?? 0;
   const run = selectedSession?.metadata?.run;
   // Absent outcome = a record from before the write-back existed, not a failure.
   const failedRun = run && run.outcome !== undefined && run.outcome !== "success" ? run : null;
@@ -245,72 +207,24 @@ export function SessionPanel() {
   const mirrorStale =
     mirrorAge !== null && Number.isFinite(mirrorAge) && mirrorAge > MIRROR_STALE_MS;
 
-  const delivery = selectedSession ? messageDelivery(selectedSession) : null;
   const text = message.trim();
   const tooLong = text.length > MAX_LENGTH;
-  // There is deliberately NO attachment gate on headless delivery any more.
-  // A turn against an observed session FORKS it — probed on claude 2.1.223, the
-  // fork writes a separate transcript and leaves the original untouched — so a
-  // live terminal session is safe to drive and the demote-only `isSessionAttached`
-  // check (which read `idle` as "probably nothing attached" and was wrong in both
+  // There is deliberately NO attachment gate on the turn. A turn against an
+  // observed session FORKS it — probed on claude 2.1.223, the fork writes a
+  // separate transcript and leaves the original untouched — so a live terminal
+  // session is safe to drive and the demote-only `isSessionAttached` check
+  // (which read `idle` as "probably nothing attached" and was wrong in both
   // directions often enough to matter) has nothing left to protect.
   const runPending = sendTurn.isPending;
-  const busy = sendMessage.isPending || runPending;
-  const disabled =
-    !selectedSession || !delivery || delivery.kind === "unsupported" || !text || tooLong || busy;
+  const disabled = !selectedSession || !text || tooLong || runPending;
 
-  // Native is a black hole on an ARCS-owned record — nothing drains its queue —
-  // so the composer falls back to the headless channel rather than queueing into
-  // nothing. It falls back to a CHANNEL: `intent` is its own control and keeps
-  // whatever it was, defaulting to the read-only `ask`.
-  useEffect(() => {
-    if (deliverVia === "native" && arcsOwned) setDeliverVia("headless");
-  }, [deliverVia, arcsOwned]);
-
-  const sendLabel = runPending
-    ? "job running…"
-    : sendMessage.isPending
-      ? "…"
-      : deliverVia === "native"
-        ? delivery?.kind === "queued"
-          ? "queue"
-          : "send"
-        : "run";
+  const sendLabel = runPending ? "job running…" : "run";
 
   const submit = () => {
-    if (disabled || !selectedSession || !delivery) return;
-    if (deliverVia === "native" && arcsOwned) return;
+    if (disabled || !selectedSession) return;
 
-    if (deliverVia === "native") {
-      sendMessage.mutate(
-        {
-          id: selectedSession.normalizedId,
-          message: text,
-          // Attach the pending reference only when present — otherwise the body
-          // stays byte-identical to `{ message }`.
-          reference: pendingRef ?? undefined,
-        },
-        {
-          onSuccess: () => {
-            // Distinct copy per delivery mode: "sent" would be a lie for a queued
-            // message that the session has not collected yet.
-            push(
-              "success",
-              delivery.kind === "queued"
-                ? "message queued — delivered at the session's next checkpoint"
-                : "message sent to session",
-            );
-            setMessage("");
-            if (pendingRef) clearRef(); // the reference was consumed by this send
-          },
-          onError: (err) => push("error", err instanceof Error ? err.message : String(err)),
-        },
-      );
-      return;
-    }
-
-    // Headless — accepted as HTTP 202; the turn runs out-of-band and the reply
-    // lands in the WRITE TARGET's transcript when it finishes.
+    // Accepted as HTTP 202; the turn runs out-of-band and the reply lands in
+    // the WRITE TARGET's transcript when it finishes.
     sendTurn.mutate(
       {
         id: selectedSession.normalizedId,
@@ -355,11 +269,7 @@ export function SessionPanel() {
         <h2 className="text-[12px] font-bold tracking-wide text-term-fg uppercase">
           session panel
         </h2>
-        {selectedSession && (
-          <Badge color={selectedSession.runtimeType === "opencode" ? "blue" : "purple"}>
-            {selectedSession.runtimeType}
-          </Badge>
-        )}
+        {selectedSession && <Badge color="purple">{selectedSession.runtimeType}</Badge>}
         <span className="flex-1" />
         <button
           type="button"
@@ -371,18 +281,9 @@ export function SessionPanel() {
         </button>
       </header>
 
-      {/* runtime copy — the delivery asymmetry, stated outright. A hidden
-          selection reads as "no session" here; the composer slot below carries
-          the one note that explains why. */}
+      {/* session identity bar — which record the composer is pointed at. */}
       {selectedSession ? (
         <div className="flex items-center gap-2 border-b border-term-border px-2 py-1 text-[11px]">
-          {selectedSession.runtimeType === "opencode" ? (
-            <span className="text-term-green">live runtime — prompts inject directly</span>
-          ) : (
-            <span className="text-term-amber">
-              queued — delivered at the session's next checkpoint
-            </span>
-          )}
           <span className="flex-1" />
           <span className="text-term-dim">{truncate(selectedSession.runtimeSessionId, 20)}</span>
         </div>
@@ -426,182 +327,114 @@ export function SessionPanel() {
           per-variant branch of its own. */}
       <WorkspaceFileViewer slug={slug} onAttach={openWithRef} />
 
-      {/* composer + pending reference — a hidden-runtime selection gets a
-          placeholder instead of the chat controls, so the panel never shows a
-          composer that cannot reach anything. */}
-      {hiddenSelection ? (
-        <div className="border-b border-term-border p-2 text-[11px] text-term-dim">
-          opencode sessions — coming soon
-        </div>
-      ) : (
-        <div className="border-b border-term-border p-2">
-          {pendingRef && (
-            <div className="mb-2 border border-term-cyan/40 bg-term-inset">
-              <div className="flex items-center gap-2 border-b border-term-border/60 px-2 py-0.5">
-                <span className="text-[10px] font-bold tracking-wide text-term-cyan uppercase">
-                  reference
-                </span>
-                <span className="flex-1" />
-                <button
-                  type="button"
-                  title="remove reference"
-                  onClick={clearRef}
-                  className="text-term-dim hover:text-term-red"
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="px-2 py-1 text-[11px] leading-snug text-term-dim">
-                <PendingReferencePreview reference={pendingRef} />
-              </div>
-            </div>
-          )}
-
-          {/* TWO orthogonal controls. Delivery picks the channel; intent picks
-              what a headless turn may touch and is shown only when it applies —
-              rendering it beside `native` would imply ARCS constrains a message
-              it hands to somebody else's runtime, which it does not. */}
-          {selectedSession && (
-            <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
-              <label
-                htmlFor="deliver-via"
-                className="text-[10px] tracking-wide text-term-dim uppercase"
-              >
-                deliver via
-              </label>
-              <select
-                id="deliver-via"
-                value={deliverVia}
-                onChange={(e) =>
-                  setDeliverVia(isDeliverVia(e.target.value) ? e.target.value : "native")
-                }
-                disabled={runPending}
-                title="which channel carries this message"
-                className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
-              >
-                <option
-                  value="native"
-                  disabled={arcsOwned}
-                  title={
-                    arcsOwned
-                      ? "ARCS-owned headless thread — no terminal session drains this queue; use headless"
-                      : "delivered by the session's own runtime"
-                  }
-                >
-                  native — {delivery?.kind === "live" ? "live inject" : "queued at checkpoint"}
-                </option>
-                <option value="headless" title="run a headless claude turn in the workspace">
-                  headless — ARCS runs a claude turn
-                </option>
-              </select>
-
-              {deliverVia === "headless" && (
-                <>
-                  <label
-                    htmlFor="run-intent"
-                    className="text-[10px] tracking-wide text-term-dim uppercase"
-                  >
-                    intent
-                  </label>
-                  <select
-                    id="run-intent"
-                    value={intent}
-                    onChange={(e) =>
-                      setIntent(isRunIntent(e.target.value) ? e.target.value : "ask")
-                    }
-                    disabled={runPending}
-                    title="what this turn is allowed to do in the workspace"
-                    className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
-                  >
-                    <option value="ask" title="read-only: Read, Grep, Glob in plan mode">
-                      ask — read only
-                    </option>
-                    <option value="change" title="adds the edit surface; still no shell by default">
-                      change — may edit files
-                    </option>
-                  </select>
-                </>
-              )}
-            </div>
-          )}
-
-          {selectedSession && delivery && (
-            <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
-              {deliverVia === "native" ? (
-                <>
-                  <span
-                    className={cx(
-                      "font-bold",
-                      delivery.kind === "live" ? "text-term-green" : "text-term-amber",
-                    )}
-                  >
-                    {delivery.kind}
-                  </span>
-                  <span>{delivery.hint}</span>
-                </>
-              ) : (
-                <span className="text-term-amber">
-                  {arcsOwned
-                    ? "continues this ARCS thread; the reply appears in the transcript when the turn finishes — not live"
-                    : "forks this session into a new ARCS thread — the original transcript is left untouched; the reply appears there when the turn finishes"}
-                </span>
-              )}
-            </div>
-          )}
-
-          {queuedCount > 0 && (
-            <div className="mb-1 text-[11px] text-term-amber">
-              {queuedCount} queued · waiting for the session's next checkpoint
-            </div>
-          )}
-
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            disabled={!selectedSession || runPending}
-            placeholder={
-              selectedSession ? "message for the agent…" : "pick a session first — no target yet"
-            }
-            rows={3}
-            className={cx(inputClass, "resize-y leading-snug disabled:opacity-50")}
-          />
-
-          {text.length > WARN_LENGTH && (
-            <div className="mt-1 text-[11px] text-term-amber">
-              {text.length} characters —{" "}
-              {tooLong
-                ? `over the ${MAX_LENGTH} character ceiling for one message; trim it before sending`
-                : "large messages may be slow to deliver or truncated by the target session"}
-            </div>
-          )}
-
-          <div className="mt-2 flex items-center gap-2 text-[12px]">
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={submit}
-              className="border border-term-green/60 px-2 py-0.5 font-bold text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
-            >
-              {sendLabel}
-            </button>
-            <span className="flex-1" />
-            {selectedSession && (
-              <span className="text-[10px] text-term-dim">
-                <span className="kbd">ctrl</span>+<span className="kbd">enter</span> send
+      {/* composer + pending reference */}
+      <div className="border-b border-term-border p-2">
+        {pendingRef && (
+          <div className="mb-2 border border-term-cyan/40 bg-term-inset">
+            <div className="flex items-center gap-2 border-b border-term-border/60 px-2 py-0.5">
+              <span className="text-[10px] font-bold tracking-wide text-term-cyan uppercase">
+                reference
               </span>
-            )}
+              <span className="flex-1" />
+              <button
+                type="button"
+                title="remove reference"
+                onClick={clearRef}
+                className="text-term-dim hover:text-term-red"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-2 py-1 text-[11px] leading-snug text-term-dim">
+              <PendingReferencePreview reference={pendingRef} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* transcript — claude-code only; opencode has no mirror */}
-      {selectedSession?.runtimeType === "claude-code" && (
+        {/* ONE control: intent — what the turn is allowed to touch. The
+              channel is not a choice; every send is a headless claude turn. */}
+        {selectedSession && (
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
+            <label
+              htmlFor="run-intent"
+              className="text-[10px] tracking-wide text-term-dim uppercase"
+            >
+              intent
+            </label>
+            <select
+              id="run-intent"
+              value={intent}
+              onChange={(e) => setIntent(isRunIntent(e.target.value) ? e.target.value : "ask")}
+              disabled={runPending}
+              title="what this turn is allowed to do in the workspace"
+              className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
+            >
+              <option value="ask" title="read-only: Read, Grep, Glob in plan mode">
+                ask — read only
+              </option>
+              <option value="change" title="adds the edit surface; still no shell by default">
+                change — may edit files
+              </option>
+            </select>
+          </div>
+        )}
+
+        {selectedSession && (
+          <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
+            <span className="text-term-amber">
+              {arcsOwned
+                ? "continues this ARCS thread — the reply appears in this panel when the turn finishes, not live"
+                : "sending forks this terminal session into a new ARCS thread — the reply appears in this panel when the turn finishes, never in your terminal"}
+            </span>
+          </div>
+        )}
+
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          disabled={!selectedSession || runPending}
+          placeholder={
+            selectedSession ? "message for the agent…" : "pick a session first — no target yet"
+          }
+          rows={3}
+          className={cx(inputClass, "resize-y leading-snug disabled:opacity-50")}
+        />
+
+        {text.length > WARN_LENGTH && (
+          <div className="mt-1 text-[11px] text-term-amber">
+            {text.length} characters —{" "}
+            {tooLong
+              ? `over the ${MAX_LENGTH} character ceiling for one message; trim it before sending`
+              : "large messages may be slow to deliver or truncated by the target session"}
+          </div>
+        )}
+
+        <div className="mt-2 flex items-center gap-2 text-[12px]">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={submit}
+            className="border border-term-green/60 px-2 py-0.5 font-bold text-term-green hover:bg-term-green hover:text-term-bg disabled:opacity-50"
+          >
+            {sendLabel}
+          </button>
+          <span className="flex-1" />
+          {selectedSession && (
+            <span className="text-[10px] text-term-dim">
+              <span className="kbd">ctrl</span>+<span className="kbd">enter</span> send
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* transcript — checkpoint-mirrored, never live */}
+      {selectedSession !== null && (
         <section
           className="flex min-h-0 flex-1 flex-col"
           aria-label="checkpoint-mirrored transcript"

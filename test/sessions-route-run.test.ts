@@ -2,9 +2,8 @@
  * POST /api/p/:slug/sessions/:id/turns — one turn of a headless conversation.
  *
  * The runner module is faked with a vitest module mock (the route has no
- * injection point of its own) the same way the opencode tests fake the runtime
- * with a stub server: the mock records the exact argv/cwd/writeTargetKey handed
- * to runClaudeJob, fires the registered onSettled write-back with a canned run
+ * injection point of its own): the mock records the exact argv/cwd/writeTargetKey
+ * handed to runClaudeJob, fires the registered onSettled write-back with a canned run
  * record (simulating the runner's post-close settle), and resolves that record,
  * so the contract under test is what ARCS puts on the wire (targeting, argv
  * ownership, write-target selection, sidecar ordering, seed-decision repair)
@@ -15,10 +14,18 @@
  * branch a real failure would, with no claude in sight.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readSessionTurns } from "../src/utils/claude-transcript.js";
+import { readSessionTurns, sessionTranscriptPath } from "../src/utils/claude-transcript.js";
 import {
   createSession,
   getSession,
@@ -662,20 +669,39 @@ describe("POST /api/p/:slug/sessions/:id/turns — observed adoption (fork)", ()
     });
   });
 
-  it("400s when the session to adopt is not a claude-code session", async () => {
+  it("404s a stale index record whose runtime the store no longer reads", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const session = await createSession(projectDir, {
-        runtimeType: "opencode",
-        runtimeSessionId: "ses_live",
-      });
+      // A stale on-disk record from a removed runtime, written directly because
+      // the store no longer mints these: readSessionIndex drops any record
+      // whose runtimeType is outside SESSION_RUNTIME_TYPES before a read sees
+      // it, so the turns path answers as if the record were never listed.
+      mkdirSync(resolve(projectDir, "sessions"), { recursive: true });
+      writeFileSync(
+        resolve(projectDir, "sessions", "index.json"),
+        JSON.stringify({
+          sessions: [
+            {
+              id: "ses-stale-runtime",
+              normalizedId: "ses-stale-runtime",
+              runtimeType: "bogus",
+              runtimeSessionId: "ses-stale-runtime",
+              status: "active",
+              startedAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              metadata: {},
+            },
+          ],
+        }),
+        "utf-8",
+      );
 
-      const { status, envelope } = await postTurn(base, session.normalizedId, {
+      const { status, envelope } = await postTurn(base, "ses-stale-runtime", {
         intent: "ask",
         message: "adopt me",
       });
 
-      expect(status).toBe(400);
-      expect(envelope.code).toBe("CLAUDE_RUN_TARGET_INVALID");
+      expect(status).toBe(404);
+      expect(envelope.code).toBe("ITEM_NOT_FOUND");
       expect(capturedJobs).toHaveLength(0);
     });
   });
@@ -838,6 +864,39 @@ describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt",
         });
         expect(turns[2]).toMatchObject({ id: -3, type: "assistant", text: "reply" });
       });
+    });
+  });
+
+  it("writes the doc reference's raw sidecar line untagged, fields in frozen order", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const seed = await seedObserved(projectDir, "cc_refs_raw");
+
+      await postTurn(base, seed.normalizedId, {
+        intent: "ask",
+        message: "point me at the doc",
+        threadRef: THREAD,
+        refs: [REFERENCE],
+      });
+      await vi.waitFor(async () => {
+        expect(await readSessionTurns(projectDir, THREAD)).toHaveLength(3);
+      });
+
+      // The RAW line, not its parse: a doc reference on disk must stay
+      // byte-identical to one written before the reference union existed — no
+      // `type: "doc"` tag, `text`/`ts`/`section`/`source` in exactly this
+      // order — or every sidecar written by an older ARCS stops matching the
+      // ones written today. Only `ts` is the writer's own wall clock; every
+      // other byte is pinned literally.
+      const lines = readFileSync(sessionTranscriptPath(projectDir, THREAD), "utf-8").split("\n");
+      const refLine = lines[1];
+      const ts = (JSON.parse(refLine) as { ts: string }).ts;
+      expect(refLine).toBe(
+        '{"id":-2,"type":"reference","text":"User turn first, then the reference.",' +
+          `"ts":"${ts}",` +
+          '"section":{"depth":1,"text":"The headless turn appends the user turn before ' +
+          'the reference.","id":"sec_1","startOffset":120,"endOffset":220},' +
+          '"source":{"kind":"knowledge","label":"session-bridge","doc":"docs/bridge.md","id":"k_1"}}',
+      );
     });
   });
 

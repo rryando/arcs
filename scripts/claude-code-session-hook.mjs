@@ -7,11 +7,10 @@
  * Claude Code writes to stdin. Install with `arcs hooks install-claude-code
  * <slug>`, which generates the token and prints the snippet to paste.
  *
- * Two of the four can put text in front of the model: SessionStart mirrors
+ * One of the four can put text in front of the model: SessionStart mirrors
  * ARCS's staged environment (project, workspace, DAG position) into the new
- * session, and UserPromptSubmit delivers messages queued from the web UI. Both
- * emit Claude Code's `hookSpecificOutput` envelope on stdout; the other two
- * print nothing.
+ * session, emitting Claude Code's `hookSpecificOutput` envelope on stdout; the
+ * other three print nothing.
  *
  * HARD RULE: this script never blocks the session. Any failure — ARCS not
  * running, token rejected, timeout, malformed JSON — is swallowed, nothing is
@@ -72,15 +71,6 @@ function readStdin() {
   });
 }
 
-/**
- * Labelled and separated so the agent can tell queued out-of-band instructions
- * from the prompt the user just typed.
- */
-function formatQueued(messages) {
-  const body = messages.map((m, i) => `[${i + 1}] ${String(m).trim()}`).join("\n\n");
-  return `Messages queued from the ARCS web UI, delivered at this checkpoint:\n\n${body}`;
-}
-
 async function main() {
   const raw = await readStdin();
   if (!raw.trim()) return;
@@ -113,41 +103,26 @@ async function main() {
   });
   if (!response.ok) return;
 
-  // Two events can inject context: SessionStart mirrors ARCS's staged
-  // environment into the fresh session, UserPromptSubmit delivers whatever the
-  // web UI queued. SessionEnd and Stop are pure notifications and answer with
-  // empty stdout.
-  if (eventName !== "SessionStart" && eventName !== "UserPromptSubmit") return;
+  // Only SessionStart can inject context: it mirrors ARCS's staged environment
+  // into the fresh session. UserPromptSubmit, SessionEnd and Stop are pure
+  // notifications and answer with empty stdout, so only SessionStart reads the
+  // response body at all.
+  if (eventName !== "SessionStart") return;
 
   const envelope = await response.json();
 
-  if (eventName === "SessionStart") {
-    const staged = envelope?.data?.stagedContext;
-    // Every rejection here is a silent no-op, never a repair: an absent field,
-    // a non-string, an empty string and an oversized body all mean "ARCS has
-    // nothing usable to stage", and the session proceeds exactly as if the
-    // bridge were not installed.
-    if (typeof staged !== "string" || staged === "" || staged.length > MAX_CONTEXT_CHARS) return;
-
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "SessionStart",
-          additionalContext: staged,
-        },
-      }),
-    );
-    return;
-  }
-
-  const messages = envelope?.data?.queuedMessages;
-  if (!Array.isArray(messages) || messages.length === 0) return;
+  const staged = envelope?.data?.stagedContext;
+  // Every rejection here is a silent no-op, never a repair: an absent field,
+  // a non-string, an empty string and an oversized body all mean "ARCS has
+  // nothing usable to stage", and the session proceeds exactly as if the
+  // bridge were not installed.
+  if (typeof staged !== "string" || staged === "" || staged.length > MAX_CONTEXT_CHARS) return;
 
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext: formatQueued(messages),
+        hookEventName: "SessionStart",
+        additionalContext: staged,
       },
     }),
   );

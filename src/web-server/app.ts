@@ -7,7 +7,6 @@ import { resolve } from "node:path";
 import { Hono } from "hono";
 import { getDataDir, PACKAGE_ROOT } from "../utils/paths.js";
 import { requireHookToken } from "./hook-auth.js";
-import { startOpencodeDiscovery } from "./opencode-client.js";
 import { ok } from "./respond.js";
 import { collectionsRoute } from "./routes/collections.js";
 import { discoveryRoute } from "./routes/discovery.js";
@@ -27,8 +26,8 @@ export interface CreateAppOptions {
   /** Override the static client root (default: <package>/dist/web-client). */
   staticRoot?: string;
   /**
-   * Disable the startup side effects — the data-dir watcher, opencode discovery
-   * and the orphaned-run sweep (tests). Default: true.
+   * Disable the startup side effects — the data-dir watcher and the
+   * orphaned-run sweep (tests). Default: true.
    */
   watch?: boolean;
 }
@@ -83,8 +82,6 @@ export function createApp(options: CreateAppOptions = {}): Hono {
 
   if (options.watch !== false) {
     startWatcher(getDataDir());
-    // No-op unless an opencode endpoint is configured in the environment.
-    startOpencodeDiscovery();
     // A run claim persisted by an earlier server process cannot be live in this
     // one unless its child outlived the restart, so any claim whose process is
     // gone settles here as `interrupted` — otherwise the session renders

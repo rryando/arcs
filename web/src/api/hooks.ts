@@ -7,7 +7,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type SessionLinkedNodeType,
-  type SessionReference,
   type SessionTurnInput,
   type SessionUpdateInput,
 } from "./client";
@@ -236,41 +235,11 @@ export function useDeleteTask(slug: string) {
   });
 }
 
-export function useCreateOpencodeSession(slug: string) {
-  const invalidate = useInvalidator();
-  return useMutation({
-    mutationFn: (input: { title?: string }) => api.createOpencodeSession(slug, input),
-    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
-  });
-}
-
 export function useUpdateSession(slug: string) {
   const invalidate = useInvalidator();
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: SessionUpdateInput }) =>
       api.updateSession(slug, id, input),
-    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
-  });
-}
-
-export function useSendSessionMessage(slug: string) {
-  const invalidate = useInvalidator();
-  return useMutation({
-    mutationFn: ({
-      id,
-      message,
-      reference,
-    }: {
-      id: string;
-      message: string;
-      /** The whole union, matching `api.sendSessionMessage` and the server's
-       *  `sessionReferenceSchema`. Narrowing this to the doc variant would make
-       *  the transport hook unable to send a file or node reference that both
-       *  the API function and the route already accept. */
-      reference?: SessionReference;
-    }) => api.sendSessionMessage(slug, id, message, reference),
-    // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a
-    // send that appended a reference turn refreshes open transcripts too.
     onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
   });
 }
