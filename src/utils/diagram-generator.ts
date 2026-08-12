@@ -21,6 +21,13 @@ export interface GenerateDiagramResult {
  */
 export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): GenerateDiagramResult {
   const sorted = [...tasks].sort((a, b) => a.id.localeCompare(b.id));
+  const diagramStatuses = sorted.map((task) =>
+    task.status === "in_progress"
+      ? "inProgress"
+      : task.status === "cancelled"
+        ? "blocked"
+        : task.status,
+  );
 
   const nodes: DiagramNode[] = sorted.map((t, i) => ({
     nodeId: `T${String(i + 1).padStart(3, "0")}`,
@@ -47,19 +54,19 @@ export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): Gen
     const t = sorted[i];
     const node = nodes[i];
     const deps = t.dependsOn ?? [];
-    if (deps.length === 0) {
+    if (t.status === "backlog" && deps.length === 0) {
       readyNodeIds.push(node.nodeId);
     } else {
       const allDone = deps.every((depId) => taskIdToStatus.get(depId) === "done");
-      if (allDone) {
+      if (t.status === "backlog" && allDone) {
         readyNodeIds.push(node.nodeId);
-      } else {
+      } else if (!allDone) {
         blockedNodeIds.push(node.nodeId);
       }
     }
   }
 
-  const statusLine = nodes.map((n, i) => `${n.nodeId}=${sorted[i].status}`).join(", ");
+  const statusLine = nodes.map((n, i) => `${n.nodeId}=${diagramStatuses[i]}`).join(", ");
 
   const lines: string[] = [
     `%% plan: ${planId}`,
@@ -82,7 +89,7 @@ export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): Gen
     lines.push(
       `%% node: ${node.nodeId}`,
       `%% title: ${t.title}`,
-      `%% status: ${t.status}`,
+      `%% status: ${diagramStatuses[i]}`,
       `%% skill: ${t.skill ?? "implementation"}`,
       `%% work-mode: ${t.workMode ?? "bounded"}`,
       `%% scope: ${t.scope ?? "(TBD)"}`,
@@ -112,8 +119,7 @@ export function generateDiagramFromTasks(planId: string, tasks: TaskMeta[]): Gen
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     const t = sorted[i];
-    const cls =
-      t.status === "in_progress" ? "inProgress" : t.status === "cancelled" ? "backlog" : t.status;
+    const cls = diagramStatuses[i];
     lines.push(`    ${node.nodeId}["${t.title.replace(/"/g, "'")}"]:::${cls}`);
   }
   lines.push("");

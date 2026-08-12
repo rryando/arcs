@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { generateDiagramFromTasks } from "../src/utils/diagram-generator.js";
 
 const scriptPath = resolve(
   import.meta.dirname,
@@ -124,6 +125,31 @@ describe("manage-diagram.mjs", () => {
   });
 
   describe("validate", () => {
+    it("validates a generated cancelled task without making it ready", () => {
+      const generated = generateDiagramFromTasks("cancelled-plan", [
+        {
+          id: "cancelled-task",
+          normalizedId: "cancelled-task",
+          title: "Cancelled task",
+          status: "cancelled",
+          priority: "medium",
+          scope: "src/",
+          acceptance: "Remains cancelled",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+      ]);
+      writeFileSync(diagramPath, generated.mmd);
+
+      const validation = run("validate", diagramPath);
+      expect(validation.status).toBe(0);
+      expect(JSON.parse(validation.stdout)).toEqual({ ok: true, errors: [] });
+
+      const readiness = run("ready", diagramPath);
+      expect(readiness.status).toBe(0);
+      expect(JSON.parse(readiness.stdout)).toEqual([]);
+    });
+
     it("keeps helper-managed skill guidance on the supported flowchart dialect", () => {
       const guidance = readFileSync(skillPath, "utf-8");
 

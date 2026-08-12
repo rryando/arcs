@@ -69,8 +69,8 @@ describe("generateDiagramFromTasks — dependency edges", () => {
     ];
     const { mmd } = generateDiagramFromTasks("plan-done", tasks);
 
-    // T001 is done, T002 depends on it — T002 should be ready
-    expect(mmd).toMatch(/%% ready: T001, T002/);
+    // T001 is done, T002 depends on it — only backlog T002 should be ready
+    expect(mmd).toMatch(/%% ready: T002 \(no deps or all deps done\)/);
     expect(mmd).not.toContain("%% blocked:");
     // Arrow still emitted
     expect(mmd).toContain("    T001 --> T002");
