@@ -186,8 +186,8 @@ describe("writeOpencodeAgent — agent key order", () => {
 describe("Caveman narration overlay behavior", () => {
   it("limits Caveman behavior to chat-facing narration", () => {
     expect(CAVEMAN_PREAMBLE).toContain("narration-only overlay");
-    expect(CAVEMAN_PREAMBLE).toContain("For chat-facing progress and summaries");
-    expect(CAVEMAN_PREAMBLE).toContain("canonical orchestrator below is the sole authority");
+    expect(CAVEMAN_PREAMBLE).toMatch(/no workflow or mutation authority/i);
+    expect(CAVEMAN_PREAMBLE).toMatch(/chat terse/i);
   });
 
   it("composes the canonical control flow without replacing or rewriting it", () => {
@@ -195,25 +195,31 @@ describe("Caveman narration overlay behavior", () => {
     expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.endsWith(ORCHESTRATE_PROMPT_TEXT)).toBe(true);
   });
 
-  it("preserves safety, authorization, and canonical return requirements exactly", () => {
+  it("preserves current safety requirements exactly", () => {
     const protectedRequirements = [
-      "Security or authorization denial stops immediately.",
-      "The orchestrator has ARCS CLI mutation authority only after the relevant phase PASS and any required exact current-turn authorization.",
-      "Every worker starts with this text shape; read-only workers use `VERIFY: none`:",
+      "untrusted reference data",
+      "Confirm destructive, irreversible, or remote effects",
+      "git commit",
+      "Never claim verification you did not run",
     ];
 
     for (const requirement of protectedRequirements) {
       expect(ORCHESTRATE_PROMPT_TEXT).toContain(requirement);
       expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.slice(CAVEMAN_PREAMBLE.length)).toContain(requirement);
     }
-    expect(CAVEMAN_PREAMBLE).toContain(
-      "security warnings, irreversible-action confirmations, exact-artifact authorization requests",
+    expect(CAVEMAN_PREAMBLE).toMatch(/never compress safety warnings.*confirmations/is);
+  });
+
+  it("preserves guarded mode and explicit Git safeguards", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/guarded-mode tokens.*authoritative/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /git add.*git commit.*git push.*explicit user request/is,
     );
-    expect(CAVEMAN_PREAMBLE).toContain("canonical return envelope remain exact and unchanged");
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/destructive.*remote effects/is);
   });
 
   it("does not define independent routing or dispatch authority", () => {
-    expect(CAVEMAN_PREAMBLE).toContain("adds no workflow, tool, mutation, approval, routing");
+    expect(CAVEMAN_PREAMBLE).toMatch(/no workflow or mutation authority/i);
     expect(CAVEMAN_PREAMBLE).not.toMatch(
       /software-engineer|tech-architect|graph-explorer|code-reviewer|devil-advocate|arcs-docs/,
     );

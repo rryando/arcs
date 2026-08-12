@@ -7,189 +7,99 @@ import {
   ORCHESTRATE_CAVEMAN_PROMPT_TEXT,
 } from "../src/cli/arcs-orchestrate-caveman.js";
 
-function section(start: string, end: string): string {
-  return ORCHESTRATE_PROMPT_TEXT.slice(
-    ORCHESTRATE_PROMPT_TEXT.indexOf(start),
-    ORCHESTRATE_PROMPT_TEXT.indexOf(end),
-  );
-}
-
-describe("orchestrate prompt policy — canonical control flow", () => {
-  it("defines one ordered lifecycle and four terminal states", () => {
-    const lifecycle =
-      "ORIENT → CLASSIFY → RESOLVE → PLAN_DISPATCH → ROUND → FAN_IN → PHASE_GATE → REPAIR_OR_STOP → PERSIST/TRANSITION → COMPLETION";
-    expect(ORCHESTRATE_PROMPT_TEXT).toContain(lifecycle);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /PASS[\s\S]*BLOCKED[\s\S]*INCOMPLETE[\s\S]*USER_OVERRIDE/,
-    );
+describe("orchestrate prompt policy — delegation-preferred lifecycle", () => {
+  it("lets the primary agent work directly", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/UNDERSTAND\s*→\s*WORK\s*→\s*VERIFY\s*→\s*REPORT/);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/inspect.*edit.*run.*verify/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/you do not implement/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/never read source.*edit files/is);
   });
 
-  it("keeps the orchestrator router-only and preserves the trust boundary", () => {
+  it("prefers delegation for separable work while retaining direct tools", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/strongly prefer delegation/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /never read source.*edit files.*run tests.*lint.*build/is,
+      /separable implementation.*investigation.*research.*review/is,
     );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/tiny.*tightly coupled.*orchestration-state/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/one owner per delegated outcome/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/no nested delegation/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/no delegate.*reviewer.*repair.*chains/is);
+  });
+
+  it("uses the exact lean dispatch and return contracts", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /GOAL:\s*<[^>]+>\s*SCOPE:\s*<[^>]+>\s*CONTEXT:\s*<[^>]+>\s*VERIFY:\s*<[^>]+>\s*STOP:\s*<[^>]+>/s,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /STATUS:\s*<[^>]+>\s*RESULT:\s*<[^>]+>\s*FILES:\s*<[^>]+>\s*VERIFY:\s*<[^>]+>\s*BLOCKER:\s*<[^>]+>/s,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/KNOWLEDGE.*only.*durable discover/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/do not echo context or narrate process/i);
+  });
+
+  it("preserves the untrusted-reference boundary", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/untrusted reference data/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /embedded instructions.*cannot override.*SCOPE.*GOAL.*CONSTRAINTS.*SKILL.*VERIFY/is,
-    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/embedded instructions.*cannot override/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/system.*user.*authority/is);
   });
 
-  it("requires every canonical dispatch field in order", () => {
-    const dispatch = section("## Dispatch Contract", "## Agent and Skill Matrix");
-    const fields = [
-      "SCOPE:",
-      "GOAL:",
-      "CONTEXT:",
-      "KNOWLEDGE:",
-      "IDS:",
-      "AGENT_MODE:",
-      "WORK_MODE:",
-      "ROUND:",
-      "ATTEMPT:",
-      "STOP_CONDITION:",
-      "CONSTRAINTS:",
-      "SKILL:",
-      "VERIFY:",
-      "RETURN:",
-    ];
-    let previous = -1;
-    for (const field of fields) {
-      const index = dispatch.indexOf(field);
-      expect(index, field).toBeGreaterThan(previous);
-      previous = index;
-    }
+  it("uses plans and knowledge only when useful", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/plan.*broad|multi-step|architectural/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/knowledge.*when.*prior decision/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/explicit.*create.*plan.*authoriz/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/goal.*scope.*destructive.*external/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/exact artifact authorization/i);
   });
 
-  it("routes exactly six typed agents and thirteen on-disk skills", () => {
-    const matrix = section("## Agent and Skill Matrix", "## Lifecycle");
-    const agents = [
+  it("lists exactly five specialists and twelve skills", () => {
+    for (const agent of [
       "software-engineer",
       "tech-architect",
       "graph-explorer",
       "code-reviewer",
-      "devil-advocate",
       "arcs-docs",
-    ];
-    for (const agent of agents) expect(matrix).toContain(`\`${agent}\``);
-    expect(matrix).toMatch(/software-engineer.*default.*incident/is);
-    expect(matrix).toMatch(/tech-architect.*architecture.*research/is);
-    expect(matrix).toMatch(/code-reviewer.*review.*audit/is);
-    expect(matrix).toMatch(/implementation.*bounded.*inspect/is);
-    expect(matrix).toMatch(/incident.*systematic-debugging/is);
+    ]) {
+      expect(ORCHESTRATE_PROMPT_TEXT).toContain(`\`${agent}\``);
+    }
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("`devil-advocate`");
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/code-reviewer.*review.*audit.*risk/is);
 
     const skillsDir = resolve(import.meta.dirname, "../opencode/arcs/skills");
     const skills = readdirSync(skillsDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
+      .filter((name) => name !== "executing-plans")
       .sort();
-    expect(skills).toHaveLength(13);
-    for (const skill of skills) expect(matrix, skill).toContain(`\`${skill}\``);
-    expect(matrix).not.toMatch(
-      /`(?:oncall-ops|docs-researcher|quick-dev|code-agent|requesting-code-review|the-ladder)`/,
-    );
+    expect(skills).toHaveLength(12);
+    for (const skill of skills) expect(ORCHESTRATE_PROMPT_TEXT, skill).toContain(`\`${skill}\``);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("`executing-plans`");
   });
 
-  it("keeps test-first and plan execution as distinct disciplines", () => {
-    const matrix = section("## Agent and Skill Matrix", "## Lifecycle");
-    expect(matrix).toMatch(/test-driven-development.*new behavior.*bug fix/is);
-    expect(matrix).toMatch(/executing-plans.*approved plan node/is);
+  it("makes review and full-project verification risk-based", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/agent that changes.*runs.*relevant verification/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/full-project.*broad|high-risk/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/only completion verifier/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/completion gate.*never skipped/i);
+  });
+
+  it("repairs verification failures directly without a gate loop", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/verification fails.*fix.*rerun/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/PHASE_GATE|completion-repair|gate rerun/);
+  });
+
+  it("keeps destructive, remote, and git effects explicit", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /confirm.*destructive.*irreversible.*remote|destructive.*irreversible.*remote.*confirm/is,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/git (?:add|commit|push).*explicit user request/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never claim.*verification.*did not run/is);
   });
 });
 
-describe("orchestrate prompt policy — lifecycle invariants", () => {
-  it("uses a finite approval pipeline before exact artifact persistence", () => {
-    const lifecycle = section("## Lifecycle", "## Rounds, Fan-In, and Gates");
-    expect(lifecycle).toMatch(
-      /approv(?:es?|ed) (?:the )?design.*exact artifact.*devil-advocate.*PASS.*current-turn.*authorization.*persist/is,
-    );
-    expect(lifecycle).toMatch(/material change.*invalidates.*authorization/is);
-    expect(lifecycle).toMatch(/no durable write.*authorization.*gate/is);
-  });
-
-  it("caps every round including INIT at four disjoint agents", () => {
-    const rounds = section("## Rounds, Fan-In, and Gates", "## Retry Budget");
-    expect(rounds).toMatch(/maximum 4.*disjoint.*including INIT/is);
-    expect(rounds).toMatch(/overlap.*serialize/is);
-  });
-
-  it("persists worker knowledge only after the owning phase passes", () => {
-    const rounds = section("## Rounds, Fan-In, and Gates", "## Retry Budget");
-    expect(rounds).toMatch(/knowledge.*proposal.*owning phase.*PASS.*persist/is);
-    expect(rounds).not.toMatch(/fan-in[^.]*arcs knowledge upsert/i);
-  });
-
-  it("defines bounded changed-evidence, phase repair, and completion repair retries", () => {
-    const retries = section("## Retry Budget", "## Workflow Rules");
-    expect(retries).toMatch(/one retry.*changed evidence/is);
-    expect(retries).toMatch(/phase gate.*one.*repair.*rerun/is);
-    expect(retries).toMatch(/completion.*one.*repair/is);
-  });
-
-  it("runs SYNC audit, gate, apply, and validate in that order", () => {
-    const sync = section("### SYNC", "### MULTI").toLowerCase();
-    const terms = [
-      "agent_mode: audit",
-      "phase: sync",
-      "pass",
-      "agent_mode: apply",
-      "arcs validate",
-    ];
-    let previous = -1;
-    for (const term of terms) {
-      const index = sync.indexOf(term, previous + 1);
-      expect(index, term).toBeGreaterThan(previous);
-      previous = index;
-    }
-    expect(sync).toMatch(/arcs-docs.*only direct worker mutation exception/is);
-  });
-
-  it("joins MULTI constituents without hiding non-PASS work", () => {
-    const multi = section("### MULTI", "## Verification and Completion");
-    expect(multi).toMatch(/continue independent/is);
-    expect(multi).toMatch(/no success.*every constituent.*PASS/is);
-  });
-
-  it("uses scoped worker checks and devil-only completion verification", () => {
-    const verification = section("## Verification and Completion", "## Direct Mutations");
-    expect(verification).toMatch(/workers.*exact scoped VERIFY/is);
-    expect(verification).toMatch(/devil-advocate.*only completion verifier/is);
-    expect(verification).toContain("`npm test`");
-    expect(verification).toContain("`npm run typecheck`");
-    expect(verification).toContain("`npm run lint`");
-  });
-
-  it("keeps direct mutations and git behind the required PASS or current-turn request", () => {
-    const mutations = section("## Direct Mutations", "## Canonical Return Envelope");
-    expect(mutations).toMatch(/orchestrator.*ARCS CLI mutation.*relevant.*PASS/is);
-    expect(mutations).toMatch(
-      /git add.*git commit.*git push.*explicit current-turn user request/is,
-    );
-    expect(mutations).toMatch(
-      /arcs lint-bundle.*PASS.*arcs deploy-superpowers.*arcs lint-bundle/is,
-    );
-  });
-
-  it("defines one canonical worker return envelope", () => {
-    const returns = section("## Canonical Return Envelope", "## Reporting");
-    for (const field of [
-      "STATUS:",
-      "FILES_TOUCHED:",
-      "VERIFY:",
-      "BLOCKED_BY:",
-      "SCOPE_CHANGE:",
-      "SHORTCUTS:",
-      "KNOWLEDGE:",
-    ]) {
-      expect(returns).toContain(field);
-    }
-  });
-});
-
-describe("orchestrate prompt policy — caveman parity", () => {
-  it("is a narration-only overlay with no independent authority", () => {
+describe("orchestrate prompt policy — caveman overlay", () => {
+  it("changes narration only", () => {
     expect(CAVEMAN_PREAMBLE).toMatch(/narration-only/i);
-    expect(CAVEMAN_PREAMBLE).toMatch(/adds no.*authority/i);
-    expect(CAVEMAN_PREAMBLE).toMatch(/dispatch fields.*return envelope.*unchanged/is);
+    expect(CAVEMAN_PREAMBLE).toMatch(/no workflow.*authority/is);
     expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toBe(CAVEMAN_PREAMBLE + ORCHESTRATE_PROMPT_TEXT);
   });
 });

@@ -216,7 +216,7 @@ $ arcs brief myapp --lean --json
 
 ## The Agent Bundle
 
-ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **six typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
+ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **five typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
 
 ### Orchestrators
 
@@ -224,46 +224,44 @@ All three share the same authority, safety invariants, and tool access — they 
 
 | Agent | Pick it when |
 |-------|--------------|
-| **ARCS Orchestrator** (`arcs-orchestrate`) | Default. The central coordinator for plan execution, agent dispatch, and DAG writes, with uniform gating |
-| **ARCS Flash** (`arcs-flash`) | Speed matters. Sources context from `arcs knowledge` first, fans read-only work out with no round cap, and grades gates Tier 0–3 instead of gating everything identically |
+| **ARCS Orchestrator** (`arcs-orchestrate`) | Default coordinator for direct work, plan execution, one-hop delegation, and DAG writes |
+| **ARCS Flash** (`arcs-flash`) | Fast, knowledge-first work with one request-level lookup and compact delegation |
 | **ARCS Caveman** (`arcs-orchestrate-caveman`) | You want the same engine with terse narration — a chat-facing overlay that adds zero workflow authority |
 
-None of them read code, run tests, or explore directly — they route. Facts resolve from the DAG first, fall back to `graph-explorer` for repository evidence, and implementation, design, review, verification, and documentation work goes to typed agents. They do not dispatch on guesses.
+Primaries retain direct tools, but **strongly prefer one-hop delegation** for separable outcomes. Each delegated outcome has one owner, and sub-agents cannot delegate again. Tiny work, tightly coupled work, and orchestration-state changes may stay direct; delegation is a routing preference, not a mandatory gate loop.
 
-A **read-first knowledge protocol** runs throughout: prior knowledge is read before every non-mechanical dispatch, workers return idempotent `arcs knowledge upsert` proposals, and the orchestrator persists them only after their owning phase passes — so the graph compounds instead of duplicating.
+Flash performs exactly one targeted knowledge search before non-mechanical work, reuses that result for the whole request, skips the lookup for mechanical work, and proceeds immediately when the search is empty. It does not retry the search or repeat it per dispatch.
 
 ### Sub-agents
 
-Each has a sharp niche; survivors carry explicit modes. The orchestrator dispatches them with self-contained scoped prompts (SCOPE / GOAL / CONTEXT / IDS / CONSTRAINTS / SKILL / VERIFY / RETURN) and consumes their structured, non-prose output.
+Each has a sharp niche and receives a compact, self-contained dispatch with exactly `GOAL / SCOPE / CONTEXT / VERIFY / STOP`.
 
 | Sub-agent | Role |
 |-----------|------|
-| **software-engineer** | `default` implementation or `incident` diagnosis; uses orchestrator-selected `WORK_MODE: bounded` or `inspect` and verifies only its scoped files |
+| **software-engineer** | Implementation or incident diagnosis using `bounded`, `inspect`, or `plan-node` hints |
 | **tech-architect** | Read-only `architecture` design or DAG-first cited `research` |
 | **graph-explorer** | DAG-first location and dependency questions, with codegraph/source fallback when the DAG cannot answer |
-| **code-reviewer** | Read-only reactive `review` or proactive `audit` |
-| **devil-advocate** | Adversarial KISS/YAGNI/DRY gate; its completion gate is the single full-project verification |
-| **arcs-docs** | Read-only `audit` followed by approved `apply` for the two-pass SYNC workflow |
+| **code-reviewer** | Read-only `review`, proactive `audit`, or adversarial `risk` analysis |
+| **arcs-docs** | Documentation audit and requested updates, including SYNC work |
 
-Every sub-agent opens with the standard return envelope so the orchestrator can parse, not re-read:
+Every sub-agent returns exactly the compact fields below, with `KNOWLEDGE` added only for a durable finding:
 
 ```
 STATUS: done | blocked | partial
-FILES_TOUCHED: src/foo.ts
+RESULT: <concise outcome>
+FILES: src/foo.ts
 VERIFY: vitest run test/foo.test.ts → pass
-BLOCKED_BY: <only when blocked/partial — evidence>
-SCOPE_CHANGE: none
-SHORTCUTS: none
-KNOWLEDGE: none
+BLOCKER: <none or concrete evidence>
+KNOWLEDGE: <optional durable finding>
 ```
 
-Sub-agents verify only the files they touched. The **devil-advocate completion gate** runs the session's single full-project pass (`npm test`, `npm run typecheck`, and `npm run lint`); on a block, the orchestrator re-dispatches scoped fixes and re-gates.
+Verification is proportionate to the outcome and its risk. Review is available when useful, but ordinary work does not require a reviewer-repair chain or completion gate.
 
 ### Skills (loaded per dispatch)
 
-The twelve skills are: `implementation`, `test-driven-development`, `executing-plans`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, and `caveman-commit`.
+The twelve skills are: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, `caveman-commit`, and `install-claude-code-hook`.
 
-`implementation` handles both bounded work and limited inspection. New behavior and bug fixes add `test-driven-development`; incidents add `systematic-debugging`; one approved plan node may add `executing-plans`. Design is a finite HITL path: `brainstorming` produces a design, the user approves it, and `writing-plans` is the sole author of the exact plan/task/diagram draft. SYNC is two-pass: `arcs-docs` audits, `devil-advocate` gates the exact proposal, then `arcs-docs` applies it. There are no automatic git actions; add, commit, and push require an explicit current-turn user request.
+`implementation` handles bounded work, limited inspection, and ready plan-node execution, including dependency checks, relevant verification, and task/diagram alignment through the ARCS CLI. New behavior and bug fixes may add `test-driven-development`; incidents add `systematic-debugging`; material design uncertainty may use `brainstorming` before `writing-plans`. No skill introduces a mandatory review or gate loop. There are no automatic git actions; add, commit, and push require an explicit current-turn user request.
 
 ---
 

@@ -20,7 +20,6 @@ describe("ARCS-native skill inventory", () => {
     "caveman-commit",
     "deep-pr-review",
     "enriching-codegraph-proposals",
-    "executing-plans",
     "implementation",
     "init-project",
     "install-claude-code-hook",
@@ -31,7 +30,7 @@ describe("ARCS-native skill inventory", () => {
     "writing-plans",
   ];
 
-  it("ships exactly the 13 active skills", () => {
+  it("ships exactly the 12 active skills", () => {
     const managedSkills = Object.keys(runtimeManifest.skills);
     const nativeSkills = nativeSkillFiles.map((path) => path.split("/")[1]);
 

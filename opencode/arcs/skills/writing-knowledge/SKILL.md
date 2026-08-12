@@ -1,75 +1,23 @@
 ---
 name: writing-knowledge
-description: Use when capturing a knowledge entry, before writing its body — to author a substantive per-kind body, not a summary-only stub
+description: Capture durable, actionable project knowledge without summary-only stubs
 ---
 
-# Skill: writing-knowledge
+# Writing Knowledge
 
 ## When
 
-You are about to author a durable insight proposal for the DAG and need the entry to be *actionable*, not a stub.
+Capture a non-obvious fact that will save future work. Skip mechanical or instantly re-derived information.
 
-> CLI Primer: `arcs --commands --json` for discovery. This skill authors proposal text; it does not execute `arcs knowledge upsert`.
+## Method
 
-## The Floor: Every Entry Needs a Body
+1. Choose the right kind: gotcha, lesson, pattern, architecture, decision, module, feature, or reference.
+2. Run `arcs knowledge template --kind=<kind>` when the kind's structure is useful.
+3. Write a specific title, useful summary, substantive body, keywords, and source files.
+4. Search for an existing entry when duplication is plausible; prefer idempotent `upsert`.
 
-A knowledge entry is two things: a `--summary` (the headline) and a `--body` (the substance). The single most common KB failure is the **summary-only stub** — an entry whose summary just restates its title and whose body is empty. It is structurally "healthy" and worthless to the next dispatch.
+Summary is the headline; body is the reasoning and operational detail; source files anchor the entry to current code. A file-specific entry should include all three.
 
-EVERY non-mechanical entry MUST carry a real `--body` (`--body="…"` inline, or `--body-file=<path>` once it's long enough to fight shell-escaping). The value lives in the body, written to the **anatomy of its kind**.
+When the user requested the knowledge write, execute it directly with `arcs knowledge upsert` and report the resulting ID. Otherwise return the proposed entry for confirmation only when the write would be surprising.
 
-## Scaffold, Don't Freehand
-
-Before writing, scaffold the section skeleton from the command:
-
-```bash
-arcs knowledge template --kind=<kind> --json   # structured sections
-arcs knowledge template --kind=<kind>          # plain markdown skeleton
-```
-
-This emits one `## <heading>` per section with a deletable hint comment. **Fill EVERY section** — a half-filled skeleton is still a stub.
-
-> **DRY / authoritative source:** `arcs knowledge template` is the AUTHORITATIVE skeleton. The anatomy below only *illustrates* the shape. If the table here ever diverges from the command output, **the command wins** — scaffold from it, not from this file.
-
-## The 8 Kinds at a Glance
-
-| Kind | Section anatomy |
-| --- | --- |
-| **gotcha** | Symptom · Root cause · Fix or workaround · Trigger |
-| **lesson** | Expectation · What happened · Why · Next time |
-| **pattern** | When to use · Shape · Example · When not to use |
-| **architecture** | Structure · Invariant or constraint · Failure mode |
-| **decision** | Decision · Rationale and forces · Alternatives rejected · Consequences |
-| **module** | Purpose · Key files and entry points · Responsibilities · Dependencies |
-| **feature** | What it does · How it works · Entry points · Edge cases |
-| **reference** | Summary · Canonical location · Usage notes |
-
-Pick the kind by what the insight *is*: a bug you hit → `gotcha`; a wrong belief corrected → `lesson`; a reusable shape → `pattern`; a structural why → `architecture`; a single settled call → `decision`; an area of the codebase → `module`/`feature`; a pointer to a canonical source → `reference`.
-
-## Author the Proposal
-
-```bash
-arcs knowledge upsert <slug> "<title>" \
-  --kind=<kind> \
-  --summary="<one-line headline>" \
-  --body="<every section of the kind, filled>" \
-  --keywords="<k1,k2>" \
-  --source-files="<path[:anchor],…>" \
-  --json
-```
-
-Return the command without executing it. The orchestrator applies approved proposals at fan-in. `upsert` is idempotent by title — create-or-update, no dedup search dance. `--summary` AND `--body` AND `--source-files` together are the floor for a file-specific entry.
-
-## Self-Check Before You Return the Proposal
-
-> **"Could someone act on this in six months without re-deriving it?"**
-
-If the insight cost you reasoning, a debug session, or a dead end, capture *that* — not just its one-line conclusion. Inverse (per implementation minimalism): if anyone could re-derive it in ten seconds, don't write it at all.
-
-## Constraints
-
-- Scaffold from `arcs knowledge template` — never freehand the section headings.
-- Fill every section; a half-filled skeleton is a stub.
-- `--summary` is the headline, `--body` is the value — never ship summary-only.
-- Match kind to the nature of the insight; don't force everything into `gotcha`.
-- Skip capture entirely for purely mechanical work (renames, config nudges, diagram regens).
-- Proposal-only: do not execute `arcs knowledge upsert` or any other DAG mutation from this skill.
+Validate that a future agent could act on the entry without re-deriving it.

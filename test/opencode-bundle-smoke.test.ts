@@ -27,8 +27,11 @@ type InstallerManifest = {
     id: string;
     status: "active" | "retired";
     replacementId?: string;
+    kind: "primary" | "subagent";
+    tier: "heavy" | "standard" | "light";
     source: string;
     destination: string;
+    permissions: { task: "allow" | "deny" };
   }>;
   config: {
     requiredMerges: Array<{
@@ -106,7 +109,6 @@ describe("opencode ARCS bundle bundle", () => {
       "tech-architect",
       "arcs-docs",
       "code-reviewer",
-      "devil-advocate",
       "graph-explorer",
     ]);
     expect(manifest.agents.find((agent) => agent.id === "oncall-ops")).toMatchObject({
@@ -117,6 +119,17 @@ describe("opencode ARCS bundle bundle", () => {
       status: "retired",
       replacementId: "tech-architect",
     });
+    expect(manifest.agents.find((agent) => agent.id === "devil-advocate")).toMatchObject({
+      status: "retired",
+      replacementId: "code-reviewer",
+    });
+    expect(activeAgents.filter((agent) => agent.kind === "primary")).toHaveLength(3);
+    expect(
+      activeAgents
+        .filter((agent) => agent.kind === "subagent")
+        .every((agent) => agent.permissions.task === "deny"),
+    ).toBe(true);
+    expect(activeAgents.find((agent) => agent.id === "code-reviewer")?.tier).toBe("standard");
     for (const agent of activeAgents) {
       expect(agent.source).toMatch(/^prompts\/[^/]+\.txt$/);
       expect(agent.destination).toBe(agent.source);
@@ -174,8 +187,15 @@ describe("opencode ARCS bundle bundle", () => {
       expect.arrayContaining([
         expect.objectContaining({ path: ["agent", "oncall-ops"] }),
         expect.objectContaining({ path: ["agent", "docs-researcher"] }),
+        expect.objectContaining({ path: ["agent", "devil-advocate"] }),
       ]),
     );
+    for (const agent of activeAgents.filter((entry) => entry.kind === "subagent")) {
+      const merge = manifest.config.requiredMerges.find(
+        (entry) => entry.path.join(".") === `agent.${agent.id}`,
+      );
+      expect(merge?.value).toMatchObject({ permission: { task: "deny" } });
+    }
   });
 
   it("ships bundle-runtime.json alongside manifest.json", () => {

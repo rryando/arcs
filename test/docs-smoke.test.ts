@@ -16,68 +16,45 @@ const skillCompatibilityDocs = [orchestrateSkill, initSkill, exploreDagSkill, up
 );
 
 describe("docs and skills smoke tests", () => {
-  it("update-docs skill mentions knowledge entries", () => {
-    expect(updateDocsSkill).toContain("knowledge entries");
+  it("keeps root skill frontmatter and direct guidance", () => {
+    for (const source of [orchestrateSkill, initSkill, exploreDagSkill, updateDocsSkill]) {
+      expect(source).toMatch(/^---\nname: /);
+      expect(source).toMatch(/description:/);
+    }
   });
 
-  it("orchestrate skill mentions MULTI", () => {
-    expect(orchestrateSkill).toContain("MULTI");
+  it("keeps orchestration delegation-preferred", () => {
+    expect(orchestrateSkill).toMatch(/UNDERSTAND.*WORK.*VERIFY.*REPORT/is);
+    expect(orchestrateSkill).toMatch(/inspect.*edit.*verify.*directly/is);
+    expect(orchestrateSkill).toMatch(/strongly prefer delegation/is);
+    expect(orchestrateSkill).toMatch(/tiny.*tightly coupled.*orchestration-state/is);
+    expect(orchestrateSkill).toMatch(/one owner.*no nested delegation/is);
+    expect(orchestrateSkill).toMatch(/review.*risk-based.*not automatic/is);
   });
 
-  it("init skill mentions plans/", () => {
-    expect(initSkill).toContain("plans/");
+  it("keeps initialization authorized and codegraph optional", () => {
+    expect(initSkill).toMatch(/explicit request.*authorizes/is);
+    expect(initSkill).toMatch(/codegraph.*optional/is);
+    expect(initSkill).not.toMatch(/devil-advocate|exact authorization/i);
   });
 
-  it("init skill mentions knowledge/", () => {
-    expect(initSkill).toContain("knowledge/");
+  it("keeps exploration bounded and graph-explorer optional", () => {
+    expect(exploreDagSkill).toMatch(/narrowest useful command/i);
+    expect(exploreDagSkill).toMatch(/optional.*graph-explorer/is);
+    expect(exploreDagSkill).toMatch(/avoid broad scans/i);
   });
 
-  it("explore-dag skill mentions plan and knowledge indexes", () => {
-    expect(exploreDagSkill).toContain("plan and knowledge indexes");
+  it("keeps documentation updates scoped and validated", () => {
+    expect(updateDocsSkill).toMatch(/requested scoped update.*validate/is);
+    expect(updateDocsSkill).toMatch(/knowledge.*body.*source files/is);
+    expect(updateDocsSkill).toMatch(/diagrams.*task metadata/is);
   });
 
-  it("update-docs skill mentions structured plans for feature work", () => {
-    expect(updateDocsSkill).toContain("structured plans for feature work");
-  });
-
-  it("update-docs skill mentions knowledge.md", () => {
-    expect(updateDocsSkill).toContain("knowledge.md");
-  });
-
-  it("orchestrate prompt mentions queue / plan / memory", () => {
-    expect(orchestratePrompt).toContain("queue / plan / memory");
-    expect(orchestratePrompt).toContain("**queue** = immediate execution state in `tasks.md`");
-    expect(orchestratePrompt).toContain("**plan** = durable multi-step change record");
-    expect(orchestratePrompt).toContain("**memory** = durable reusable knowledge");
-  });
-
-  it("orchestrate prompt mentions recommended surface", () => {
-    expect(orchestratePrompt).toContain("recommended surface");
-  });
-
-  it("orchestrate prompt mentions operating brief", () => {
-    expect(orchestratePrompt).toContain("operating brief");
-    expect(orchestratePrompt).toContain("queue / plan / memory");
-  });
-
-  it("orchestrate prompt mentions three-surface model", () => {
-    expect(orchestratePrompt).toContain("queue");
-    expect(orchestratePrompt).toContain("plan");
-    expect(orchestratePrompt).toContain("memory");
-  });
-
-  it("keeps skill docs on current agent modes and workflow", () => {
-    expect(skillCompatibilityDocs).toMatch(/software-engineer[\s\S]*default[\s\S]*incident/i);
-    expect(skillCompatibilityDocs).toMatch(/tech-architect[\s\S]*architecture[\s\S]*research/i);
-    expect(skillCompatibilityDocs).toMatch(/code-reviewer[\s\S]*review[\s\S]*audit/i);
-    expect(skillCompatibilityDocs).toMatch(/WORK_MODE[\s\S]*bounded[\s\S]*inspect/i);
-    expect(skillCompatibilityDocs).toMatch(/brainstorming[\s\S]*user approv[\s\S]*writing-plans/i);
-    expect(skillCompatibilityDocs).toMatch(/writing-plans[\s\S]*sole author/i);
-    expect(skillCompatibilityDocs).toMatch(/SYNC[\s\S]*two-pass[\s\S]*audit[\s\S]*apply/i);
-    expect(skillCompatibilityDocs).toMatch(
-      /DAG-first[\s\S]*(?:codegraph|source|repository).*fallback/i,
-    );
-    expect(skillCompatibilityDocs).toMatch(/no automatic git actions/i);
+  it("keeps the canonical prompt aligned with root guidance", () => {
+    expect(orchestratePrompt).toMatch(/UNDERSTAND.*WORK.*VERIFY.*REPORT/is);
+    expect(orchestratePrompt).toMatch(/inspect source.*edit files.*run commands.*verify/is);
+    expect(orchestratePrompt).toMatch(/strongly prefer delegation/i);
+    expect(orchestratePrompt).not.toMatch(/only completion verifier|PHASE_GATE|exact artifact/i);
   });
 
   it("removes superseded active agent and skill names from skill docs", () => {

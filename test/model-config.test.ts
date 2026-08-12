@@ -23,7 +23,7 @@ describe("agent registry", () => {
     const registry = readAgentRegistry();
     const activeAgents = getActiveAgents(registry);
 
-    expect(activeAgents).toHaveLength(9);
+    expect(activeAgents).toHaveLength(8);
     expect(activeAgents.every((agent) => agent.status === "active")).toBe(true);
     expect(
       activeAgents.filter((agent) => agent.kind === "subagent").map((agent) => agent.id),
@@ -32,7 +32,6 @@ describe("agent registry", () => {
       "tech-architect",
       "arcs-docs",
       "code-reviewer",
-      "devil-advocate",
       "graph-explorer",
     ]);
     expect(registry.agents.find((agent) => agent.id === "oncall-ops")).toMatchObject({
@@ -43,6 +42,15 @@ describe("agent registry", () => {
       status: "retired",
       replacementId: "tech-architect",
     });
+    expect(registry.agents.find((agent) => agent.id === "devil-advocate")).toMatchObject({
+      status: "retired",
+      replacementId: "code-reviewer",
+    });
+    expect(
+      activeAgents
+        .filter((agent) => agent.kind === "subagent")
+        .every((agent) => agent.permissions.task === "deny"),
+    ).toBe(true);
     expect(activeAgents.find((agent) => agent.id === "software-engineer")).toMatchObject({
       kind: "subagent",
       tier: "heavy",
@@ -56,11 +64,12 @@ describe("agent registry", () => {
     expect(getAgentTierMap()).toMatchObject({
       "software-engineer": "heavy",
       "tech-architect": "heavy",
-      "devil-advocate": "heavy",
+      "code-reviewer": "standard",
       "graph-explorer": "light",
       "arcs-orchestrate": "standard",
       "arcs-flash": "standard",
     });
+    expect(getAgentTierMap()).not.toHaveProperty("devil-advocate");
   });
 
   it.each([
