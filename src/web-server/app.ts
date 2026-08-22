@@ -6,12 +6,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { getDataDir, PACKAGE_ROOT } from "../utils/paths.js";
-import { requireHookToken } from "./hook-auth.js";
 import { ok } from "./respond.js";
 import { collectionsRoute } from "./routes/collections.js";
 import { discoveryRoute } from "./routes/discovery.js";
 import { eventsRoute } from "./routes/events.js";
-import { hookEventsRoute } from "./routes/hook-events.js";
 import { projectsRoute } from "./routes/projects.js";
 import { sessionsRoute } from "./routes/sessions.js";
 import { workspaceRoute } from "./routes/workspace.js";
@@ -53,11 +51,8 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   mintWebToken();
 
   app.use("*", secureLocalRequest);
-  // Agent-driven, not browser-driven: the hook endpoint needs a shared secret on
-  // top of the loopback check every other route relies on.
-  app.use("/api/hook/*", requireHookToken);
   // Browser-driven mutations need a secret of their own — loopback alone lets
-  // any other local process drive them. Deny-by-default, /api/hook/* exempt.
+  // any other local process drive them. Deny-by-default.
   app.use("/api/*", requireWebToken);
 
   app.get("/api/health", (c) =>
@@ -74,7 +69,6 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route("/", projectsRoute);
   app.route("/", collectionsRoute);
   app.route("/", sessionsRoute);
-  app.route("/", hookEventsRoute);
   // Read-only file plane (two GETs, no writes) — see routes/workspace.ts.
   app.route("/", workspaceRoute);
   app.route("/", discoveryRoute);

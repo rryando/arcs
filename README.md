@@ -216,7 +216,7 @@ $ arcs brief myapp --lean --json
 
 ## The Agent Bundle
 
-ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **five typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
+ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **five typed sub-agents**, and **eleven skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
 
 ### Orchestrators
 
@@ -259,7 +259,7 @@ Verification is proportionate to the outcome and its risk. Review is available w
 
 ### Skills (loaded per dispatch)
 
-The twelve skills are: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, `caveman-commit`, and `install-claude-code-hook`.
+The eleven skills are: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, and `caveman-commit`.
 
 `implementation` handles bounded work, limited inspection, and ready plan-node execution, including dependency checks, relevant verification, and task/diagram alignment through the ARCS CLI. New behavior and bug fixes may add `test-driven-development`; incidents add `systematic-debugging`; material design uncertainty may use `brainstorming` before `writing-plans`. No skill introduces a mandatory review or gate loop. There are no automatic git actions; add, commit, and push require an explicit current-turn user request.
 

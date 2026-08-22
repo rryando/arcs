@@ -1,17 +1,24 @@
 /**
- * POST /api/p/:slug/sessions/:id/turns — one turn of a headless conversation.
+ * POST /api/p/:slug/sessions and POST /api/p/:slug/sessions/:id/turns — the
+ * ARCS-owned threads and the one-shot runs that drive them.
  *
  * The runner module is faked with a vitest module mock (the route has no
  * injection point of its own): the mock records the exact argv/cwd/writeTargetKey
- * handed to runClaudeJob, fires the registered onSettled write-back with a canned run
+ * handed to runClaudeJob (plus the runner options, where the opencode driver's
+ * binary travels), fires the registered onSettled write-back with a canned run
  * record (simulating the runner's post-close settle), and resolves that record,
- * so the contract under test is what ARCS puts on the wire (targeting, argv
- * ownership, write-target selection, sidecar ordering, seed-decision repair)
- * rather than the runner's own lifecycle (covered by test/claude-runner.test.ts).
+ * so the contract under test is what ARCS puts on the wire — runtime selection,
+ * argv ownership, write-target selection, sidecar ordering, seed-decision
+ * repair — rather than the runner's own lifecycle (covered by
+ * test/claude-runner.test.ts).
  *
  * The canned record is also what makes the seed-decision repairs testable: a
  * test that sets `runRecord.error` to claude's literal stderr drives the exact
  * branch a real failure would, with no claude in sight.
+ *
+ * Every thread here is ARCS-origin ("arcs"): creation mints them, turns
+ * continue them. There is no observed-session path anymore — the hook bridge
+ * that produced observed sessions is gone, and with it the adoption fork.
  */
 
 import {
@@ -83,6 +90,7 @@ vi.mock("../src/web-server/claude-runner.js", () => ({
 
 import {
   type ClaudeJobInput,
+  type ClaudeRunnerOptions,
   type ClaudeRunRecord,
   isRunLive,
   liveRunPid,
@@ -104,6 +112,9 @@ const ARCS_THREAD_ID =
   /^arcs-thread-demo-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A caller-named thread, so a test has a deterministic write target to poll. */
 const THREAD = "arcs-thread-demo-fixed";
+/** An opencode-native session id, as a real `opencode run --format json`
+ *  harvests one off its stdout. */
+const OC_SESSION = "ses_0TestSessionId0000000000000";
 const RUN_RECORD: ClaudeRunRecord = {
   pid: 4242,
   startedAt: 1_700_000_000_000,
@@ -127,20 +138,24 @@ const REFERENCE = {
 
 /** Jobs the (fake) runner was asked to spawn, in call order. */
 let capturedJobs: ClaudeJobInput[] = [];
+/** Runner options each job carried — the driver-driven binary travels here. */
+let capturedOptions: (ClaudeRunnerOptions | undefined)[] = [];
 /** Record the fake runner settles each job with — tests override for error runs. */
 let runRecord: ClaudeRunRecord = RUN_RECORD;
 /**
  * Child stdout the fake runner persists to the run's event log before it
- * settles, exactly as the real runner does mid-stream (W2). Empty means the run
- * left no log at all — the pre-W2 world, where the captured reply is the only
- * thing that can reach the sidecar.
+ * settles, exactly as the real runner does mid-stream. Empty means the run
+ * left no log at all — the captured reply is then the only thing that could
+ * reach the sidecar (claude-code only; a driver-driven run appends none).
  */
 let runStdout = "";
 
-/** Serializes events as the NDJSON lines `--output-format stream-json` emits. */
+/** Serializes events as the NDJSON lines a stream emits. */
 function ndjson(...events: unknown[]): string {
   return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
 }
+
+// --- claude stream-json shapes -------------------------------------------------
 
 const assistantEvent = (...blocks: unknown[]) => ({
   type: "assistant",
@@ -149,16 +164,38 @@ const assistantEvent = (...blocks: unknown[]) => ({
 const textBlock = (text: string) => ({ type: "text", text });
 const toolBlock = (name: string) => ({ type: "tool_use", id: "tu_1", name, input: {} });
 
+// --- opencode `run --format json` shapes ---------------------------------------
+
+const ocText = (text: string, sid: string = OC_SESSION) => ({
+  type: "text",
+  timestamp: 2,
+  sessionID: sid,
+  part: { type: "text", text },
+});
+const ocTool = (name: string, sid: string = OC_SESSION) => ({
+  type: "tool_use",
+  timestamp: 3,
+  sessionID: sid,
+  part: { type: "tool", tool: name, state: { status: "completed" } },
+});
+const ocStepStart = (sid: string = OC_SESSION) => ({
+  type: "step_start",
+  timestamp: 1,
+  sessionID: sid,
+});
+
 beforeEach(() => {
   capturedJobs = [];
+  capturedOptions = [];
   runRecord = RUN_RECORD;
   runStdout = "";
   agentsProbe.spawns = 0;
   agentsProbe.stdout = "[]";
   vi.mocked(isRunLive).mockReturnValue(false);
   vi.mocked(liveRunPid).mockReturnValue(4242);
-  vi.mocked(runClaudeJob).mockImplementation(async (input) => {
+  vi.mocked(runClaudeJob).mockImplementation(async (input, options) => {
     capturedJobs.push(input);
+    capturedOptions.push(options);
     // The real runner writes every stdout line to the run's event log verbatim
     // as it arrives, before parsing and long before settling; the fake leaves
     // behind just that durable artifact so the route's settle has one to fold.
@@ -236,8 +273,109 @@ interface SessionView extends SessionMeta {
   phase?: string;
 }
 
-/** The envelope the staged environment always opens with (W2). */
-const STAGE_OPEN = "<<<ARCS_STAGED_ENVIRONMENT>>>";
+async function postCreate(base: string, body: unknown) {
+  const res = await fetch(`${base}/api/p/demo/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
+    body: JSON.stringify(body),
+  });
+  const envelope = (await res.json()) as TurnEnvelope & { data?: SessionMeta };
+  return { status: res.status, envelope };
+}
+
+async function getSessions(base: string): Promise<SessionView[]> {
+  const res = await fetch(`${base}/api/p/demo/sessions`, {
+    headers: { "X-ARCS-Token": currentWebToken() ?? "" },
+  });
+  const envelope = (await res.json()) as { ok: boolean; data?: { sessions: SessionView[] } };
+  expect(envelope.ok).toBe(true);
+  return envelope.data?.sessions ?? [];
+}
+
+async function getSessionView(base: string, id: string): Promise<SessionView> {
+  const res = await fetch(`${base}/api/p/demo/sessions/${id}`, {
+    headers: { "X-ARCS-Token": currentWebToken() ?? "" },
+  });
+  const envelope = (await res.json()) as { ok: boolean; data?: SessionView };
+  expect(envelope.ok).toBe(true);
+  return envelope.data as SessionView;
+}
+
+async function postTurn(base: string, id: string, body: unknown) {
+  const res = await fetch(`${base}/api/p/demo/sessions/${id}/turns`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
+    body: JSON.stringify(body),
+  });
+  const envelope = (await res.json()) as TurnEnvelope;
+  return { status: res.status, envelope };
+}
+
+/**
+ * An ARCS-owned legacy claude-code thread, as earlier builds minted them: the
+ * record name keys the store, and the claude-facing uuid lives on metadata
+ * (minted at first spawn).
+ */
+async function seedThread(
+  projectDir: string,
+  name: string,
+  metadata: Record<string, unknown> = { directory: WORKSPACE },
+): Promise<SessionMeta> {
+  return createSession(projectDir, {
+    runtimeType: "claude-code",
+    runtimeSessionId: name,
+    origin: "arcs",
+    metadata: { control: "arcs-owned", ...metadata },
+  });
+}
+
+/** An ARCS-owned opencode thread: blank runtimeSessionId until a first run
+ *  harvests one. Created through the same store path POST /sessions uses. */
+async function seedOpencodeThread(
+  projectDir: string,
+  name: string,
+  metadata: Record<string, unknown> = { directory: WORKSPACE },
+): Promise<SessionMeta> {
+  return createSession(projectDir, {
+    runtimeType: "opencode",
+    recordName: name,
+    origin: "arcs",
+    metadata: { control: "arcs-owned", ...metadata },
+  });
+}
+
+/** The thread's claude-facing uuid as the store holds it. */
+async function claudeUuid(projectDir: string, threadId: string): Promise<string> {
+  return (await getSession(projectDir, threadId)).metadata?.claudeSessionId as string;
+}
+
+/** Waits until the out-of-band metadata.run registration lands on the session. */
+async function expectRunRegistered(projectDir: string, normalizedId: string, mode: string) {
+  await vi.waitFor(async () => {
+    const stored = await getSession(projectDir, normalizedId);
+    expect(stored.metadata?.run).toMatchObject({ pid: 4242, startedAt: 1_700_000_000_000, mode });
+  });
+}
+
+/**
+ * Waits until the run has settled and released its claim, and answers the very
+ * snapshot that satisfied it.
+ *
+ * Callers assert the settle's conclusions on THAT record rather than on a fresh
+ * read, because the released claim is the only thing serializing this run
+ * against the next one: everything the settle concluded has to be on the record
+ * already at the instant the claim goes, or a turn accepted right afterwards
+ * reads state the run just disproved. Re-reading would hand a settle that
+ * writes its conclusions late a second chance to pass, which is exactly the
+ * flake that hid the split write.
+ */
+async function expectSettled(projectDir: string, normalizedId: string): Promise<SessionMeta> {
+  return vi.waitFor(async () => {
+    const stored = await getSession(projectDir, normalizedId);
+    expect(stored.currentRunId).toBeUndefined();
+    return stored;
+  });
+}
 
 /**
  * The permission segment each intent produces, hardcoded rather than imported.
@@ -277,134 +415,53 @@ function expectTurnArgv(
   expect(job.argv[base.length + 1]).toContain(STAGE_OPEN);
 }
 
-async function getSessions(base: string): Promise<SessionView[]> {
-  const res = await fetch(`${base}/api/p/demo/sessions`, {
-    headers: { "X-ARCS-Token": currentWebToken() ?? "" },
-  });
-  const envelope = (await res.json()) as { ok: boolean; data?: { sessions: SessionView[] } };
-  expect(envelope.ok).toBe(true);
-  return envelope.data?.sessions ?? [];
-}
+/** The envelope the staged environment always opens with (W2). */
+const STAGE_OPEN = "<<<ARCS_STAGED_ENVIRONMENT>>>";
 
-async function getSessionView(base: string, id: string): Promise<SessionView> {
-  const res = await fetch(`${base}/api/p/demo/sessions/${id}`, {
-    headers: { "X-ARCS-Token": currentWebToken() ?? "" },
-  });
-  const envelope = (await res.json()) as { ok: boolean; data?: SessionView };
-  expect(envelope.ok).toBe(true);
-  return envelope.data as SessionView;
-}
+// ---------------------------------------------------------------------------
+// POST /api/p/:slug/sessions — thread creation
+// ---------------------------------------------------------------------------
 
-async function postTurn(base: string, id: string, body: unknown) {
-  const res = await fetch(`${base}/api/p/demo/sessions/${id}/turns`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
-    body: JSON.stringify(body),
-  });
-  const envelope = (await res.json()) as TurnEnvelope;
-  return { status: res.status, envelope };
-}
-
-/** An observed claude-code record — the class a turn ADOPTS by forking. */
-async function seedObserved(
-  projectDir: string,
-  runtimeSessionId: string,
-  metadata: Record<string, unknown> = { directory: WORKSPACE },
-): Promise<SessionMeta> {
-  return createSession(projectDir, { runtimeType: "claude-code", runtimeSessionId, metadata });
-}
-
-/** The thread's claude-facing uuid as the store holds it. */
-async function claudeUuid(projectDir: string, threadId: string): Promise<string> {
-  return (await getSession(projectDir, threadId)).metadata?.claudeSessionId as string;
-}
-
-/** Waits until the out-of-band metadata.run registration lands on the session. */
-async function expectRunRegistered(projectDir: string, normalizedId: string, mode: string) {
-  await vi.waitFor(async () => {
-    const stored = await getSession(projectDir, normalizedId);
-    expect(stored.metadata?.run).toMatchObject({ pid: 4242, startedAt: 1_700_000_000_000, mode });
-  });
-}
-
-/**
- * Waits until the run has settled and released its claim, and answers the very
- * snapshot that satisfied it.
- *
- * Callers assert the settle's conclusions on THAT record rather than on a fresh
- * read, because the released claim is the only thing serializing this run
- * against the next one: everything the settle concluded has to be on the record
- * already at the instant the claim goes, or a turn accepted right afterwards
- * reads state the run just disproved. Re-reading would hand a settle that
- * writes its conclusions late a second chance to pass, which is exactly the
- * flake that hid the split write.
- */
-async function expectSettled(projectDir: string, normalizedId: string): Promise<SessionMeta> {
-  return vi.waitFor(async () => {
-    const stored = await getSession(projectDir, normalizedId);
-    expect(stored.currentRunId).toBeUndefined();
-    return stored;
-  });
-}
-
-describe("POST /api/p/:slug/sessions/:id/turns — fresh thread seed", () => {
-  it("mints the named thread, seeds it with --session-id, and answers 202 naming the run", async () => {
+describe("POST /api/p/:slug/sessions — thread creation", () => {
+  it("creates an ARCS-origin opencode thread by default, minting the name, spawning nothing", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_seed_1");
-
-      const { status, envelope } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "start the thread",
-        threadRef: THREAD,
-      });
-
-      expect(status).toBe(202);
+      const { status, envelope } = await postCreate(base, {});
+      expect(status).toBe(201);
       expect(envelope.ok).toBe(true);
-      const runId = envelope.data?.runId as string;
-      expect(runId).toEqual(expect.any(String));
-      expect(envelope.data?.writeTargetId).toBe(THREAD);
-      expect(envelope.data?.streamUrl).toBe(`/api/p/demo/sessions/${THREAD}/runs/${runId}/stream`);
 
-      // The ARCS thread id names the RECORD (picker label + sidecar filename);
-      // claude only ever sees the bare uuid minted onto its metadata.
-      const uuid = await claudeUuid(projectDir, THREAD);
-      expect(uuid).toMatch(BARE_UUID);
-      expect(uuid).not.toBe(THREAD);
+      const created = envelope.data as SessionMeta;
+      expect(created.runtimeType).toBe("opencode");
+      expect(created.origin).toBe("arcs");
+      expect(created.normalizedId).toMatch(ARCS_THREAD_ID);
+      // No runtime-native id exists yet — the first settled run harvests one.
+      expect(created.runtimeSessionId).toBe("");
+      expect(created.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
 
-      expect(capturedJobs).toHaveLength(1);
-      expect(capturedJobs[0]).toMatchObject({ cwd: WORKSPACE, writeTargetKey: THREAD });
-      expectTurnArgv(
-        capturedJobs[0],
-        ["-p", "start the thread", "--session-id", uuid, "--output-format", "json"],
-        { intent: "ask", staged: true },
-      );
-      // The record NAME is never a token — claude >= 2.x rejects anything that
-      // is not a bare uuid on --session-id/--resume.
-      expect(capturedJobs[0].argv).not.toContain(THREAD);
+      // Creation spawns nothing: the first POST /turns does.
+      expect(capturedJobs).toHaveLength(0);
 
-      // The seed decision lands at SPAWN, not at settle.
-      expect((await getSession(projectDir, THREAD)).metadata?.threadInitialized).toBe(true);
-      await expectRunRegistered(projectDir, THREAD, "ask");
+      // And the record round-trips through the store under the minted name.
+      const stored = await getSession(projectDir, created.normalizedId);
+      expect(stored.runtimeSessionId).toBe("");
+      expect(stored.origin).toBe("arcs");
     });
   });
 
-  it("records the write target as an ARCS-owned thread, so nothing queues into it", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_seed_2");
-
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "own it",
-        threadRef: THREAD,
+  it("honors an explicit runtimeType and a caller-named record", async () => {
+    await withRunRouteCtx(async ({ base }) => {
+      const { status, envelope } = await postCreate(base, {
+        runtimeType: "claude-code",
+        runtimeSessionId: "my-thread",
       });
+      expect(status).toBe(201);
 
-      const thread = await getSession(projectDir, THREAD);
-      expect(thread.origin).toBe("arcs");
-      expect(thread.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
-      // Exactly one record for the name, however many turns it takes.
-      expect(
-        (await listSessions(projectDir)).filter((s) => s.normalizedId === THREAD),
-      ).toHaveLength(1);
+      const created = envelope.data as SessionMeta;
+      expect(created.normalizedId).toBe("my-thread");
+      expect(created.runtimeType).toBe("claude-code");
+      expect(created.origin).toBe("arcs");
+      // The supplied name keys the RECORD only — it never seeds
+      // runtimeSessionId, which stays blank until the runtime produces one.
+      expect(created.runtimeSessionId).toBe("");
     });
   });
 
@@ -421,15 +478,286 @@ describe("POST /api/p/:slug/sessions/:id/turns — fresh thread seed", () => {
         }),
         "utf-8",
       );
-      const seed = await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: "cc_seed_nodir",
+
+      const { status, envelope } = await postCreate(base, {});
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("PROJECT_WORKSPACE_UNSET");
+      expect(capturedJobs).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /turns — opencode threads, driven through the run-driver adapter
+// ---------------------------------------------------------------------------
+
+describe("POST /api/p/:slug/sessions/:id/turns — opencode one-shot runs", () => {
+  it("drives a fresh thread with `opencode run --format json --title`, answering 202", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD, { directory: WORKSPACE, title: "Fix it" });
+
+      const { status, envelope } = await postTurn(base, THREAD, {
+        intent: "ask",
+        message: "start the thread",
       });
 
-      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+      expect(status).toBe(202);
+      expect(envelope.ok).toBe(true);
+      const runId = envelope.data?.runId as string;
+      expect(envelope.data?.writeTargetId).toBe(THREAD);
+      expect(envelope.data?.streamUrl).toBe(`/api/p/demo/sessions/${THREAD}/runs/${runId}/stream`);
+
+      // THE DRIVER'S ARGV, verbatim: one-shot CLI, JSON output, the title from
+      // metadata, the prompt as ONE argv element.
+      expect(capturedJobs[0].argv).toEqual([
+        "run",
+        "--format",
+        "json",
+        "--title",
+        "Fix it",
+        "start the thread",
+      ]);
+      // Spawned through the adapter's binary, and the runner's stream-json
+      // rewriting is OFF — opencode NDJSON reaches the child verbatim.
+      expect(capturedOptions[0]).toEqual({ binary: "opencode" });
+      expect(capturedJobs[0].streamJsonArgv).toBe(false);
+      expect(capturedJobs[0]).toMatchObject({ cwd: WORKSPACE, writeTargetKey: THREAD });
+      // No claude vocabulary anywhere in the argv.
+      expect(capturedJobs[0].argv.join(" ")).not.toContain("--tools");
+      expect(capturedJobs[0].argv.join(" ")).not.toContain("--permission-mode");
+
+      // Same durable-run machinery as every other runtime: deadline, claim,
+      // event log keyed to the SAME run id the 202 named.
+      expect(capturedJobs[0].eventLog?.sessionId).toBe(THREAD);
+      expect(capturedJobs[0].eventLog?.runId).toBe(runId);
+      await expectRunRegistered(projectDir, THREAD, "ask");
+    });
+  });
+
+  it("persists the harvested sessionID onto the thread, so the next turn continues with -s", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD);
+      runStdout = ndjson(ocStepStart(), ocText("Reading."), ocText("Done."));
+
+      const first = await postTurn(base, THREAD, { intent: "ask", message: "go" });
+      expect(first.status).toBe(202);
+      const stored = await expectSettled(projectDir, THREAD);
+      expect(stored.runtimeSessionId).toBe(OC_SESSION);
+
+      const second = await postTurn(base, THREAD, { intent: "ask", message: "continue" });
+      expect(second.status).toBe(202);
+      // CONTINUATION: `-s <harvested id>`, no --title — the thread already has
+      // its name, and the message rides as one element.
+      expect(capturedJobs[1].argv).toEqual([
+        "run",
+        "--format",
+        "json",
+        "-s",
+        OC_SESSION,
+        "continue",
+      ]);
+      expect(await getSession(projectDir, THREAD)).toMatchObject({ runtimeSessionId: OC_SESSION });
+    });
+  });
+
+  it("folds the opencode log into the sidecar via the driver normalizer, and never doubles the reply", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD);
+      runStdout = ndjson(ocStepStart(), ocText("Looking."), ocTool("read"), ocText("Found it."), {
+        type: "step_finish",
+        timestamp: 9,
+        sessionID: OC_SESSION,
+      });
+
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "go" });
+      expect(status).toBe(202);
+      await expectSettled(projectDir, THREAD);
+      const runId = ((await getSession(projectDir, THREAD)).metadata?.run as { runId?: string })
+        .runId as string;
+
+      const turns = await readSessionTurns(projectDir, THREAD);
+      expect(turns.map((t) => [t.id, t.type, t.text, t.tool?.name])).toEqual([
+        [-1, "user", "go", undefined],
+        [-2, "assistant", "Looking.", undefined],
+        [-3, "assistant", "", "read"],
+        [-4, "assistant", "Found it.", undefined],
+      ]);
+      // Every folded turn carries the run id; the request-time user turn does not.
+      expect(turns.map((t) => t.run)).toEqual([undefined, runId, runId, runId]);
+      // The canned replyText is NOT appended on top of the fold — and a
+      // driver-driven run never appends the captured reply at all, because the
+      // runner's reader cannot have produced a meaningful one.
+      expect(turns.some((t) => t.text === "reply")).toBe(false);
+
+      // Folding the settled log again is a no-op.
+      const again = await foldRunEventLog(projectDir, THREAD, runId, { runtimeType: "opencode" });
+      expect(again).toEqual({ appended: 0, alreadyFolded: true, assistantTextFolded: true });
+    });
+  });
+
+  it("an error outcome still folds the partial output the child produced", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD);
+      runStdout = ndjson(ocText("got this far"));
+      runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
+
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
+      await expectSettled(projectDir, THREAD);
+
+      const turns = await readSessionTurns(projectDir, THREAD);
+      expect(turns.map((t) => [t.type, t.text])).toEqual([
+        ["user", "go"],
+        ["assistant", "got this far"],
+      ]);
+    });
+  });
+
+  it("without a log, a successful driver run appends nothing — there is no reply to trust", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD);
+      runStdout = "";
+
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
+      await expectSettled(projectDir, THREAD);
+
+      const turns = await readSessionTurns(projectDir, THREAD);
+      expect(turns.map((t) => [t.type, t.text])).toEqual([["user", "go"]]);
+    });
+  });
+
+  it("stamps lastMessageAt and re-activates the thread at settle", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD);
+      runStdout = ndjson(ocText("done"));
+
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
+      const stored = await expectSettled(projectDir, THREAD);
+
+      expect(stored.lastMessageAt).toBeTypeOf("string");
+      expect(stored.status).toBe("active");
+    });
+  });
+
+  it("mints an opencode thread when threadRef names nothing yet", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedThread(projectDir, THREAD);
+
+      const { status, envelope } = await postTurn(base, THREAD, {
+        intent: "ask",
+        message: "mint me",
+        threadRef: "arcs-thread-demo-minted",
+      });
+
+      expect(status).toBe(202);
+      expect(envelope.data?.writeTargetId).toBe("arcs-thread-demo-minted");
+
+      const minted = await getSession(projectDir, "arcs-thread-demo-minted");
+      expect(minted.runtimeType).toBe("opencode");
+      expect(minted.origin).toBe("arcs");
+      expect(minted.runtimeSessionId).toBe("");
+      expect(minted.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
+      // Driven by the driver from birth.
+      expect(capturedOptions[0]).toEqual({ binary: "opencode" });
+      expect(capturedJobs[0].argv).toEqual(["run", "--format", "json", "mint me"]);
+    });
+  });
+
+  it("409s an overlapping run on the same write-target before appending or spawning", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedOpencodeThread(projectDir, THREAD);
+      vi.mocked(isRunLive).mockReturnValue(true);
+
+      const { status, envelope } = await postTurn(base, THREAD, {
+        intent: "ask",
+        message: "busy?",
+      });
+
+      expect(status).toBe(409);
+      expect(envelope.code).toBe("CLAUDE_RUN_IN_PROGRESS");
+      expect(capturedJobs).toHaveLength(0);
+      expect(await readSessionTurns(projectDir, THREAD)).toEqual([]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /turns — legacy claude-code threads (--session-id seed / --resume)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/p/:slug/sessions/:id/turns — fresh thread seed (claude-code)", () => {
+  it("seeds the thread with --session-id on first contact and answers 202 naming the run", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedThread(projectDir, THREAD);
+
+      const { status, envelope } = await postTurn(base, THREAD, {
+        intent: "ask",
+        message: "start the thread",
+      });
+
+      expect(status).toBe(202);
+      expect(envelope.ok).toBe(true);
+      const runId = envelope.data?.runId as string;
+      expect(envelope.data?.writeTargetId).toBe(THREAD);
+      expect(envelope.data?.streamUrl).toBe(`/api/p/demo/sessions/${THREAD}/runs/${runId}/stream`);
+
+      // The ARCS thread id names the RECORD (picker label + sidecar filename);
+      // claude only ever sees the bare uuid minted onto its metadata.
+      const uuid = await claudeUuid(projectDir, THREAD);
+      expect(uuid).toMatch(BARE_UUID);
+      expect(uuid).not.toBe(THREAD);
+
+      expect(capturedJobs).toHaveLength(1);
+      expect(capturedJobs[0]).toMatchObject({ cwd: WORKSPACE, writeTargetKey: THREAD });
+      expect(capturedOptions[0]).toBeUndefined();
+      expectTurnArgv(
+        capturedJobs[0],
+        ["-p", "start the thread", "--session-id", uuid, "--output-format", "json"],
+        { intent: "ask", staged: true },
+      );
+      // The record NAME is never a token — claude >= 2.x rejects anything that
+      // is not a bare uuid on --session-id/--resume.
+      expect(capturedJobs[0].argv).not.toContain(THREAD);
+
+      // The seed decision lands at SPAWN, not at settle.
+      expect((await getSession(projectDir, THREAD)).metadata?.threadInitialized).toBe(true);
+      await expectRunRegistered(projectDir, THREAD, "ask");
+    });
+  });
+
+  it("keeps the write target an ARCS-owned thread, exactly one record however many turns", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedThread(projectDir, THREAD);
+
+      await postTurn(base, THREAD, { intent: "ask", message: "own it" });
+      await postTurn(base, THREAD, { intent: "ask", message: "keep owning it" });
+
+      const thread = await getSession(projectDir, THREAD);
+      expect(thread.origin).toBe("arcs");
+      expect(thread.metadata).toMatchObject({ control: "arcs-owned", directory: WORKSPACE });
+      expect(
+        (await listSessions(projectDir)).filter((s) => s.normalizedId === THREAD),
+      ).toHaveLength(1);
+    });
+  });
+
+  it("400s with PROJECT_WORKSPACE_UNSET when neither the thread nor the project pins a directory", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      writeFileSync(
+        resolve(projectDir, "meta.json"),
+        JSON.stringify({
+          id: "demo",
+          name: "Demo",
+          description: "test project",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          workspacePaths: [],
+        }),
+        "utf-8",
+      );
+      await seedThread(projectDir, THREAD, {});
+
+      const { status, envelope } = await postTurn(base, THREAD, {
         intent: "ask",
         message: "where do I run?",
-        threadRef: THREAD,
       });
 
       expect(status).toBe(400);
@@ -439,20 +767,14 @@ describe("POST /api/p/:slug/sessions/:id/turns — fresh thread seed", () => {
   });
 });
 
-describe("POST /api/p/:slug/sessions/:id/turns — thread resume", () => {
+describe("POST /api/p/:slug/sessions/:id/turns — thread resume (claude-code)", () => {
   it("continues a seeded thread with --resume ALONE, minting the uuid exactly once", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_seed_3");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
       const uuid = await claudeUuid(projectDir, THREAD);
 
-      // Addressed to the THREAD itself this time — an arcs-origin record
-      // continues itself with no threadRef needed.
       const second = await postTurn(base, THREAD, { intent: "ask", message: "two" });
       expect(second.status).toBe(202);
       expect(second.envelope.data?.writeTargetId).toBe(THREAD);
@@ -484,13 +806,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — thread resume", () => {
 
   it("accumulates the conversation in one sidecar, user turn then reply, in order", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_seed_4");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "start the thread",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "start the thread" });
       await postTurn(base, THREAD, { intent: "ask", message: "continue" });
 
       await vi.waitFor(async () => {
@@ -506,7 +824,57 @@ describe("POST /api/p/:slug/sessions/:id/turns — thread resume", () => {
     });
   });
 
-  it("refuses a threadRef naming a session ARCS merely observes", async () => {
+  it("continues a thread named by threadRef without re-minting anything", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      await seedThread(projectDir, THREAD);
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
+      const uuid = await claudeUuid(projectDir, THREAD);
+
+      const second = await postTurn(base, THREAD, {
+        intent: "ask",
+        message: "two",
+        threadRef: THREAD,
+      });
+      expect(second.status).toBe(202);
+      expect(second.envelope.data?.writeTargetId).toBe(THREAD);
+      expect(capturedJobs[1].argv).toContain("--resume");
+      expect(capturedJobs[1].argv).toContain(uuid);
+      expect(await claudeUuid(projectDir, THREAD)).toBe(uuid);
+    });
+  });
+});
+
+describe("POST /api/p/:slug/sessions/:id/turns — refusals", () => {
+  /** An observed claude-code record — the class adoption used to fork. */
+  async function seedObserved(projectDir: string, runtimeSessionId: string): Promise<SessionMeta> {
+    return createSession(projectDir, {
+      runtimeType: "claude-code",
+      runtimeSessionId,
+      metadata: { directory: WORKSPACE },
+    });
+  }
+
+  it("refuses to address a session ARCS does not own — no fork, no spawn, no writes", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const observed = await seedObserved(projectDir, "cc_observed_direct");
+      const before = await getSession(projectDir, observed.normalizedId);
+
+      const { status, envelope } = await postTurn(base, observed.normalizedId, {
+        intent: "ask",
+        message: "adopt me",
+      });
+
+      expect(status).toBe(400);
+      expect(envelope.code).toBe("TURN_THREAD_NOT_OWNED");
+      expect(envelope.message).toContain("not an ARCS-owned thread");
+      expect(capturedJobs).toHaveLength(0);
+      // Byte-for-byte the record it was, and its sidecar is untouched.
+      expect(await getSession(projectDir, observed.normalizedId)).toEqual(before);
+      expect(await readSessionTurns(projectDir, observed.normalizedId)).toEqual([]);
+    });
+  });
+
+  it("refuses a threadRef naming a session ARCS does not own", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       const observed = await seedObserved(projectDir, "cc_observed_ref");
 
@@ -523,149 +891,6 @@ describe("POST /api/p/:slug/sessions/:id/turns — thread resume", () => {
       const stored = await getSession(projectDir, observed.normalizedId);
       expect(stored.origin).toBe("observed");
       expect(stored.metadata?.claudeSessionId).toBeUndefined();
-    });
-  });
-});
-
-describe("POST /api/p/:slug/sessions/:id/turns — observed adoption (fork)", () => {
-  /** The observed terminal session's own claude uuid. */
-  const OBSERVED_UUID = "11111111-1111-4111-8111-111111111111";
-
-  it("forks the observed session into a NEW ARCS thread, naming the fork itself", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const observed = await seedObserved(projectDir, OBSERVED_UUID);
-
-      const { status, envelope } = await postTurn(base, observed.normalizedId, {
-        intent: "ask",
-        message: "adopt me",
-      });
-
-      expect(status).toBe(202);
-      const writeTargetId = envelope.data?.writeTargetId as string;
-      expect(writeTargetId).toMatch(ARCS_THREAD_ID);
-      expect(writeTargetId).not.toBe(observed.normalizedId);
-      // The stream is keyed on the WRITE TARGET, never on the path `:id` — the
-      // two differ here, and a URL built from the path id would answer 200 and
-      // then emit nothing at all.
-      expect(envelope.data?.streamUrl).toBe(
-        `/api/p/demo/sessions/${writeTargetId}/runs/${envelope.data?.runId}/stream`,
-      );
-
-      const fork = await getSession(projectDir, writeTargetId);
-      expect(fork.origin).toBe("arcs");
-      expect(fork.metadata?.adoptedFrom).toBe(observed.normalizedId);
-      expect(fork.metadata?.adoptedClaudeSessionId).toBe(OBSERVED_UUID);
-      const forkUuid = fork.metadata?.claudeSessionId as string;
-      expect(forkUuid).toMatch(BARE_UUID);
-
-      // THE SPAWN SHAPE. --session-id names the NEW session and is honoured
-      // verbatim; the fork inherits the observed context and writes a SEPARATE
-      // transcript (probed, claude 2.1.223).
-      expectTurnArgv(
-        capturedJobs[0],
-        [
-          "-p",
-          "adopt me",
-          "--resume",
-          OBSERVED_UUID,
-          "--session-id",
-          forkUuid,
-          "--fork-session",
-          "--output-format",
-          "json",
-        ],
-        { intent: "ask", staged: true },
-      );
-      // THE HIJACK THIS PREVENTS: passing the two equal is silently accepted
-      // (exit 0, empty stderr) and appends to the human's live transcript.
-      expect(forkUuid).not.toBe(OBSERVED_UUID);
-      // The observed uuid appears exactly once, next to --fork-session.
-      expect(capturedJobs[0].argv.filter((token) => token === OBSERVED_UUID)).toHaveLength(1);
-      expect(capturedJobs[0].writeTargetKey).toBe(writeTargetId);
-    });
-  });
-
-  it("READS the observed record and never writes it — no claim, no pid, no deadline, no run", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const observed = await seedObserved(projectDir, OBSERVED_UUID);
-      const before = await getSession(projectDir, observed.normalizedId);
-
-      const { envelope } = await postTurn(base, observed.normalizedId, {
-        intent: "ask",
-        message: "adopt me",
-      });
-      await expectSettled(projectDir, envelope.data?.writeTargetId as string);
-
-      const after = await getSession(projectDir, observed.normalizedId);
-      expect(after.currentRunId).toBeUndefined();
-      expect(after.currentRunPid).toBeUndefined();
-      expect(after.heartbeatAt).toBeUndefined();
-      expect(after.metadata?.runDeadlineAt).toBeUndefined();
-      expect(after.metadata?.run).toBeUndefined();
-      expect(after.metadata?.threadInitialized).toBeUndefined();
-      // Byte-for-byte the record it was, so the human's session is untouched.
-      expect(after).toEqual(before);
-      // And its sidecar is untouched too — the fork's turns land on the fork.
-      expect(await readSessionTurns(projectDir, observed.normalizedId)).toEqual([]);
-    });
-  });
-
-  it("a later turn on the ADOPTED thread resumes its own uuid, never the observed one", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const observed = await seedObserved(projectDir, OBSERVED_UUID);
-
-      const first = await postTurn(base, observed.normalizedId, {
-        intent: "ask",
-        message: "adopt me",
-      });
-      const fork = first.envelope.data?.writeTargetId as string;
-      const forkUuid = await claudeUuid(projectDir, fork);
-
-      const second = await postTurn(base, fork, { intent: "ask", message: "carry on" });
-      expect(second.status).toBe(202);
-      expect(second.envelope.data?.writeTargetId).toBe(fork);
-      expectTurnArgv(
-        capturedJobs[1],
-        ["-p", "carry on", "--resume", forkUuid, "--output-format", "json"],
-        { intent: "ask", staged: false },
-      );
-      expect(capturedJobs[1].argv).not.toContain("--fork-session");
-      expect(capturedJobs[1].argv).not.toContain(OBSERVED_UUID);
-    });
-  });
-
-  it("REFUSES to spawn when the fork id equals the session it would fork", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      // A corrupt (hand-edited, or half-repaired) thread record: the id it
-      // would claim and the id it would fork are the same. claude ACCEPTS this
-      // — exit 0, empty stderr — and appends to the ORIGINAL session, so there
-      // is no error downstream to notice it by. This assertion is the only
-      // thing standing between such a record and a hijacked terminal thread.
-      await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: THREAD,
-        origin: "arcs",
-        metadata: {
-          control: "arcs-owned",
-          directory: WORKSPACE,
-          claudeSessionId: OBSERVED_UUID,
-          adoptedFrom: "cc_observed",
-          adoptedClaudeSessionId: OBSERVED_UUID,
-        },
-      });
-
-      const { status, envelope } = await postTurn(base, THREAD, {
-        intent: "ask",
-        message: "would hijack",
-      });
-
-      expect(status).toBe(400);
-      expect(envelope.code).toBe("CLAUDE_FORK_ID_COLLISION");
-      expect(envelope.message).toContain(OBSERVED_UUID);
-      // Nothing spawned, nothing appended, nothing claimed.
-      expect(capturedJobs).toHaveLength(0);
-      expect(await readSessionTurns(projectDir, THREAD)).toEqual([]);
-      expect((await getSession(projectDir, THREAD)).currentRunId).toBeUndefined();
     });
   });
 
@@ -697,7 +922,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — observed adoption (fork)", ()
 
       const { status, envelope } = await postTurn(base, "ses-stale-runtime", {
         intent: "ask",
-        message: "adopt me",
+        message: "hi",
       });
 
       expect(status).toBe(404);
@@ -706,42 +931,30 @@ describe("POST /api/p/:slug/sessions/:id/turns — observed adoption (fork)", ()
     });
   });
 
-  it("drives a session a terminal is actively driving — the fork makes the attachment gate moot", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const observed = await seedObserved(projectDir, OBSERVED_UUID);
-      // A fresh checkpoint plus an agent list that confirms the terminal: the
-      // record derives `running`, which the old resume path refused outright.
-      await updateSession(projectDir, {
-        id: observed.normalizedId,
-        lastCheckpointAt: new Date().toISOString(),
-      });
-      agentsProbe.stdout = JSON.stringify([{ pid: 4141, sessionId: OBSERVED_UUID }]);
-      expect((await getSessionView(base, observed.normalizedId)).phase).toBe("running");
-
-      const { status, envelope } = await postTurn(base, observed.normalizedId, {
+  it("404s for a session the project does not have", async () => {
+    await withRunRouteCtx(async ({ base }) => {
+      const { status, envelope } = await postTurn(base, "missing-session", {
         intent: "ask",
-        message: "fork the live one",
+        message: "hi",
       });
 
-      // Safe by construction: the fork writes its own transcript, so a live
-      // terminal is no longer a reason to refuse.
-      expect(status).toBe(202);
-      expect(envelope.data?.writeTargetId).toMatch(ARCS_THREAD_ID);
-      expect(capturedJobs[0].argv).toContain("--fork-session");
+      expect(status).toBe(404);
+      expect(envelope.code).toBe("ITEM_NOT_FOUND");
+      expect(capturedJobs).toHaveLength(0);
     });
   });
 });
 
+// ---------------------------------------------------------------------------
+// POST /turns — argv is owned by the permission policy (claude-code path)
+// ---------------------------------------------------------------------------
+
 describe("POST /api/p/:slug/sessions/:id/turns — argv is owned by the permission policy", () => {
   it("emits the policy segment LAST, with the staged text in its slot and nowhere else", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_policy_1");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "policy",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "policy" });
 
       const argv = capturedJobs[0].argv;
       // Ordering is load-bearing: --tools is variadic and consumes following
@@ -760,13 +973,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — argv is owned by the permissi
 
   it("widens the tool set and the permission mode for intent=change, and nothing else", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_policy_2");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "change",
-        message: "edit something",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "change", message: "edit something" });
 
       const uuid = await claudeUuid(projectDir, THREAD);
       expectTurnArgv(
@@ -782,12 +991,11 @@ describe("POST /api/p/:slug/sessions/:id/turns — argv is owned by the permissi
 
   it("accepts guards opaquely — validated, and contributing no token", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_policy_3");
+      await seedThread(projectDir, THREAD);
 
-      const withGuards = await postTurn(base, seed.normalizedId, {
+      const withGuards = await postTurn(base, THREAD, {
         intent: "ask",
         message: "guarded",
-        threadRef: THREAD,
         guards: { allowBash: true, cwd: "/etc", nonsense: ["x"] },
       });
       expect(withGuards.status).toBe(202);
@@ -811,15 +1019,18 @@ describe("POST /api/p/:slug/sessions/:id/turns — argv is owned by the permissi
   });
 });
 
+// ---------------------------------------------------------------------------
+// POST /turns — references reach the prompt
+// ---------------------------------------------------------------------------
+
 describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt", () => {
   it("renders refs into the -p prompt, not into the staged system tier", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_refs_1");
+      await seedThread(projectDir, THREAD);
 
-      const { status } = await postTurn(base, seed.normalizedId, {
+      const { status } = await postTurn(base, THREAD, {
         intent: "ask",
         message: "point me at the doc",
-        threadRef: THREAD,
         refs: [REFERENCE],
       });
       expect(status).toBe(202);
@@ -840,12 +1051,11 @@ describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt",
 
   it("keeps the sidecar append as it was: user turn first, then one turn per ref", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_refs_2");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
+      await postTurn(base, THREAD, {
         intent: "ask",
         message: "point me at the doc",
-        threadRef: THREAD,
         refs: [REFERENCE],
       });
 
@@ -869,12 +1079,11 @@ describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt",
 
   it("writes the doc reference's raw sidecar line untagged, fields in frozen order", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_refs_raw");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
+      await postTurn(base, THREAD, {
         intent: "ask",
         message: "point me at the doc",
-        threadRef: THREAD,
         refs: [REFERENCE],
       });
       await vi.waitFor(async () => {
@@ -902,13 +1111,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt",
 
   it("adds no bytes at all when refs is absent", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_refs_3");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "plain",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "plain" });
 
       const argv = capturedJobs[0].argv;
       expect(argv[argv.indexOf("-p") + 1]).toBe("plain");
@@ -923,6 +1128,10 @@ describe("POST /api/p/:slug/sessions/:id/turns — references reach the prompt",
   });
 });
 
+// ---------------------------------------------------------------------------
+// POST /turns — the seed decision cannot wedge (claude-code)
+// ---------------------------------------------------------------------------
+
 describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedge", () => {
   /** Claude's literal flag-validation stderr, pinned so a reword fails here. */
   const SEED_CONFLICT = (uuid: string) => `Error: Session ID ${uuid} is already in use.`;
@@ -930,7 +1139,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
 
   it("a first turn that TIMES OUT still resumes next time — the flag lands at spawn", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wedge_1");
+      await seedThread(projectDir, THREAD);
       // The exact wedge: claude registered the uuid, then the run was killed
       // before anything could be written back. A settle-time flag would leave
       // this thread re-seeding forever into "already in use", with no UI escape.
@@ -940,11 +1149,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
         error: "claude run timed out after 600000ms",
       };
 
-      const first = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      const first = await postTurn(base, THREAD, { intent: "ask", message: "one" });
       expect(first.status).toBe(202);
       const uuid = await claudeUuid(projectDir, THREAD);
       await expectSettled(projectDir, THREAD);
@@ -964,12 +1169,8 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
 
   it("an 'already in use' error SETS the flag, so the next turn resumes", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wedge_2");
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      await seedThread(projectDir, THREAD);
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
       const uuid = await claudeUuid(projectDir, THREAD);
       await expectSettled(projectDir, THREAD);
 
@@ -1007,12 +1208,8 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
 
   it("a 'No conversation found' error CLEARS the flag and re-mints the uuid", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wedge_3");
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      await seedThread(projectDir, THREAD);
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
       const uuid = await claudeUuid(projectDir, THREAD);
       await expectSettled(projectDir, THREAD);
 
@@ -1049,12 +1246,8 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
 
   it("never publishes the released claim ahead of the repair — the settle is ONE write", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wedge_atomic");
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      await seedThread(projectDir, THREAD);
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
       const uuid = await claudeUuid(projectDir, THREAD);
       await expectSettled(projectDir, THREAD);
       runRecord = { ...RUN_RECORD, outcome: "error", error: NO_CONVERSATION(uuid) };
@@ -1113,58 +1306,12 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
     });
   });
 
-  it("that repair also drops a fork source claude cannot find, so an adopted thread reseeds instead of re-forking", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const observed = await seedObserved(projectDir, "22222222-2222-4222-8222-222222222222");
-      runRecord = {
-        ...RUN_RECORD,
-        outcome: "error",
-        error: NO_CONVERSATION("22222222-2222-4222-8222-222222222222"),
-      };
-
-      const first = await postTurn(base, observed.normalizedId, {
-        intent: "ask",
-        message: "adopt a session claude forgot",
-      });
-      const fork = first.envelope.data?.writeTargetId as string;
-      expect(capturedJobs[0].argv).toContain("--fork-session");
-
-      const repaired = await expectSettled(projectDir, fork);
-      expect(repaired.metadata?.adoptedClaudeSessionId).toBe("");
-      // Provenance survives — it records where the thread came from and never
-      // reaches argv.
-      expect(repaired.metadata?.adoptedFrom).toBe(observed.normalizedId);
-
-      // Without the drop this turn would re-issue the identical doomed
-      // --resume on every send, forever.
-      runRecord = RUN_RECORD;
-      await postTurn(base, fork, { intent: "ask", message: "try again" });
-      expectTurnArgv(
-        capturedJobs[1],
-        [
-          "-p",
-          "try again",
-          "--session-id",
-          repaired.metadata?.claudeSessionId as string,
-          "--output-format",
-          "json",
-        ],
-        { intent: "ask", staged: true },
-      );
-      expect(capturedJobs[1].argv).not.toContain("--fork-session");
-    });
-  });
-
   it("leaves the seed decision alone for an error it does not recognize", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wedge_5");
+      await seedThread(projectDir, THREAD);
       runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
       await expectSettled(projectDir, THREAD);
 
       const stored = await getSession(projectDir, THREAD);
@@ -1174,41 +1321,14 @@ describe("POST /api/p/:slug/sessions/:id/turns — the seed decision cannot wedg
   });
 });
 
+// ---------------------------------------------------------------------------
+// POST /turns — guards & validation
+// ---------------------------------------------------------------------------
+
 describe("POST /api/p/:slug/sessions/:id/turns — guards & validation", () => {
-  it("409s an overlapping run on the same write-target before appending or spawning", async () => {
-    await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_guard_1");
-      vi.mocked(isRunLive).mockReturnValue(true);
-
-      const { status, envelope } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "busy?",
-        threadRef: THREAD,
-      });
-
-      expect(status).toBe(409);
-      expect(envelope.code).toBe("CLAUDE_RUN_IN_PROGRESS");
-      expect(capturedJobs).toHaveLength(0);
-      expect(await readSessionTurns(projectDir, THREAD)).toEqual([]);
-    });
-  });
-
-  it("404s for a session the project does not have", async () => {
-    await withRunRouteCtx(async ({ base }) => {
-      const { status, envelope } = await postTurn(base, "missing-session", {
-        intent: "ask",
-        message: "hi",
-      });
-
-      expect(status).toBe(404);
-      expect(envelope.code).toBe("ITEM_NOT_FOUND");
-      expect(capturedJobs).toHaveLength(0);
-    });
-  });
-
   it("rejects an empty message, a missing intent and an unknown intent with 400 INVALID_BODY", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_guard_2");
+      await seedThread(projectDir, THREAD);
 
       for (const body of [
         { intent: "ask", message: "" },
@@ -1216,7 +1336,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — guards & validation", () => {
         { intent: "native", message: "not an intent" },
         { intent: "bypass", message: "definitely not an intent" },
       ]) {
-        const { status, envelope } = await postTurn(base, seed.normalizedId, body);
+        const { status, envelope } = await postTurn(base, THREAD, body);
         expect({ body, status, code: envelope.code }).toEqual({
           body,
           status: 400,
@@ -1230,9 +1350,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — guards & validation", () => {
 
   it("rejects an unknown reference variant rather than coercing it", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_guard_3");
+      await seedThread(projectDir, THREAD);
 
-      const { status, envelope } = await postTurn(base, seed.normalizedId, {
+      const { status, envelope } = await postTurn(base, THREAD, {
         intent: "ask",
         message: "bad ref",
         refs: [{ type: "screenshot", data: "…" }],
@@ -1244,6 +1364,10 @@ describe("POST /api/p/:slug/sessions/:id/turns — guards & validation", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /turns — write-back
+// ---------------------------------------------------------------------------
 
 describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
   async function expectRunFinalized(
@@ -1259,13 +1383,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
 
   it("finalizes metadata.run with the intent as its mode", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wb_1");
+      await seedThread(projectDir, THREAD);
 
-      const { status } = await postTurn(base, seed.normalizedId, {
-        intent: "change",
-        message: "settle me",
-        threadRef: THREAD,
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "change", message: "settle me" });
       expect(status).toBe(202);
 
       await expectRunFinalized(projectDir, THREAD, {
@@ -1280,17 +1400,13 @@ describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
 
   it("persists the runner's firstTokenAt and skippedLines onto metadata.run", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wb_2");
+      await seedThread(projectDir, THREAD);
       // The write-back allowlist has to carry these through: time-to-first-token
       // (firstTokenAt - startedAt) and the wire-format drift counter are only
       // measurable after the fact if they reach disk.
       runRecord = { ...RUN_RECORD, firstTokenAt: 1_700_000_002_500, skippedLines: 3 };
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "measure me",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "measure me" });
 
       await expectRunFinalized(projectDir, THREAD, {
         startedAt: 1_700_000_000_000,
@@ -1302,13 +1418,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
 
   it("omits firstTokenAt and skippedLines when the runner did not report them", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wb_3");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "quiet",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "quiet" });
 
       await expectRunFinalized(projectDir, THREAD, { outcome: "success" });
       const stored = await getSession(projectDir, THREAD);
@@ -1319,13 +1431,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
 
   it("appends the captured reply on success, and nothing at all on error or timeout", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_wb_4");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "ok",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "ok" });
       await expectSettled(projectDir, THREAD);
 
       for (const outcome of ["error", "timeout"] as const) {
@@ -1353,6 +1461,10 @@ describe("POST /api/p/:slug/sessions/:id/turns — write-back", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// POST /turns — run claim + derived phase (W1)
+// ---------------------------------------------------------------------------
+
 describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1)", () => {
   /** A pid above every Linux/macOS pid_max — guaranteed not to be a process. */
   const DEAD_PID = 2_147_483_646;
@@ -1367,6 +1479,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1
   function runNeverSettles(): void {
     vi.mocked(runClaudeJob).mockImplementation(async (input) => {
       capturedJobs.push(input);
+      capturedOptions.push(undefined);
       return new Promise<ClaudeRunRecord>(() => {});
     });
   }
@@ -1375,14 +1488,10 @@ describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
       vi.mocked(liveRunPid).mockReturnValue(LIVE_PID);
-      const seed = await seedObserved(projectDir, "cc_claim_1");
+      await seedThread(projectDir, THREAD);
       const before = Date.now();
 
-      const { status } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "claim me",
-        threadRef: THREAD,
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "claim me" });
       expect(status).toBe(202);
 
       // The claim is what survives the server process that made it: without a
@@ -1404,14 +1513,10 @@ describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1
 
   it("releases the claim at settle, keeping firstTokenAt/skippedLines on the run", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_claim_2");
+      await seedThread(projectDir, THREAD);
       runRecord = { ...RUN_RECORD, firstTokenAt: 1_700_000_002_500, skippedLines: 3 };
 
-      const { status } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "settle me",
-        threadRef: THREAD,
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "settle me" });
       expect(status).toBe(202);
 
       await vi.waitFor(async () => {
@@ -1442,17 +1547,13 @@ describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1
   it("derives idle for a live claim whose pid is gone, running while it is alive", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
-      const seed = await seedObserved(projectDir, "cc_claim_3");
+      await seedThread(projectDir, THREAD);
 
       // The child died without the runner noticing (a killed pid, not an exit
       // the write-back saw): the claim still stands on disk, and only probing
       // its pid can tell that the run is gone.
       vi.mocked(liveRunPid).mockReturnValue(DEAD_PID);
-      const { status } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "kill me",
-        threadRef: THREAD,
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "kill me" });
       expect(status).toBe(202);
 
       const claimed = await getSession(projectDir, THREAD);
@@ -1476,13 +1577,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
       vi.mocked(liveRunPid).mockReturnValue(LIVE_PID);
-      const seed = await seedObserved(projectDir, "cc_claim_4");
+      await seedThread(projectDir, THREAD);
 
-      const { status } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "run long",
-        threadRef: THREAD,
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "run long" });
       expect(status).toBe(202);
       expect((await getSessionView(base, THREAD)).phase).toBe("running");
 
@@ -1523,12 +1620,17 @@ describe("POST /api/p/:slug/sessions/:id/turns — run claim + derived phase (W1
   });
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/p/:slug/sessions — what one read costs (W1)
+// ---------------------------------------------------------------------------
+
 describe("GET /api/p/:slug/sessions — what one read costs (W1)", () => {
   /** Makes the fake runner spawn a run that never settles, so the read below
    *  happens while the write-target still holds its claim. */
   function runNeverSettles(): void {
     vi.mocked(runClaudeJob).mockImplementation(async (input) => {
       capturedJobs.push(input);
+      capturedOptions.push(undefined);
       return new Promise<ClaudeRunRecord>(() => {});
     });
   }
@@ -1537,7 +1639,7 @@ describe("GET /api/p/:slug/sessions — what one read costs (W1)", () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runNeverSettles();
       vi.mocked(liveRunPid).mockReturnValue(process.pid);
-      const quiet = await createSession(projectDir, {
+      await createSession(projectDir, {
         runtimeType: "claude-code",
         runtimeSessionId: "cc_cost_idle",
         status: "idle",
@@ -1547,14 +1649,14 @@ describe("GET /api/p/:slug/sessions — what one read costs (W1)", () => {
         runtimeSessionId: "cc_cost_done",
         status: "completed",
       });
+      await seedThread(projectDir, THREAD);
 
       // A live ARCS run: its claim is checked against the pid, so the agent list
       // has nothing to say about it — and this is exactly the moment the UI
       // polls hardest.
-      const { status } = await postTurn(base, quiet.normalizedId, {
+      const { status } = await postTurn(base, THREAD, {
         intent: "ask",
         message: "hold the claim",
-        threadRef: THREAD,
       });
       expect(status).toBe(202);
       agentsProbe.spawns = 0;
@@ -1609,6 +1711,10 @@ describe("GET /api/p/:slug/sessions — what one read costs (W1)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /turns — staged environment (W2, claude-code only)
+// ---------------------------------------------------------------------------
 
 describe("POST /api/p/:slug/sessions/:id/turns — staged environment (W2)", () => {
   const TASK_ID = "wire-the-staged-environment";
@@ -1668,12 +1774,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — staged environment (W2)", () 
       seedTask(projectDir);
       // The thread exists and is LINKED before its first turn — the block
       // describes the WRITE TARGET, so that is the record to link.
-      await createSession(projectDir, {
-        runtimeType: "claude-code",
-        runtimeSessionId: THREAD,
-        origin: "arcs",
-        metadata: { control: "arcs-owned", directory: WORKSPACE },
-      });
+      await seedThread(projectDir, THREAD);
       await updateSession(projectDir, {
         id: THREAD,
         linkedNodeType: "task",
@@ -1701,13 +1802,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — staged environment (W2)", () 
       // cheap exit could never fire again.
       const ahead = new Date(Date.now() + 600_000);
       utimesSync(resolve(projectDir, "tasks", "index.json"), ahead, ahead);
-      const seed = await seedObserved(projectDir, "cc_stage_2");
+      await seedThread(projectDir, THREAD);
 
-      const { status } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "stage me",
-        threadRef: THREAD,
-      });
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "stage me" });
       expect(status).toBe(202);
 
       const stage = await storedStage(projectDir, THREAD);
@@ -1725,13 +1822,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — staged environment (W2)", () 
   it("writes metadata.stage ONLY when the refresh asks: a fresh stage is neither re-persisted nor re-injected", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       seedTask(projectDir);
-      const seed = await seedObserved(projectDir, "cc_stage_3");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "one",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "one" });
       const first = await storedStage(projectDir, THREAD);
       expect(first?.stagedAt).toBeTypeOf("number");
       expect(stagedText(capturedJobs[0])).toContain(STAGE_OPEN);
@@ -1756,38 +1849,26 @@ describe("POST /api/p/:slug/sessions/:id/turns — staged environment (W2)", () 
     });
   });
 
-  it("carries the block on an adoption FORK too — the inherited context never saw it", async () => {
+  it("an opencode run carries no staged tier — the driver's argv is complete", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       seedTask(projectDir);
-      const observed = await seedObserved(projectDir, "33333333-3333-4333-8333-333333333333");
+      await seedOpencodeThread(projectDir, THREAD);
 
-      const first = await postTurn(base, observed.normalizedId, {
-        intent: "ask",
-        message: "fork one",
-      });
-      const forkA = first.envelope.data?.writeTargetId as string;
-      // A second adoption of the same session mints another thread whose stage
-      // is fresh from the first one's probe — and it must STILL be told where
-      // it is, because a fork inherits the human's context, not ARCS's block.
-      const second = await postTurn(base, observed.normalizedId, {
-        intent: "ask",
-        message: "fork two",
-      });
-      const forkB = second.envelope.data?.writeTargetId as string;
+      const { status } = await postTurn(base, THREAD, { intent: "ask", message: "carry on" });
+      expect(status).toBe(202);
 
-      expect(forkB).not.toBe(forkA);
-      expect(stagedText(capturedJobs[0])).toContain(STAGE_OPEN);
-      // The second fork's stage probe takes the cheap exit (nothing in the DAG
-      // moved), and it must STILL be told where it is — a fork inherits the
-      // human's context, never ARCS's block.
-      expect(stagedText(capturedJobs[1])).toContain(STAGE_OPEN);
-      // Each block names its OWN write target, which is what makes it the
-      // right block to cache against that thread.
-      expect(stagedText(capturedJobs[0])).toContain(forkA);
-      expect(stagedText(capturedJobs[1])).toContain(forkB);
+      expect(capturedJobs[0].argv).toEqual(["run", "--format", "json", "carry on"]);
+      expect(stagedText(capturedJobs[0])).toBeUndefined();
+      // No stage stamp either: the fingerprint describes a claude injection
+      // that never happened.
+      expect(await storedStage(projectDir, THREAD)).toBeUndefined();
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /turns — per-run event log + fold-down (W2, claude parser path)
+// ---------------------------------------------------------------------------
 
 describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down (W2)", () => {
   function eventLogNames(projectDir: string): string[] {
@@ -1814,13 +1895,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
   it("logs under the SAME run id it persisted as the claim, and answers with it", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("hello")));
-      const seed = await seedObserved(projectDir, "cc_w2_runid");
+      await seedThread(projectDir, THREAD);
 
-      const { status, envelope } = await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      const { status, envelope } = await postTurn(base, THREAD, { intent: "ask", message: "go" });
       expect(status).toBe(202);
 
       const runId = await settledRunId(projectDir, THREAD);
@@ -1843,13 +1920,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
         assistantEvent(textBlock("Done.")),
         { type: "result", is_error: false, result: "Done." },
       );
-      const seed = await seedObserved(projectDir, "cc_w2_fold");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       const runId = await settledRunId(projectDir, THREAD);
 
       const turns = await readSessionTurns(projectDir, THREAD);
@@ -1869,13 +1942,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
   it("folding the settled log again is a no-op", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("once"), toolBlock("Bash")));
-      const seed = await seedObserved(projectDir, "cc_w2_idempotent");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       const runId = await settledRunId(projectDir, THREAD);
       const afterRun = await readSessionTurns(projectDir, THREAD);
       expect(afterRun.map((t) => t.text)).toEqual(["go", "once", ""]);
@@ -1892,13 +1961,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("got this far")));
       runRecord = { ...RUN_RECORD, outcome: "error", error: "model refused" };
-      const seed = await seedObserved(projectDir, "cc_w2_error");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       const runId = await settledRunId(projectDir, THREAD);
 
       // The log outlives the failure: what the child said is in the sidecar and
@@ -1916,13 +1981,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson({ type: "system", subtype: "init" });
       runRecord = { ...RUN_RECORD, outcome: "timeout", error: "timed out" };
-      const seed = await seedObserved(projectDir, "cc_w2_timeout");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       const runId = await settledRunId(projectDir, THREAD);
 
       expect(existsSync(runEventLogPath(projectDir, THREAD, runId))).toBe(true);
@@ -1935,13 +1996,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
   it("without a log the captured-reply write-back is unchanged", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = "";
-      const seed = await seedObserved(projectDir, "cc_w2_nolog");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       await settledRunId(projectDir, THREAD);
 
       const turns = await readSessionTurns(projectDir, THREAD);
@@ -1955,16 +2012,12 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
 
   it("prunes at settle so a session's logs stay bounded", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
-      const seed = await seedObserved(projectDir, "cc_w2_retention");
+      await seedThread(projectDir, THREAD);
 
       const runs = RUN_EVENT_LOG_RETENTION + 3;
       for (let i = 0; i < runs; i += 1) {
         runStdout = ndjson(assistantEvent(textBlock(`turn ${i}`)));
-        const { status } = await postTurn(base, i === 0 ? seed.normalizedId : THREAD, {
-          intent: "ask",
-          message: `run ${i}`,
-          ...(i === 0 ? { threadRef: THREAD } : {}),
-        });
+        const { status } = await postTurn(base, THREAD, { intent: "ask", message: `run ${i}` });
         expect(status).toBe(202);
         // The claim is released at settle — and settle is where the prune runs.
         await expectSettled(projectDir, THREAD);
@@ -1987,13 +2040,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
       // zero lines on disk — the same count a child that never spoke produces.
       runStdout = "";
       runRecord = { ...RUN_RECORD, eventLogLines: 0, eventLogTruncated: true };
-      const seed = await seedObserved(projectDir, "cc_w2_truncated");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       await settledRunId(projectDir, THREAD);
 
       const run = (await getSession(projectDir, THREAD)).metadata?.run as Record<string, unknown>;
@@ -2008,13 +2057,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("all of it")));
       runRecord = { ...RUN_RECORD, eventLogLines: 1 };
-      const seed = await seedObserved(projectDir, "cc_w2_whole");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       await settledRunId(projectDir, THREAD);
 
       const run = (await getSession(projectDir, THREAD)).metadata?.run as Record<string, unknown>;
@@ -2026,13 +2071,9 @@ describe("POST /api/p/:slug/sessions/:id/turns — per-run event log + fold-down
   it("DELETE takes the session's event logs with its sidecar", async () => {
     await withRunRouteCtx(async ({ base, projectDir }) => {
       runStdout = ndjson(assistantEvent(textBlock("bye")));
-      const seed = await seedObserved(projectDir, "cc_w2_delete");
+      await seedThread(projectDir, THREAD);
 
-      await postTurn(base, seed.normalizedId, {
-        intent: "ask",
-        message: "go",
-        threadRef: THREAD,
-      });
+      await postTurn(base, THREAD, { intent: "ask", message: "go" });
       await settledRunId(projectDir, THREAD);
       expect(eventLogNames(projectDir)).toHaveLength(1);
 

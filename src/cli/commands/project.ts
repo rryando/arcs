@@ -326,40 +326,8 @@ async function handleProjectInit(
       }
     }
 
-    // Claude Code session bridge: offer to write the hook into the workspace's
-    // .claude/settings.local.json (non-fatal, confirm-gated, interactive only).
-    // Requires an explicit workspace path — writing agent config into whatever
-    // directory the CLI happens to run from would be wrong, so an unset --path
-    // skips the offer entirely rather than falling back to process.cwd().
-    // Skip when ARCS_SKIP_HOOK_INSTALL=1 (used in tests).
-    let claudeCodeHook: { settingsPath: string; events: string[] } | null = null;
-    if (
-      !flags.json &&
-      process.stdout.isTTY === true &&
-      wsPath &&
-      process.env.ARCS_SKIP_HOOK_INSTALL !== "1"
-    ) {
-      try {
-        const { promptAndInstallClaudeCodeHook } = await import(
-          "../../utils/claude-code-hook-install.js"
-        );
-        const installed = await promptAndInstallClaudeCodeHook({
-          workspacePath: normalizeWorkspacePath(wsPath),
-          projectDir,
-          slug,
-        });
-        if (installed) {
-          claudeCodeHook = { settingsPath: installed.settingsPath, events: installed.events };
-        }
-      } catch {
-        // Hook install failure never blocks project init
-      }
-    }
-
     // When codegraph is unavailable, the structured `codegraph` field carries
-    // the install hint (JSON path). Interactive TTY sessions are offered an
-    // on-the-spot install above before this point, so no extra terminal nudge
-    // is printed here.
+    // the install hint (JSON path).
     return success({
       slug,
       name,
@@ -367,7 +335,6 @@ async function handleProjectInit(
       dependsOn: [],
       codegraph,
       quickScan: quickScanResult,
-      claudeCodeHook,
     });
   } catch (err) {
     return failure("init_error", err instanceof Error ? err.message : String(err));

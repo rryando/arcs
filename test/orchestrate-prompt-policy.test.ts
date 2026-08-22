@@ -70,7 +70,7 @@ describe("orchestrate prompt policy — delegation-preferred lifecycle", () => {
       .map((entry) => entry.name)
       .filter((name) => name !== "executing-plans")
       .sort();
-    expect(skills).toHaveLength(12);
+    expect(skills).toHaveLength(11);
     for (const skill of skills) expect(ORCHESTRATE_PROMPT_TEXT, skill).toContain(`\`${skill}\``);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("`executing-plans`");
   });

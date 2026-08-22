@@ -1,9 +1,9 @@
 /**
- * Sessions view — live agent runtime sessions discovered for this project.
+ * Sessions view — the ARCS threads created for this project.
  *
- * The table mirrors whatever the session bridge has written into the session
- * store, plus the DAG link a human attached to a session. Any session can also
- * be prompted from here — a send forks it into a new ARCS thread.
+ * The table mirrors the session store: one row per ARCS thread, plus the DAG
+ * link a human attached to it. Any thread can be opened in the session panel
+ * or prompted directly from here; "+ new thread" mints one via POST /sessions.
  */
 
 import { useParams } from "@tanstack/react-router";
@@ -17,6 +17,7 @@ import { Panel } from "../components/Panel";
 import { useToaster } from "../components/Toaster";
 import { sessionName } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
+import { NewThreadDialog } from "./NewThreadDialog";
 import { SessionLinkModal } from "./SessionLinkModal";
 import { SessionMessageForm } from "./SessionMessageForm";
 import { useSessionPanel } from "./SessionPanel";
@@ -30,6 +31,7 @@ import {
 } from "./SessionStatusBadge";
 
 const RUNTIME_LABEL: Record<string, string> = {
+  opencode: "opencode",
   "claude-code": "claude code",
 };
 
@@ -52,6 +54,7 @@ export function SessionsView() {
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
   const [linkTarget, setLinkTarget] = useState<SessionMeta | null>(null);
   const [messageTarget, setMessageTarget] = useState<SessionMeta | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const sessions = useMemo(() => data?.sessions ?? [], [data]);
 
@@ -85,12 +88,9 @@ export function SessionsView() {
 
   // `isSessionLive` reads the same derived state the badges show — it takes the
   // record, so this count cannot drift back onto the persisted status the way a
-  // local predicate over `s.status` did. ARCS-owned records are headless run
-  // bookkeeping, not sessions a human can reach — counting them as "live"
-  // advertises agents nobody is talking to.
-  const liveCount = sessions.filter(
-    (s) => isSessionLive(s) && s.metadata?.control !== "arcs-owned",
-  ).length;
+  // local predicate over `s.status` did. Every row is an ARCS thread a human
+  // drives from the panel, so every live one counts.
+  const liveCount = sessions.filter((s) => isSessionLive(s)).length;
 
   const linkLabel = useMemo(() => {
     const titles = new Map<string, string>();
@@ -271,10 +271,19 @@ export function SessionsView() {
         title="sessions"
         hint={`${rows.length}/${sessions.length} · ${liveCount} live`}
         actions={
-          <span className="text-[11px] text-term-dim">
-            session bridge · <span className="kbd">l</span> link · <span className="kbd">v</span>{" "}
-            view · <span className="kbd">m</span> message · <span className="kbd">x</span> forget
-          </span>
+          <>
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="mr-2 border border-term-green/60 px-1.5 py-0.5 text-[11px] font-bold text-term-green hover:bg-term-green hover:text-term-bg"
+            >
+              + new thread
+            </button>
+            <span className="text-[11px] text-term-dim">
+              <span className="kbd">l</span> link · <span className="kbd">v</span> view ·{" "}
+              <span className="kbd">m</span> message · <span className="kbd">x</span> forget
+            </span>
+          </>
         }
       >
         <div className="flex items-center gap-1 border-b border-term-border px-2 py-1 text-[11px]">
@@ -315,7 +324,7 @@ export function SessionsView() {
                 run: (s) => setMessageTarget(s),
               },
             ]}
-            emptyMessage="no sessions — run `claude` in a linked directory to register one"
+            emptyMessage="no threads yet — start one with “+ new thread”"
           />
         )}
       </Panel>
@@ -329,6 +338,14 @@ export function SessionsView() {
           slug={slug}
           session={messageTarget}
           onClose={() => setMessageTarget(null)}
+        />
+      )}
+
+      {createOpen && (
+        <NewThreadDialog
+          slug={slug}
+          onCreated={(created) => openSession(created.normalizedId)}
+          onClose={() => setCreateOpen(false)}
         />
       )}
 

@@ -21,4 +21,3 @@ import "./done.js";
 import "./status.js";
 import "./proposal.js";
 import "./web.js";
-import "./hooks.js";

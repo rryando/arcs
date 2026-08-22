@@ -5,23 +5,22 @@
  * Exercises the REAL web server and a REAL `claude` binary end to end — no
  * mocks, no stubs, no fake runner:
  *
- *   seed a real claude session (headless) → POST /sessions/:id/turns
- *   → 202 accepted → the observed session is ADOPTED (forked) into a new ARCS
- *   thread → child spawns → exit mapping → the write-back folds the run's event
- *   log → GET /transcript on the WRITE TARGET shows the user turn followed by
- *   the assistant reply, and the observed session is untouched.
+ *   seed a real claude session (headless) → create an ARCS thread whose
+ *   claude-facing uuid IS that session → POST /sessions/:id/turns → 202
+ *   accepted → child spawns with `--resume <uuid>` → exit mapping → the
+ *   write-back folds the run's event log → GET /transcript shows the user turn
+ *   followed by the assistant reply.
  *
  * The test is gated by ARCS_CLAUDE_E2E=1: without it, the single `it` is
  * skipped so the bare file passes in CI (exit 0) even where no `claude` can
  * run. With the gate on, it shells out to a real, authenticated `claude` on
  * PATH (and costs real tokens) — run deliberately, never in CI.
  *
- * This is the only place the ADOPTION FORK is exercised against a real claude:
- * `--resume <observed uuid> --session-id <fresh uuid> --fork-session`. The
- * fork's transcript is a separate file, so asserting the original session's
- * JSONL did not grow is what proves the human's live terminal thread was not
- * hijacked — the failure mode has no error to notice it by (claude accepts
- * `--session-id` equal to `--resume`, exit 0, empty stderr).
+ * This is the only place the legacy claude-code RESUME path is exercised
+ * against a real claude: an ARCS-created thread seeded with a uuid claude
+ * already knows, continued by `--resume`. (The old adoption fork —
+ * `--resume <observed> --session-id <fresh> --fork-session` — is gone with the
+ * observed sessions it forked.)
  *
  * Known version-drift note: the route builds the child argv WITHOUT `--cwd` —
  * claude >= 2.x rejects it ("unknown option"), settling every headless run as
@@ -33,7 +32,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { type Dirent, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { type Dirent, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -151,16 +150,8 @@ async function waitForRunSettled(
   );
 }
 
-/** Complete lines in a claude JSONL transcript — the measure the fork probe
- *  used, so "the original did not grow" is asserted the same way it was found. */
-function transcriptLineCount(path: string): number {
-  return readFileSync(path, "utf-8")
-    .split("\n")
-    .filter((line) => line.trim() !== "").length;
-}
-
 it.skipIf(!e2e)(
-  "a headless turn forks the observed session and writes back to the fork",
+  "a headless turn resumes a seeded ARCS thread and writes back to it",
   async () => {
     await withTempDataDir(async (dir) => {
       writeFileSync(
@@ -185,23 +176,30 @@ it.skipIf(!e2e)(
         "utf-8",
       );
 
-      // A real Claude session for the turn to ADOPT: the headless seed writes
-      // ~/.claude/projects/<escaped workdir>/<uuid>.jsonl, which the fork
-      // inherits the context of and must leave untouched.
-      const runtimeSessionId = randomUUID();
-      seedClaudeSession(dir, runtimeSessionId);
-      const transcriptPath = findSessionTranscript(runtimeSessionId);
+      // A real Claude session for the thread to CONTINUE: the headless seed
+      // registers the uuid with claude and writes
+      // ~/.claude/projects/<escaped workdir>/<uuid>.jsonl.
+      const claudeSessionId = randomUUID();
+      seedClaudeSession(dir, claudeSessionId);
       expect(
-        transcriptPath,
+        findSessionTranscript(claudeSessionId),
         "seed session JSONL must exist under ~/.claude/projects",
       ).toBeDefined();
-      const seedLinesBefore = transcriptLineCount(transcriptPath as string);
 
-      const session = await createSession(projectDir, {
+      // An ARCS-owned claude-code thread whose claude-facing uuid IS the seeded
+      // one, already handed over (threadInitialized) — so the turn RESUMES it
+      // with --resume instead of seeding a fresh uuid claude would refuse.
+      const thread = await createSession(projectDir, {
         runtimeType: "claude-code",
-        runtimeSessionId,
+        recordName: "arcs-thread-demo-e2e",
+        origin: "arcs",
         status: "idle",
-        metadata: { directory: dir, transcriptPath },
+        metadata: {
+          control: "arcs-owned",
+          directory: dir,
+          claudeSessionId,
+          threadInitialized: true,
+        },
       });
 
       process.env.ARCS_CLAUDE_RUN_TIMEOUT_MS = String(RUN_TIMEOUT_MS);
@@ -211,9 +209,9 @@ it.skipIf(!e2e)(
         server = await startWebServer({ port: 0, host: "127.0.0.1", watch: false });
 
         // 1. The route answers 202 immediately — the run proceeds out-of-band —
-        //    and names the record it forked the observed session into.
+        //    naming the thread itself as the write target.
         const runRes = await fetch(
-          `${server.url}/api/p/demo/sessions/${session.normalizedId}/turns`,
+          `${server.url}/api/p/demo/sessions/${thread.normalizedId}/turns`,
           {
             method: "POST",
             headers: {
@@ -232,23 +230,20 @@ it.skipIf(!e2e)(
         const runId = runEnvelope.data?.runId as string;
         const writeTargetId = runEnvelope.data?.writeTargetId as string;
         expect(runId).toBeTypeOf("string");
-        // Adoption forks: the write target is a NEW ARCS thread, never the
-        // observed record the turn was addressed to.
-        expect(writeTargetId).toMatch(/^arcs-thread-demo-/);
-        expect(writeTargetId).not.toBe(session.normalizedId);
+        expect(writeTargetId).toBe(thread.normalizedId);
         expect(runEnvelope.data?.streamUrl).toBe(
           `/api/p/demo/sessions/${writeTargetId}/runs/${runId}/stream`,
         );
 
-        // 2. The run completes: metadata.run finalizes with a terminal outcome
-        //    on the WRITE TARGET, carrying the turn's intent.
+        // 2. The run completes: metadata.run finalizes with a terminal outcome,
+        //    carrying the turn's intent.
         const { run } = await waitForRunSettled(server.url, writeTargetId, POLL_DEADLINE_MS);
         expect(run.outcome).toBe("success");
         expect(run.mode).toBe("ask");
         expect(typeof run.endedAt).toBe("number");
         expect(run.replyChars).toBeGreaterThan(0);
 
-        // 3. The fork's own sidecar: the request-time user turn, then the
+        // 3. The thread's own sidecar: the request-time user turn, then the
         //    assistant reply the settle folded down (exact text loose).
         const trRes = await fetch(`${server.url}/api/p/demo/sessions/${writeTargetId}/transcript`);
         expect(trRes.status).toBe(200);
@@ -260,7 +255,7 @@ it.skipIf(!e2e)(
         const userIdx = turns.findIndex((t) => t.type === "user" && t.text === RUN_MESSAGE);
         expect(
           userIdx,
-          "the turn's user prompt must be on the fork's sidecar",
+          "the turn's user prompt must be on the thread's sidecar",
         ).toBeGreaterThanOrEqual(0);
         const assistantAfter = turns
           .slice(userIdx + 1)
@@ -270,21 +265,16 @@ it.skipIf(!e2e)(
           "an assistant turn with the reply text must follow the user turn",
         ).toBeDefined();
 
-        // 4. THE SAFETY PROPERTY. The observed session's transcript did not
-        //    grow, and its record holds no claim — a fork that landed in place
-        //    would have appended to the human's live thread with exit 0 and an
-        //    empty stderr, which is exactly why this is measured rather than
-        //    trusted.
-        expect(transcriptLineCount(transcriptPath as string)).toBe(seedLinesBefore);
-        const observedRes = await fetch(
-          `${server.url}/api/p/demo/sessions/${session.normalizedId}`,
-        );
-        const observed = (await observedRes.json()) as SessionEnvelope;
-        expect(observed.data?.metadata?.run).toBeUndefined();
+        // 4. The conversation stayed on ONE claude session: the thread still
+        //    carries the uuid it resumed, never having re-seeded.
+        const after = (await (
+          await fetch(`${server.url}/api/p/demo/sessions/${writeTargetId}`)
+        ).json()) as SessionEnvelope;
+        expect(after.data?.metadata?.claudeSessionId).toBe(claudeSessionId);
       } finally {
         await server?.close();
       }
     });
   },
-  180_000, // real claude seed + fork + settle routinely exceed vitest's 5s default
+  180_000, // real claude seed + resume + settle routinely exceed vitest's 5s default
 );

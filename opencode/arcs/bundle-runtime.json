@@ -20,9 +20,6 @@
     "implementation": [
       "SKILL.md"
     ],
-    "install-claude-code-hook": [
-      "SKILL.md"
-    ],
     "systematic-debugging": [
       "SKILL.md",
       "condition-based-waiting.md",

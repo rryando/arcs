@@ -1,13 +1,16 @@
 /**
  * Session routes — full CRUD over the per-project session index.
  *
- * Sessions are runtime records for claude-code agent sessions attached to a
- * project. All mutations go through the locked session-store, so concurrent
- * writers (the hook-event bridge and the web UI) cannot clobber each other.
+ * Sessions are runtime records for agent threads attached to a project. Every
+ * record this module mints is ARCS-origin ("arcs"): a thread ARCS drives itself
+ * through one-shot runs, `opencode run` for the default opencode runtime and
+ * headless `claude -p` for legacy claude-code threads. All mutations go through
+ * the locked session-store, so concurrent writers cannot clobber each other.
  *
- * One route reaches outside the store: `POST /sessions/:id/turns` RUNS a
- * headless `claude -p` turn against a thread ARCS owns, forking an observed
- * session into such a thread on first contact. Every route here is
+ * One route reaches outside the store: `POST /sessions/:id/turns` RUNS a turn.
+ * The RUNTIME policy — argv shapes and wire format — lives in run-driver.ts
+ * adapters; the generic lifecycle (spawn, concurrency slot, durable event log,
+ * timeout) stays in claude-runner.ts and run-event-log.ts. Every route here is
  * browser-facing and therefore already behind the global loopback-only
  * `secureLocalRequest` middleware — no per-route auth.
  */
@@ -48,6 +51,7 @@ import {
 } from "../../utils/session-store.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import {
+  type ClaudeRunnerOptions,
   type ClaudeRunRecord,
   isRunLive,
   liveRunPid,
@@ -57,6 +61,7 @@ import {
 import { buildPermissionArgv, RUN_INTENTS, type RunIntent } from "../permission-policy.js";
 import { buildStagedEnvironment, planStageRefresh, renderReferences } from "../prompt-assembly.js";
 import { fail, parseBody, requireProjectDir, respond } from "../respond.js";
+import { getRunDriver } from "../run-driver.js";
 import {
   foldRunEventLog,
   pruneRunEventLogs,
@@ -67,9 +72,18 @@ import { isProcessAlive, reconcileSessionPhases } from "../session-reconciler.js
 
 export const sessionsRoute = new Hono();
 
+/**
+ * Payload for POST /sessions — one ARCS-owned thread record.
+ *
+ * `runtimeType` defaults to "opencode": the runtime the run-driver seam exists
+ * for. `runtimeSessionId` is optional and only ever NAMES the record when
+ * given; the runtime-native id of an opencode thread is unknowable until its
+ * first settled run harvests one, so a minted thread starts without it.
+ * Creation spawns nothing — the first POST /turns does.
+ */
 const createSessionSchema = z.object({
-  runtimeType: z.enum(SESSION_RUNTIME_TYPES),
-  runtimeSessionId: z.string().min(1),
+  runtimeType: z.enum(SESSION_RUNTIME_TYPES).default("opencode"),
+  runtimeSessionId: z.string().min(1).optional(),
   status: z.enum(SESSION_STATUSES).optional(),
   startedAt: z.string().optional(),
   lastMessageAt: z.string().optional(),
@@ -177,12 +191,13 @@ const sessionReferenceSchema = z
  * and permission mode `buildPermissionArgv` emits (`ask` → read-only + plan,
  * `change` → the edit surface + acceptEdits) and decides nothing else.
  *
- * `threadRef` names an ARCS thread RECORD to continue — never a claude uuid,
- * and never an observed session (that is what adoption is for). `refs` are the
- * turn's references: they render into the user-facing prompt AND land on the
- * sidecar. `guards` is validated and then deliberately ignored here; the
- * change-intent preflight that reads it is a separate task, and accepting the
- * key now keeps that task from being a breaking payload change.
+ * `threadRef` names an ARCS thread RECORD to continue — never a runtime-native
+ * session id, and never a record ARCS does not own (that is refused, not
+ * claimed). `refs` are the turn's references: they render into the user-facing
+ * prompt AND land on the sidecar. `guards` is validated and then deliberately
+ * ignored here; the change-intent preflight that reads it is a separate task,
+ * and accepting the key now keeps that task from being a breaking payload
+ * change.
  */
 const turnSchema = z.object({
   intent: z.enum(RUN_INTENTS),
@@ -419,12 +434,10 @@ interface ThreadSeedRepair {
  *  - "already in use" — claude HAS the id ARCS thought it had not handed over.
  *    The flag was a false negative; set it and the next turn resumes.
  *  - "No conversation found with session ID" — claude does NOT have the id ARCS
- *    resumed. Clearing the flag alone would re-seed the SAME uuid, so the uuid
- *    is re-minted with it. `adoptedClaudeSessionId` is cleared in the same
- *    write: it is the id claude could not find, and keeping it would re-issue
- *    the identical doomed `--resume` on every later turn — the exact wedge this
- *    repair exists to prevent. `adoptedFrom` stays, because the record's
- *    provenance is still true and never reaches argv.
+ *    resumed. Clearing the flag alone would re-seed the SAME uuid, so a fresh
+ *    one is minted with it: keeping the old id would re-issue the identical
+ *    doomed `--resume` on every later turn — the exact wedge this repair exists
+ *    to prevent.
  */
 function repairThreadSeed(record: ClaudeRunRecord): ThreadSeedRepair {
   const error = typeof record.error === "string" ? record.error : "";
@@ -438,7 +451,6 @@ function repairThreadSeed(record: ClaudeRunRecord): ThreadSeedRepair {
       metadata: {
         threadInitialized: false,
         claudeSessionId: randomUUID(),
-        adoptedClaudeSessionId: "",
       },
     };
   }
@@ -452,14 +464,23 @@ function repairThreadSeed(record: ClaudeRunRecord): ThreadSeedRepair {
  *
  * Every write target is an ARCS-owned thread, so there is exactly one sidecar
  * discipline: `appendSessionTurn`-owned, never mirrored. The run's own event log
- * folds down first (assistant text plus one turn per tool_use, every turn tagged
- * with the run id so a second fold is a no-op). Only when that fold produced no
- * assistant text — no log, an empty log, a child that spoke only through the
- * terminal `result` envelope — does the captured reply get appended as an
- * assistant turn on a success outcome; error/timeout outcomes append nothing.
+ * folds down first (assistant text plus one turn per tool call, every turn
+ * tagged with the run id so a second fold is a no-op) — through the write
+ * target's own driver normalizer when it has one, so an opencode log's
+ * `{type, sessionID, part}` lines fold instead of being read as claude events.
+ * Only for claude-code, and only when that fold produced no assistant text — no
+ * log, an empty log, a child that spoke only through the terminal `result`
+ * envelope — does the captured reply get appended as an assistant turn on a
+ * success outcome; error/timeout outcomes append nothing. A driver-driven run
+ * never appends the captured reply: the runner's reader does not speak that
+ * wire format, so its fallback "reply" is raw NDJSON, while the durable log the
+ * fold just read IS the reply when there was one.
  *
- * The observed session an adopted thread was forked from is never touched here:
- * `ctx.writeTarget` is the fork, and the fork's transcript is its own.
+ * When the fold harvested a runtime-native session id onto a thread that has
+ * none (an opencode first turn), it is persisted BEFORE the settle releases the
+ * claim — the next turn must continue this runtime session, not fork a fresh
+ * one. The thread's `lastMessageAt` moves to the settle too, and a non-terminal
+ * status is re-stamped active: the thread was just driven.
  *
  * Every path finalizes metadata.run with the settled record (pid/startedAt/
  * mode plus endedAt/outcome/error/replyChars) so the panel shows the true
@@ -483,8 +504,30 @@ async function writeBackRun(
   // Fold the run's durable event log down into the sidecar first. Idempotent by
   // its own output — every folded turn carries the run id, and a run already
   // represented there folds to nothing.
-  const fold = await foldRunEventLog(projectDir, ctx.writeTarget.normalizedId, ctx.runId);
-  if (!fold.assistantTextFolded && record.outcome === "success" && record.replyText !== undefined) {
+  const fold = await foldRunEventLog(projectDir, ctx.writeTarget.normalizedId, ctx.runId, {
+    runtimeType: ctx.writeTarget.runtimeType,
+  });
+
+  // The harvested runtime session id lands before the settle: from the moment
+  // the claim is released the next turn is accepted, and it has to see the id
+  // or it mints a fresh runtime thread instead of continuing this one.
+  if (
+    fold.runtimeSessionId !== undefined &&
+    ctx.writeTarget.runtimeSessionId.trim() === "" &&
+    ctx.writeTarget.normalizedId !== fold.runtimeSessionId
+  ) {
+    await updateSession(projectDir, {
+      id: ctx.writeTarget.normalizedId,
+      runtimeSessionId: fold.runtimeSessionId,
+    });
+  }
+
+  if (
+    !fold.assistantTextFolded &&
+    record.outcome === "success" &&
+    record.replyText !== undefined &&
+    ctx.writeTarget.runtimeType === "claude-code"
+  ) {
     // Nothing in the log spoke for this run (no log at all, or only tool
     // turns): the captured reply lands in the sidecar as an assistant turn,
     // minted in the shared negative id space after the user turn and any
@@ -533,9 +576,14 @@ async function writeBackRun(
       // Typed, so the panel can act on the failure rather than render opaque
       // CLI text at the user.
       ...(repair.errorCode !== undefined && { errorCode: repair.errorCode }),
-      ...(record.replyChars !== undefined && { replyChars: record.replyChars }),
+      // Reply size and reader drift are CLAUDE READER observations — the
+      // built-in reader does not speak a driver runtime's wire format, so its
+      // fallback reply length and skip count would only lie about one.
+      ...(ctx.writeTarget.runtimeType === "claude-code" &&
+        record.replyChars !== undefined && { replyChars: record.replyChars }),
       ...(record.firstTokenAt !== undefined && { firstTokenAt: record.firstTokenAt }),
-      ...(record.skippedLines !== undefined && { skippedLines: record.skippedLines }),
+      ...(ctx.writeTarget.runtimeType === "claude-code" &&
+        record.skippedLines !== undefined && { skippedLines: record.skippedLines }),
       ...(record.eventLogLines !== undefined && { eventLogLines: record.eventLogLines }),
       // Whether the log is the WHOLE stream. `eventLogLines` alone cannot say:
       // a log capped on its first chunk reports zero lines, the same number a
@@ -549,6 +597,19 @@ async function writeBackRun(
       ...(record.eventLogError !== undefined && { eventLogError: record.eventLogError }),
     },
     ...(Object.keys(repair.metadata).length > 0 && { metadata: repair.metadata }),
+  });
+
+  // The thread was just driven: its last message is this run's end, and a
+  // non-terminal status is re-stamped active. Terminal statuses are never
+  // reopened by a run — the same rule the phase derivation enforces.
+  const terminal =
+    ctx.writeTarget.status === "completed" ||
+    ctx.writeTarget.status === "failed" ||
+    ctx.writeTarget.status === "disconnected";
+  await updateSession(projectDir, {
+    id: ctx.writeTarget.normalizedId,
+    lastMessageAt: new Date(record.endedAt ?? Date.now()).toISOString(),
+    ...(terminal ? {} : { status: "active" as const }),
   });
 }
 
@@ -567,9 +628,31 @@ sessionsRoute.post("/api/p/:slug/sessions", async (c) =>
   respond(
     c,
     async () => {
-      const projectDir = requireProjectDir(c.req.param("slug"));
+      const slug = c.req.param("slug");
+      const projectDir = requireProjectDir(slug);
       const input = await parseBody(c, createSessionSchema);
-      return createSession(projectDir, input);
+      // ARCS-origin only, and the name is minted unless the caller supplies
+      // one: provenance is never client-settable, and a thread without a
+      // runtime-native id still needs a stable record key from birth. The
+      // supplied name keys the RECORD only — it never seeds
+      // `runtimeSessionId`, which stays blank until the runtime itself
+      // produces one (a harvested opencode session id) or the claude path
+      // mints its uuid into metadata at first spawn.
+      const threadName = input.runtimeSessionId ?? `arcs-thread-${slug}-${randomUUID()}`;
+      // The workspace is resolved NOW so every later turn spawns in the same
+      // directory even if the project's registered paths change in between.
+      const directory =
+        metadataString(input.metadata?.directory) ?? (await primaryWorkspacePath(projectDir, slug));
+      return createSession(projectDir, {
+        runtimeType: input.runtimeType,
+        recordName: threadName,
+        origin: "arcs",
+        status: input.status,
+        startedAt: input.startedAt,
+        lastMessageAt: input.lastMessageAt,
+        userEmail: input.userEmail,
+        metadata: { control: "arcs-owned", directory, ...input.metadata },
+      });
     },
     201,
   ),
@@ -593,30 +676,24 @@ sessionsRoute.patch("/api/p/:slug/sessions/:id", async (c) =>
 );
 
 // ---------------------------------------------------------------------------
-// Turn targeting — which record a turn writes to, and what claude is told
+// Turn targeting — which record a turn writes to
 // ---------------------------------------------------------------------------
 
 /**
- * The three identities one turn juggles, deliberately kept apart:
+ * The two identities one turn juggles, deliberately kept apart:
  *
  *  - `writeTarget.normalizedId` — the ARCS THREAD id (`arcs-thread-<slug>-<uuid4>`).
- *    A record NAME: it labels the session picker and names the transcript
- *    sidecar, and it never appears in argv — `--session-id`/`--resume` on
- *    claude >= 2.x take a bare RFC-4122 uuid only and exit 1 with "Invalid
- *    session ID. Must be a valid UUID." on anything else.
- *  - `claudeSessionId` — the bare uuid THIS thread speaks to claude with. It
- *    rides `--session-id` on the spawn that claims it and `--resume` on every
- *    spawn after.
- *  - `forkFrom` — the OBSERVED session's own uuid, present only on the spawn
- *    that adopts it. It appears exactly once, next to `--fork-session`, and
- *    never anywhere else.
+ *    A record NAME: it labels the session picker, names the transcript sidecar,
+ *    keys the run's concurrency slot, and never appears in argv.
+ *  - the runtime-native session id — what the RUNTIME knows the thread by. For
+ *    claude-code it is the bare uuid on `metadata.claudeSessionId`
+ *    (`--session-id`/`--resume` take a bare RFC-4122 uuid only and exit 1 with
+ *    "Invalid session ID. Must be a valid UUID." on anything else); for opencode
+ *    it is the session id harvested off the first settled run and persisted onto
+ *    `runtimeSessionId` — blank until then.
  */
 interface TurnTarget {
   writeTarget: SessionMeta;
-  claudeSessionId: string;
-  forkFrom?: string;
-  /** This spawn hands `claudeSessionId` to `--session-id` — it CLAIMS the id. */
-  seeding: boolean;
   /** Directory the child actually runs in (spawn options.cwd, never argv). */
   dir: string;
 }
@@ -629,11 +706,10 @@ interface TurnTarget {
  * folds an unreadable index into an empty one (`readJsonSafe` swallows every
  * error class), so an EACCES or an EISDIR on a live index arrives wearing the
  * deleted record's code. Minting on that answer would upsert a fresh ARCS
- * thread over a name that already belongs to something else — and worse, would
- * seed a uuid onto a thread claude already knows. So a not-found is believed
- * only when a DIRECT read of the index says this record is not listed (or that
- * there is no index at all); anything else is reported as unavailable and the
- * caller retries.
+ * thread over a name that already belongs to something else. So a not-found is
+ * believed only when a DIRECT read of the index says this record is not listed
+ * (or that there is no index at all); anything else is reported as unavailable
+ * and the caller retries.
  */
 async function readThreadRecord(
   projectDir: string,
@@ -648,35 +724,45 @@ async function readThreadRecord(
   throw new DagError(
     "SESSION_INDEX_UNAVAILABLE",
     `cannot tell whether thread "${threadRef}" exists — the session index did not answer for ` +
-      `it, and minting a second record over that name would re-seed a uuid claude may already ` +
-      `hold. Retry once the index reads.`,
+      `it, and minting a second record over that name would collide with whatever holds the ` +
+      `name today. Retry once the index reads.`,
   );
 }
 
 /**
- * Resolves the record this turn writes to, the uuid claude is told, and whether
- * this spawn claims that uuid or continues it.
+ * Mints a fresh ARCS thread for a `threadRef` that names nothing yet. The
+ * runtime defaults to "opencode" — the same default POST /sessions applies — so
+ * every minted-by-turn thread is drivable by the run-driver seam from birth.
+ */
+async function mintThread(
+  projectDir: string,
+  slug: string,
+  threadName: string,
+): Promise<SessionMeta> {
+  const dir = await primaryWorkspacePath(projectDir, slug);
+  return upsertSession(projectDir, {
+    runtimeType: "opencode",
+    recordName: threadName,
+    origin: "arcs",
+    metadata: { control: "arcs-owned", directory: dir },
+  });
+}
+
+/**
+ * Resolves the record this turn writes to.
  *
- * Three branches, and only these three:
+ * Two branches, and only these two:
  *
  *  1. `threadRef` — the caller names an ARCS thread RECORD to continue. It may
- *     name one that does not exist yet (a fresh thread is minted for it), but
- *     never an observed session: that is refused rather than quietly claimed,
- *     because ARCS writing run state onto a record with a live terminal behind
- *     it is exactly what adoption exists to avoid.
- *  2. the referenced session IS an ARCS thread — continue it.
- *  3. ADOPTION — the referenced session is one ARCS merely observes, so a NEW
- *     thread is minted and its first spawn forks the observed session:
- *     `--resume <observed uuid> --session-id <fresh uuid> --fork-session`.
- *     Probed on claude 2.1.223: the fork inherits the observed context and
- *     writes a SEPARATE transcript, leaving the original untouched — so
- *     adoption preserves continuity without needing to read a claude-chosen id
- *     back off the stream.
+ *     name one that does not exist yet (a fresh thread is minted for it), but a
+ *     record that exists and is not ARCS-owned is refused rather than claimed.
+ *  2. no `threadRef` — the addressed session itself must be an ARCS-owned
+ *     thread; it is continued in place.
  *
- * Adoption is deliberately NOT idempotent: every turn addressed to the observed
- * session forks it again, from whatever state the human has left it in. The
- * 202 names the write target, and continuing THAT thread (by id, or by
- * `threadRef`) is how a conversation accumulates in one sidecar.
+ * There is no third branch. Turns used to ADOPT an observed session by forking
+ * it into a new thread (`--resume <observed> --session-id <fresh>
+ * --fork-session`); with the hook bridge gone there are no observed sessions
+ * left to adopt, so anything that is not an ARCS thread is refused outright.
  */
 async function resolveTurnTarget(
   projectDir: string,
@@ -684,94 +770,45 @@ async function resolveTurnTarget(
   session: SessionMeta,
   threadRef: string | undefined,
 ): Promise<TurnTarget> {
-  let existing: SessionMeta | undefined;
-  let threadId: string;
-  /** Provenance, written only on the upsert that MINTS an adopted thread. */
-  let adoptedFrom: string | undefined;
-  let adoptedClaudeSessionId: string | undefined;
-
+  let writeTarget: SessionMeta;
   if (threadRef !== undefined) {
-    threadId = threadRef;
-    existing = await readThreadRecord(projectDir, threadRef);
+    const existing = await readThreadRecord(projectDir, threadRef);
     if (existing !== undefined && existing.origin !== "arcs") {
       throw new DagError(
         "TURN_THREAD_NOT_OWNED",
-        `cannot continue thread "${existing.normalizedId}": it is a session ARCS observes, not ` +
-          `an ARCS-owned thread — omit threadRef to fork it into one instead`,
+        `cannot continue thread "${existing.normalizedId}": it is not an ARCS-owned thread`,
       );
     }
-  } else if (session.origin === "arcs") {
-    threadId = session.runtimeSessionId;
-    existing = session;
+    writeTarget = existing ?? (await mintThread(projectDir, slug, threadRef));
   } else {
-    threadId = `arcs-thread-${slug}-${randomUUID()}`;
-    adoptedFrom = session.normalizedId;
-    adoptedClaudeSessionId = session.runtimeSessionId;
+    if (session.origin !== "arcs") {
+      throw new DagError(
+        "TURN_THREAD_NOT_OWNED",
+        `cannot run a turn on "${session.normalizedId}": it is not an ARCS-owned thread — ` +
+          `create one with POST /api/p/${slug}/sessions and address turns to it`,
+      );
+    }
+    writeTarget = session;
   }
 
-  const meta = existing?.metadata;
-  const persistedUuid = metadataString(meta?.claudeSessionId);
-  // The SEED DECISION. `threadInitialized` means "ARCS has already handed this
-  // uuid to --session-id" and is persisted at spawn, so a thread whose first
-  // run timed out (or whose server died) resumes on the next turn instead of
-  // re-seeding an id claude has already registered.
-  const seeding = meta?.threadInitialized !== true || persistedUuid === undefined;
-  const claudeSessionId = persistedUuid ?? randomUUID();
-  // A fork is only ever the spawn that CLAIMS the new id; once the thread is
-  // seeded it continues on its own uuid and the observed session is done with.
-  const forkFrom = seeding
-    ? (adoptedClaudeSessionId ?? metadataString(meta?.adoptedClaudeSessionId))
-    : undefined;
-
-  // HARD SAFETY ASSERTION. `--resume A --session-id A --fork-session` is
-  // ACCEPTED by claude 2.1.223 — exit 0, empty stderr — and appends to the
-  // ORIGINAL transcript, hijacking the human's live terminal thread (measured:
-  // the source grew 11 -> 20 lines). There is no error to notice it by, so the
-  // only thing standing between a corrupt record and a hijacked session is this
-  // check. Unreachable from a freshly minted uuid; reachable from a hand-edited
-  // or half-repaired index, which is precisely why it is enforced here.
-  if (forkFrom !== undefined && forkFrom === claudeSessionId) {
-    throw new DagError(
-      "CLAUDE_FORK_ID_COLLISION",
-      `refusing to fork thread "${threadId}": its claude session id and the session it would ` +
-        `fork are the same id ("${forkFrom}"), which claude accepts silently and appends to the ` +
-        `ORIGINAL session — re-mint metadata.claudeSessionId before running this thread again`,
-    );
+  const persistedDir = sessionDirectory(writeTarget);
+  const dir = persistedDir ?? (await primaryWorkspacePath(projectDir, slug));
+  if (persistedDir === undefined) {
+    // Pin the workspace on first contact so later turns spawn in the same
+    // directory even if the project's registered paths change in between.
+    await updateSession(projectDir, { id: writeTarget.normalizedId, metadata: { directory: dir } });
+    writeTarget = { ...writeTarget, metadata: { ...writeTarget.metadata, directory: dir } };
   }
-
-  const dir =
-    sessionDirectory(existing ?? session) ?? (await primaryWorkspacePath(projectDir, slug));
-
-  const writeTarget = await upsertSession(projectDir, {
-    runtimeType: "claude-code",
-    runtimeSessionId: threadId,
-    // Create-only in the store: an upsert never rewrites provenance, so this
-    // marks a freshly minted thread and is inert on one that already exists.
-    origin: "arcs",
-    metadata: {
-      control: "arcs-owned",
-      directory: dir,
-      claudeSessionId,
-      ...(adoptedFrom !== undefined && { adoptedFrom, adoptedClaudeSessionId }),
-    },
-  });
-
-  return {
-    writeTarget,
-    claudeSessionId,
-    ...(forkFrom !== undefined && { forkFrom }),
-    seeding,
-    dir,
-  };
+  return { writeTarget, dir };
 }
 
 /**
  * The turn's user-facing prompt: the message, then its rendered reference block.
  *
- * References ride the PROMPT, never `--append-system-prompt`. The system tier is
- * the STABLE one — byte-identical across turns is what makes the prompt cache
- * pay — while a reference belongs to the turn that sent it and to no other.
- * Staging them would break the cache on every send and leave the pointer in the
+ * References ride the PROMPT, never a system tier. The system tier is the
+ * STABLE one — byte-identical across turns is what makes the prompt cache pay —
+ * while a reference belongs to the turn that sent it and to no other. Staging
+ * them would break the cache on every send and leave the pointer in the
  * conversation long after the turn it was meant for.
  */
 function turnPrompt(message: string, refs: SessionReference[] | undefined): string {
@@ -780,64 +817,53 @@ function turnPrompt(message: string, refs: SessionReference[] | undefined): stri
 }
 
 /**
- * Targeting tokens for one spawn — everything before the permission segment.
- *
- * Exactly three shapes, and the fork's ORDER is the probed one:
+ * Targeting tokens for one legacy claude-code spawn — everything before the
+ * permission segment. Exactly two shapes:
  *  - fresh thread seed:  -p <prompt> --session-id <new> --output-format json
  *  - thread resume:      -p <prompt> --resume <own> --output-format json
- *  - observed adoption:  -p <prompt> --resume <observed> --session-id <new>
- *                        --fork-session --output-format json
  *
- * `--session-id` alongside `--resume` without `--fork-session` exits 1 at flag
- * validation ("--session-id can only be used with --continue or --resume if
- * --fork-session is also specified"), so the three tokens are never split.
+ * (`--resume <observed> --fork-session` — the adoption fork — is gone with the
+ * observed sessions it forked.)
  */
-function turnTargetingArgv(prompt: string, target: TurnTarget): string[] {
+function turnTargetingArgv(prompt: string, seeding: boolean, claudeSessionId: string): string[] {
   const argv = ["-p", prompt];
-  if (target.seeding && target.forkFrom !== undefined) {
-    argv.push(
-      "--resume",
-      target.forkFrom,
-      "--session-id",
-      target.claudeSessionId,
-      "--fork-session",
-    );
-  } else if (target.seeding) {
-    argv.push("--session-id", target.claudeSessionId);
-  } else {
-    argv.push("--resume", target.claudeSessionId);
-  }
+  argv.push(seeding ? "--session-id" : "--resume", claudeSessionId);
   argv.push("--output-format", "json");
   return argv;
 }
 
 /**
- * One turn of a headless `claude -p` conversation. Answers 202 with the run's
- * id, the stream to tail it on, and the record it writes to — the acceptance,
- * not the result: the run proceeds out-of-band in the runner, whose exit-time
- * write-back settles it.
+ * One turn of a headless conversation. Answers 202 with the run's id, the
+ * stream to tail it on, and the record it writes to — the acceptance, not the
+ * result: the run proceeds out-of-band in the runner, whose exit-time write-back
+ * settles it.
  *
  * WHAT THE CALLER CHOOSES is an INTENT (`ask` | `change`), never a targeting
  * mode. Where the turn lands is derived from the record it is addressed to (see
- * `resolveTurnTarget`): an ARCS thread continues, an observed session is forked
- * into a new one.
+ * `resolveTurnTarget`): an ARCS thread continues in place.
  *
- * ARGV OWNERSHIP, which is the safety property: every tool and permission token
- * comes from `buildPermissionArgv` and this route builds none. It keeps only
- * the targeting tokens above, and the permission segment is appended LAST —
- * `--tools` is variadic (it eats following tokens until the next dash-leading
- * one) and `--append-system-prompt` consumes exactly one following token, so a
- * segment placed before `-p` would swallow the prompt or the staged text. The
- * staged environment reaches the child through that segment's
+ * RUNTIME SELECTION is the write target's own `runtimeType`, read through the
+ * run-driver registry: a thread whose runtime has a registered adapter (the
+ * default, opencode) is driven one-shot through that adapter — its argv, its
+ * binary, its wire format; a thread without one (legacy claude-code) keeps the
+ * claude path below.
+ *
+ * ARGV OWNERSHIP, which is the safety property on the claude path: every tool
+ * and permission token comes from `buildPermissionArgv` and this route builds
+ * none. It keeps only the targeting tokens above, and the permission segment is
+ * appended LAST — `--tools` is variadic (it eats following tokens until the next
+ * dash-leading one) and `--append-system-prompt` consumes exactly one following
+ * token, so a segment placed before `-p` would swallow the prompt or the staged
+ * text. The staged environment reaches the child through that segment's
  * `stagedSystemPrompt` slot and nowhere else; a second direct push would emit
- * the flag twice.
+ * the flag twice. A driver-driven run carries NO permission segment — those
+ * flags are claude's vocabulary, and the adapter's argv is complete on its own.
  *
  * The user turn (and one reference turn per `refs` entry) is appended to the
  * write target's sidecar immediately, so the panel shows the prompt before the
  * run ends, with delivery-first ordering.
  *
- * Staged environment (W2): a spawn that STARTS a conversation — a fresh seed and
- * an adoption fork alike, since the forked context has never seen ARCS's block —
+ * Staged environment (W2): claude-code only. A spawn that STARTS a conversation
  * always carries it; a spawn that CONTINUES one carries it only on a restage.
  *
  * Concurrency: one live run per write-target. The runner's beginRun is the
@@ -856,13 +882,15 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
       const session = await getSession(projectDir, c.req.param("id"));
 
       const target = await resolveTurnTarget(projectDir, slug, session, threadRef);
-      const { writeTarget, dir, seeding } = target;
+      const { writeTarget, dir } = target;
 
-      // One live run per write-target — refuse before appending anything.
+      // One live run per write-target — refuse before appending anything. The
+      // CODE is historical (claude was the only drivable runtime when it was
+      // minted); both runtimes share it so clients keep one overlap signal.
       if (isRunLive(writeTarget.normalizedId)) {
         throw new DagError(
           "CLAUDE_RUN_IN_PROGRESS",
-          `a claude run for "${writeTarget.normalizedId}" is already in progress`,
+          `a run for "${writeTarget.normalizedId}" is already in progress`,
         );
       }
 
@@ -874,45 +902,94 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
         await appendReference(projectDir, writeTarget.normalizedId, reference);
       }
 
-      // NOTE: no "--cwd" flag — claude >= 2.x rejects it ("error: unknown
-      // option '--cwd'"), settling every headless run as outcome:error. The
-      // spawn applies the working directory via options.cwd below instead.
-      const argv = turnTargetingArgv(turnPrompt(message, refs), target);
-
-      // --- Staged environment (W2) -----------------------------------------
-      //
-      // Keyed on the WRITE TARGET, never on the referenced session: the write
-      // target is the record the run lands on and the record `metadata.stage`
-      // is persisted to, so the fingerprint compared next turn describes the
-      // same node the text was built from.
-      const stageOpts = { workspaceRoot: dir };
-      const refresh = await planStageRefresh(projectDir, slug, writeTarget, stageOpts);
-      const staged =
-        refresh.staged ??
-        (seeding
-          ? await buildStagedEnvironment(projectDir, slug, writeTarget, {
-              ...stageOpts,
-              // The same watermark planStageRefresh stamps with, so this record
-              // stays mtime-comparable even though this path never persists it.
-              now: refresh.probedAt,
-            })
-          : undefined);
-
-      // LAST, and the only source of tool/permission tokens. The staged text is
-      // handed over as this segment's value slot rather than pushed directly —
-      // one flag, one emitter.
-      argv.push(
-        ...buildPermissionArgv({
-          intent,
-          ...(staged !== undefined && { stagedSystemPrompt: staged.text }),
-        }),
-      );
-
       // The run's own ceiling, resolved HERE so the deadline persisted with the
       // claim is the same number the runner arms its kill timer with (it
       // prefers this over its own env/default lookup).
       const runId = randomUUID();
       const timeoutMs = resolveTimeoutMs(undefined, process.env);
+
+      // --- Per-runtime child shape -------------------------------------------
+      //
+      // A registered driver adapter owns everything runtime-specific about the
+      // spawn: argv shape, binary, wire format. What stays here is the generic
+      // lifecycle — deadline, claim, durable log, write-back — identical for
+      // every runtime.
+      const driver = getRunDriver(writeTarget.runtimeType);
+
+      let argv: string[];
+      let runnerOptions: ClaudeRunnerOptions | undefined;
+      /** Sibling metadata persisted with the deadline below, per runtime. */
+      let spawnMetadata: Record<string, unknown> = {};
+
+      if (driver !== undefined) {
+        // One-shot driver runtime (opencode): FRESH when no runtime session id
+        // has been harvested yet, `-s` continuation once one has. No permission
+        // segment and no staged tier — the adapter's argv is complete policy,
+        // and the runner must not rewrite it onto its stream-json contract.
+        const runtimeSessionId = writeTarget.runtimeSessionId.trim();
+        argv = driver.buildArgv({
+          message: turnPrompt(message, refs),
+          title: metadataString(writeTarget.metadata?.title),
+          ...(runtimeSessionId !== "" && { runtimeSessionId }),
+        });
+        runnerOptions = { binary: driver.binary };
+      } else {
+        // Legacy claude-code thread — seed-or-resume decision, targeting tokens,
+        // staged environment, then the permission segment LAST.
+        const meta = writeTarget.metadata;
+        const persistedUuid = metadataString(meta?.claudeSessionId);
+        // The SEED DECISION. `threadInitialized` means "ARCS has already handed
+        // this uuid to --session-id" and is persisted at spawn, so a thread
+        // whose first run timed out (or whose server died) resumes on the next
+        // turn instead of re-seeding an id claude has already registered.
+        const seeding = meta?.threadInitialized !== true || persistedUuid === undefined;
+        const claudeSessionId = persistedUuid ?? randomUUID();
+
+        // NOTE: no "--cwd" flag — claude >= 2.x rejects it ("error: unknown
+        // option '--cwd'"), settling every headless run as outcome:error. The
+        // spawn applies the working directory via options.cwd below instead.
+        argv = turnTargetingArgv(turnPrompt(message, refs), seeding, claudeSessionId);
+
+        // Keyed on the WRITE TARGET, never on anything else: the write target
+        // is the record the run lands on and the record `metadata.stage` is
+        // persisted to, so the fingerprint compared next turn describes the
+        // same node the text was built from.
+        const stageOpts = { workspaceRoot: dir };
+        const refresh = await planStageRefresh(projectDir, slug, writeTarget, stageOpts);
+        const staged =
+          refresh.staged ??
+          (seeding
+            ? await buildStagedEnvironment(projectDir, slug, writeTarget, {
+                ...stageOpts,
+                // The same watermark planStageRefresh stamps with, so this record
+                // stays mtime-comparable even though this path never persists it.
+                now: refresh.probedAt,
+              })
+            : undefined);
+
+        // LAST, and the only source of tool/permission tokens. The staged text
+        // is handed over as this segment's value slot rather than pushed
+        // directly — one flag, one emitter.
+        argv.push(
+          ...buildPermissionArgv({
+            intent,
+            ...(staged !== undefined && { stagedSystemPrompt: staged.text }),
+          }),
+        );
+
+        spawnMetadata = {
+          // Minted once here and persisted AT SPAWN, so a crash before the
+          // settle still leaves the thread resuming the uuid it was seeded
+          // with rather than re-seeding a second one.
+          claudeSessionId,
+          ...(seeding && { threadInitialized: true }),
+          // Written EXACTLY when the refresh asks for it. On the cheap exit
+          // nothing was rebuilt, so re-stamping the record would move the very
+          // watermark the next turn's freshness decision is made against.
+          ...(refresh.persist && refresh.stage ? { stage: refresh.stage } : {}),
+        };
+      }
+
       // Persisted next to the claim rather than inside metadata.run, which
       // `beginSessionRun` replaces wholesale: as sibling keys these cannot be
       // clobbered by the claim, nor the claim by them.
@@ -920,16 +997,7 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
         id: writeTarget.normalizedId,
         metadata: {
           runDeadlineAt: Date.now() + timeoutMs,
-          // AT SPAWN, not at settle. The uuid is in argv from this point on, so
-          // "ARCS has handed it over" is true now and stays true through a
-          // timeout, an error, or a server that dies before the settle runs —
-          // the three ways the old settle-time write left a thread re-seeding
-          // forever into "Session ID … is already in use".
-          ...(seeding && { threadInitialized: true }),
-          // Written EXACTLY when the refresh asks for it. On the cheap exit
-          // nothing was rebuilt, so re-stamping the record would move the very
-          // watermark the next turn's freshness decision is made against.
-          ...(refresh.persist && refresh.stage ? { stage: refresh.stage } : {}),
+          ...spawnMetadata,
         },
       });
       // Claim the record BEFORE the child exists: from here on, a server that
@@ -949,17 +1017,23 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
       // `close`) on every outcome path; write-back failures are swallowed by
       // the runner, so a failed finalize never surfaces on the accepted 202.
       // The trailing catch is defensive — the runner never rejects.
-      runClaudeJob({
-        argv,
-        cwd: dir,
-        timeoutMs,
-        writeTargetKey: writeTarget.normalizedId,
-        // The SAME runId the claim above persisted as currentRunId — the log's
-        // filename and the session record can never name different runs.
-        eventLog: { projectDir, sessionId: writeTarget.normalizedId, runId },
-        onSettled: (record) =>
-          writeBackRun(projectDir, { intent, writeTarget, runId, claimed }, record),
-      }).catch(() => {
+      runClaudeJob(
+        {
+          argv,
+          cwd: dir,
+          timeoutMs,
+          writeTargetKey: writeTarget.normalizedId,
+          // A driver runtime owns its own wire format: its argv reaches the
+          // child verbatim, never rewritten onto the claude output contract.
+          ...(driver !== undefined && { streamJsonArgv: false }),
+          // The SAME runId the claim above persisted as currentRunId — the log's
+          // filename and the session record can never name different runs.
+          eventLog: { projectDir, sessionId: writeTarget.normalizedId, runId },
+          onSettled: (record) =>
+            writeBackRun(projectDir, { intent, writeTarget, runId, claimed }, record),
+        },
+        runnerOptions,
+      ).catch(() => {
         // Best-effort — the write-back lives inside the runner's onSettled.
       });
 
@@ -983,10 +1057,10 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
 
       return {
         runId,
-        // Keyed on the WRITE TARGET's id, never on the path `:id`: under
-        // adoption they are different records, and a stream URL built from the
-        // path id answers 200 and then emits nothing — indistinguishable from a
-        // child that never spoke.
+        // Keyed on the WRITE TARGET's id, never on the path `:id`: when
+        // `threadRef` mints a thread they can differ, and a stream URL built
+        // from the path id answers 200 and then emits nothing —
+        // indistinguishable from a child that never spoke.
         streamUrl: `/api/p/${slug}/sessions/${writeTarget.normalizedId}/runs/${runId}/stream`,
         writeTargetId: writeTarget.normalizedId,
       };

@@ -368,7 +368,6 @@ describe("opencode bundle runtime manifest", () => {
         "deep-pr-review": ["SKILL.md", "review-template.md", "codegraph-diff.md"],
         "enriching-codegraph-proposals": ["SKILL.md"],
         implementation: ["SKILL.md"],
-        "install-claude-code-hook": ["SKILL.md"],
         "systematic-debugging": [
           "SKILL.md",
           "condition-based-waiting.md",

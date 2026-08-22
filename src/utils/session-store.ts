@@ -72,7 +72,12 @@ export interface SessionMeta {
   id: string;
   normalizedId: string;
   runtimeType: import("./storage-utils.js").SessionRuntimeType;
-  /** Runtime-native session id, verbatim (e.g. a claude-code session uuid). */
+  /**
+   * Runtime-native session id, verbatim (e.g. a claude-code session uuid).
+   * Blank on a thread ARCS minted before its first run contacted the runtime —
+   * an opencode thread has no id of its own until the first settled run
+   * harvests one, and the run write-back persists it here.
+   */
   runtimeSessionId: string;
   /**
    * Provenance of the record. Persisted, never client-settable, and never
@@ -142,7 +147,18 @@ export interface SessionIndex {
 
 export interface CreateSessionInput {
   runtimeType: import("./storage-utils.js").SessionRuntimeType;
-  runtimeSessionId: string;
+  /**
+   * Runtime-native session id, verbatim. OPTIONAL for a thread ARCS mints
+   * before its first run: an opencode thread has none until its first settled
+   * run harvests one (persisted through `UpdateSessionInput`). Discovery
+   * bridges always have the id and never pass `recordName`.
+   */
+  runtimeSessionId?: string;
+  /**
+   * Explicit record name, used as the store key when the runtime id is not
+   * known yet. Absent → the key is normalizeIdentifier(runtimeSessionId).
+   */
+  recordName?: string;
   /**
    * Provenance, set once at creation and defaulting to `observed`. Only the
    * ARCS-minted headless threads pass `arcs`. Deliberately absent from every
@@ -161,6 +177,12 @@ export interface CreateSessionInput {
 export interface UpdateSessionInput {
   id: string;
   status?: import("./storage-utils.js").SessionStatus;
+  /**
+   * The runtime-native session id, verbatim — written by the run write-back
+   * that harvested it off a first settled run. Never client-settable: the web
+   * PATCH schema does not carry it.
+   */
+  runtimeSessionId?: string;
   /** Pass `null` to clear; pass an ISO timestamp to set. */
   lastMessageAt?: string | null;
   /**
@@ -361,7 +383,9 @@ function buildSession(input: CreateSessionInput, normalizedId: string): SessionM
     id: normalizedId,
     normalizedId,
     runtimeType: input.runtimeType,
-    runtimeSessionId: input.runtimeSessionId,
+    // Blank, never absent: a thread minted before its first run has no runtime
+    // id yet, and the first settled run writes it (UpdateSessionInput).
+    runtimeSessionId: input.runtimeSessionId ?? "",
     origin: input.origin ?? "observed",
     status: input.status ?? "active",
     startedAt: input.startedAt ?? ts,
@@ -375,14 +399,17 @@ function buildSession(input: CreateSessionInput, normalizedId: string): SessionM
 /**
  * Validates a create/upsert payload and returns the canonical normalized id.
  * Runtime session ids are opaque runtime-native strings, so the only structural
- * requirement is that they normalize to a non-empty identifier.
+ * requirement is that they normalize to a non-empty identifier — either their
+ * own, or the explicit record name of a thread minted before its runtime id
+ * exists.
  */
 function validateCreateInput(input: CreateSessionInput): string {
   validateSessionRuntimeType(input.runtimeType);
   validateSessionStatus(input.status ?? "active");
-  const normalizedId = normalizeIdentifier(input.runtimeSessionId);
+  const key = input.recordName ?? input.runtimeSessionId ?? "";
+  const normalizedId = normalizeIdentifier(key);
   if (!normalizedId) {
-    throw invalidSessionId(input.runtimeSessionId);
+    throw invalidSessionId(key);
   }
   return normalizedId;
 }
@@ -423,7 +450,11 @@ async function createSessionUnlocked(
   const index = await readSessionIndex(projectDir);
 
   if (index.sessions.some((s) => s.normalizedId === normalizedId)) {
-    throw normalizedIdCollision("session", input.runtimeSessionId, normalizedId);
+    throw normalizedIdCollision(
+      "session",
+      input.recordName ?? input.runtimeSessionId ?? "",
+      normalizedId,
+    );
   }
 
   const meta = buildSession(input, normalizedId);
@@ -460,11 +491,12 @@ async function upsertSessionUnlocked(
   // creating writer fixes it for good. A hook observation must not demote an
   // ARCS-owned thread, and an ARCS run claiming an existing record as its
   // write-target must not erase the fact that a real terminal session is
-  // attached to it.
+  // attached to it. `runtimeSessionId` merges only when the caller has one —
+  // a thread minted blank must not have a harvested id overwritten away.
   const merged: SessionMeta = {
     ...existing,
     runtimeType: input.runtimeType,
-    runtimeSessionId: input.runtimeSessionId,
+    ...(input.runtimeSessionId !== undefined && { runtimeSessionId: input.runtimeSessionId }),
     ...(input.status && { status: input.status }),
     ...(input.startedAt && { startedAt: input.startedAt }),
     ...(input.lastMessageAt && { lastMessageAt: input.lastMessageAt }),
@@ -537,6 +569,9 @@ async function updateSessionUnlocked(
   const session = index.sessions[sessionIndex];
 
   if (input.status !== undefined) session.status = input.status;
+  if (input.runtimeSessionId !== undefined && input.runtimeSessionId !== "") {
+    session.runtimeSessionId = input.runtimeSessionId;
+  }
   if (input.lastMessageAt !== undefined) {
     if (input.lastMessageAt === null || input.lastMessageAt === "") {
       delete session.lastMessageAt;

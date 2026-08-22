@@ -3,8 +3,8 @@
  *
  * Owns everything between "the web route decided to run a job" and a finished
  * run record: spawn, streaming stdout capture, timeout escalation, NDJSON event
- * parsing, exit mapping, per-write-target concurrency serialization and
- * ARCS_HOOK_* env scrubbing. The route supplies argv/cwd and this module never
+ * parsing, exit mapping and per-write-target concurrency serialization. The
+ * route supplies argv/cwd and this module never
  * decides what the child *does* — but it does own the child's OUTPUT CONTRACT:
  * every run is normalized onto `--output-format stream-json
  * --include-partial-messages --verbose` (see withStreamJsonArgv), so stdout is
@@ -80,6 +80,14 @@ export interface ClaudeJobInput {
    * that part of the contract because it owns the reader.
    */
   argv: string[];
+  /**
+   * Whether the runner rewrites `argv` onto its stream-json output contract
+   * (withStreamJsonArgv). Defaults to true — every claude-code caller wants
+   * it. A one-shot driver runtime whose wire format this reader does not speak
+   * (opencode's `--format json` NDJSON) passes false, and its argv reaches the
+   * child verbatim: rewriting it would append flags that runtime rejects.
+   */
+  streamJsonArgv?: boolean;
   /** Working directory for the child; defaults to the server's cwd. */
   cwd?: string;
   /** Timeout override; defaults to ARCS_CLAUDE_RUN_TIMEOUT_MS then 10 min. */
@@ -89,8 +97,7 @@ export interface ClaudeJobInput {
    * the same key is refused (see beginRun).
    */
   writeTargetKey: string;
-  /** Base env for the child (defaults to process.env) minus the ARCS_HOOK_*
-   *  handshake keys (ARCS_HOOK_TOKEN, ARCS_HOOK_SLUG, ARCS_HOOK_URL). */
+  /** Base env for the child (defaults to process.env). */
   env?: NodeJS.ProcessEnv;
   /**
    * Where to persist this run's stdout verbatim. When present, every stdout
@@ -158,9 +165,6 @@ const STREAM_JSON_ARGV = [
   "--include-partial-messages",
   "--verbose",
 ];
-
-/** Keys never forwarded to the child env — the hook handshake must not leak. */
-const ENV_SCRUB_KEYS = ["ARCS_HOOK_TOKEN", "ARCS_HOOK_SLUG", "ARCS_HOOK_URL"];
 
 /**
  * Rewrites caller argv onto the runner's output contract: drops any
@@ -275,7 +279,7 @@ export async function runClaudeJob(
   try {
     // NOTE: no "--cwd" flag — claude >= 2.x rejects it; the working directory
     // rides spawn options only.
-    child = spawnImpl(binary, withStreamJsonArgv(argv), {
+    child = spawnImpl(binary, input.streamJsonArgv === false ? argv : withStreamJsonArgv(argv), {
       cwd,
       env: scrubEnv(env),
       stdio: ["ignore", "pipe", "pipe"],
@@ -458,6 +462,7 @@ function settleRun(child: ChildProcess, ctx: SettleContext): Promise<SettleResul
           stdout: stdout.snapshot(),
           stderr,
           timeoutMs: ctx.timeoutMs,
+          binary: ctx.binary,
         }),
       );
     });
@@ -471,6 +476,7 @@ function mapExit(input: {
   stdout: StreamSnapshot;
   stderr: TailBuffer;
   timeoutMs: number;
+  binary: string;
 }): SettleResult {
   const endedAt = Date.now();
 
@@ -478,7 +484,7 @@ function mapExit(input: {
     return {
       endedAt,
       outcome: "timeout",
-      error: `claude run timed out after ${input.timeoutMs}ms (SIGTERM, then SIGKILL)`,
+      error: `${input.binary} run timed out after ${input.timeoutMs}ms (SIGTERM, then SIGKILL)`,
     };
   }
 
@@ -488,7 +494,7 @@ function mapExit(input: {
       return {
         endedAt,
         outcome: "error",
-        error: result.text?.trim() || "claude reported an error (is_error)",
+        error: result.text?.trim() || `${input.binary} reported an error (is_error)`,
       };
     }
     return { endedAt, outcome: "success", replyText: replyFrom(input.stdout) };
@@ -498,7 +504,7 @@ function mapExit(input: {
     return {
       endedAt,
       outcome: "error",
-      error: `claude run was terminated by signal ${input.signal}`,
+      error: `${input.binary} run was terminated by signal ${input.signal}`,
     };
   }
 
@@ -506,7 +512,7 @@ function mapExit(input: {
   return {
     endedAt,
     outcome: "error",
-    error: stderrTail || `claude exited with status ${input.code}`,
+    error: stderrTail || `${input.binary} exited with status ${input.code}`,
   };
 }
 
@@ -547,13 +553,11 @@ export function resolveTimeoutMs(
   return DEFAULT_TIMEOUT_MS;
 }
 
-/** process.env minus the ARCS_HOOK_* handshake keys (the explicit 3-key
- *  denylist above — not a prefix wildcard scrub). */
+/** A copy of `env` with undefined-valued entries dropped. */
 function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
-    if (ENV_SCRUB_KEYS.includes(key)) continue;
     childEnv[key] = value;
   }
   return childEnv;
@@ -561,7 +565,7 @@ function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 function spawnErrorMessage(err: unknown, binary: string): string {
   const code = (err as NodeJS.ErrnoException | null)?.code;
-  if (code === "ENOENT") return "claude not found on PATH";
+  if (code === "ENOENT") return `${binary} not found on PATH`;
   return `failed to spawn ${binary}: ${String(err)}`;
 }
 

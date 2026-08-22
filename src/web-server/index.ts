@@ -4,9 +4,14 @@
 
 import { spawn } from "node:child_process";
 import { serve } from "@hono/node-server";
-import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT } from "../utils/hook-contract.js";
 import { createApp } from "./app.js";
 import { isLoopbackHost } from "./security.js";
+
+/** Loopback only: `arcs web` refuses to bind anything else. */
+const DEFAULT_WEB_HOST = "127.0.0.1";
+
+/** Default `arcs web` port. */
+const DEFAULT_WEB_PORT = 4173;
 
 export interface StartWebServerOptions {
   /** Port to listen on (defaults to `DEFAULT_WEB_PORT`). Pass 0 for an ephemeral port. */

@@ -628,8 +628,7 @@ function omittedBody(source: string): string {
  *  - `arcs` — a headless run ARCS spawned. `permission-policy.ts` builds its
  *    argv, so ARCS really does fix its tool and permission scope, and "an
  *    ARCS-driven agent run" is literally what it is.
- *  - `observed` — a terminal a human drives, which the SessionStart bridge
- *    (`routes/hook-events.ts`) mirrors this same block into. ARCS emits NO argv
+ *  - `observed` — a terminal a human drives. ARCS emits NO argv
  *    for it and deliberately does not narrow the user's own permissions; nothing
  *    here starts it, runs it or ends it.
  *

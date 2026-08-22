@@ -147,15 +147,11 @@ export interface TaskMeta {
 }
 
 export type SessionStatus = "active" | "idle" | "completed" | "failed" | "disconnected";
-export type SessionRuntimeType = "claude-code";
+/** The runtimes a thread can carry. "opencode" is the server's creation
+ *  default and what its run-driver drives one-shot; "claude-code" remains for
+ *  threads created with it explicitly. */
+export type SessionRuntimeType = "opencode" | "claude-code";
 export type SessionLinkedNodeType = "task" | "plan";
-
-/** Provenance of a session record, persisted server-side.
- *  - `observed` — a terminal `claude` session ARCS watches via the hook bridge.
- *  - `arcs` — a headless thread ARCS minted for itself. Both are driven with
- *    `POST /sessions/:id/turns`: an ARCS thread continues, an observed session
- *    is forked into a new thread. */
-export type SessionOrigin = "observed" | "arcs";
 
 /** What a session is doing right now, derived server-side per response from the
  *  record's run claim / last checkpoint and reconciled against the live process
@@ -190,17 +186,13 @@ export interface SessionRunMeta {
   replyChars?: number;
 }
 
-/** Session metadata, persisted verbatim by the bridge. Only the keys the UI
+/** Session metadata, persisted verbatim by the server. Only the keys the UI
  *  reads are named; the index signature keeps everything else addressable. */
 export interface SessionMetadata {
   /** Runtime-reported session title, when the runtime reports one. */
   title?: string;
   /** Workspace directory the session runs in. */
   directory?: string;
-  /** `"arcs-owned"` marks a headless record ARCS minted itself. Superseded by
-   *  `SessionMeta.origin` as the signal to branch on — kept only because
-   *  existing call sites still read it and the server still writes it. */
-  control?: string;
   run?: SessionRunMeta;
   [key: string]: unknown;
 }
@@ -210,9 +202,9 @@ export interface SessionMeta {
   normalizedId: string;
   runtimeType: SessionRuntimeType;
   runtimeSessionId: string;
-  /** Always sent: the server fills it in on read even for records persisted
-   *  before the field existed, so this never has to be defaulted here. */
-  origin: SessionOrigin;
+  /** Provenance, persisted server-side. Every session in the store is an
+   *  ARCS-origin thread, so this is always `"arcs"`. */
+  origin: "arcs";
   status: SessionStatus;
   /** Derived liveness, attached by the server to session READS (list + detail)
    *  and nowhere else — a record reaching the UI from any other response (or
@@ -386,10 +378,10 @@ export interface WorkspaceFile {
 export type RunIntent = "ask" | "change";
 
 /** Payload for POST /sessions/:id/turns — one turn of a headless conversation.
- *  `threadRef` names an ARCS thread RECORD to continue (never a claude uuid,
- *  never an observed session); omitted, a turn addressed to an observed session
- *  forks it into a new ARCS thread. `guards` is accepted by the server and not
- *  yet acted on. Mirrors the server's `turnSchema`. */
+ *  The addressed record must be an ARCS thread (anything else is refused with
+ *  TURN_THREAD_NOT_OWNED); `threadRef` may name an alternative thread record to
+ *  continue instead of the addressed one. `guards` is accepted by the server
+ *  and not yet acted on. Mirrors the server's `turnSchema`. */
 export interface SessionTurnInput {
   intent: RunIntent;
   message: string;
@@ -401,10 +393,9 @@ export interface SessionTurnInput {
 /** Acceptance of a headless turn, returned as HTTP 202 — the run itself
  *  proceeds out-of-band. Mirrors the server's `/turns` response.
  *
- *  `writeTargetId` is the record the run writes to, which is NOT necessarily the
- *  session the turn was addressed to: adopting an observed session forks it into
- *  a new thread, and the reply lands there. Both the transcript to show and the
- *  stream to tail are keyed on it. */
+ *  `writeTargetId` is the record the run writes to — the addressed ARCS thread
+ *  itself, save for a `threadRef` override. Both the transcript to show and
+ *  the stream to tail are keyed on it. */
 export interface TurnResult {
   /** The accepted run's id — the `:runId` of
    *  `GET /sessions/:id/runs/:runId/stream`, and the only thing that names the
@@ -573,6 +564,9 @@ export const api = {
    *  lines plus ARCS-authored reference turns). */
   sessionTranscript: (slug: string, id: string) =>
     request<SessionTranscript>(`/api/p/${slug}/sessions/${id}/transcript`),
+  /** Creates an ARCS-origin thread record — nothing is spawned. `runtimeType`
+   *  defaults to "opencode" server-side; the thread's `runtimeSessionId` stays
+   *  blank until its first settled turn mints one. */
   createSession: (slug: string, input: Record<string, unknown>) =>
     request<SessionMeta>(`/api/p/${slug}/sessions`, {
       method: "POST",
@@ -585,10 +579,11 @@ export const api = {
     }),
   deleteSession: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/sessions/${id}`, { method: "DELETE" }),
-  /** Runs one headless `claude -p` turn against the session (claude-code only).
-   *  Optional keys are included in the body ONLY when present — absent, the
-   *  body stays `{ intent, message }`. Accepted as 202; the run settles
-   *  out-of-band and writes back on the WRITE TARGET's `metadata.run`. */
+  /** Runs one one-shot turn against the session, driven by the record's own
+   *  runtime (opencode by default). Optional keys are included in the body ONLY
+   *  when present — absent, the body stays `{ intent, message }`. Accepted as
+   *  202; the run settles out-of-band and writes back on the WRITE TARGET's
+   *  `metadata.run`. */
   sendSessionTurn: (slug: string, id: string, input: SessionTurnInput) =>
     request<TurnResult>(`/api/p/${slug}/sessions/${id}/turns`, {
       method: "POST",

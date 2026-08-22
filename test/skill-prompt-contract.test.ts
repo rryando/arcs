@@ -21,17 +21,16 @@ function markdownFiles(path: string): string[] {
 }
 
 describe("lean skill contracts", () => {
-  it("keeps exactly twelve bundled skill identities", () => {
+  it("keeps exactly eleven bundled skill identities", () => {
     const names = readdirSync(skillsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(11);
     expect(names).toContain("implementation");
     expect(names).toContain("brainstorming");
     expect(names).toContain("writing-plans");
     expect(names).toContain("deep-pr-review");
-    expect(names).toContain("install-claude-code-hook");
     expect(names).not.toContain("executing-plans");
   });
 
@@ -106,13 +105,9 @@ describe("lean skill contracts", () => {
 
   it("keeps external and destructive effects confirmed at the boundary", () => {
     const deepReview = read("opencode/arcs/skills/deep-pr-review/SKILL.md");
-    const hook = read("opencode/arcs/skills/install-claude-code-hook/SKILL.md");
     expect(deepReview).toMatch(/read-only.*until.*user.*confirm/is);
     expect(deepReview).toMatch(/one.*GitHub.*write/is);
     expect(deepReview).toMatch(/cached.*diff/is);
-    expect(hook).toMatch(/Claude Code only/i);
-    expect(hook).toMatch(/explicit confirmation.*--write/is);
-    expect(hook).toMatch(/malformed.*do not repair/is);
   });
 
   it("keeps nested references optional and safe", () => {

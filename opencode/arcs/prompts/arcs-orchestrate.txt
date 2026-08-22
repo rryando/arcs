@@ -47,7 +47,7 @@ Tell delegates: do not echo context or narrate process.
 - `code-reviewer`: review, audit, and risk analysis, including PR review.
 - `arcs-docs`: project DAG and documentation synchronization.
 
-Available skills: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, `caveman-commit`, and `install-claude-code-hook`. Load a skill only when its technique is useful.
+Available skills: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review` and `caveman-commit`. Load a skill only when its technique is useful.
 
 ## Design and Plans
 

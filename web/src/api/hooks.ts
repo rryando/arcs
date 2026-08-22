@@ -235,6 +235,14 @@ export function useDeleteTask(slug: string) {
   });
 }
 
+export function useCreateSession(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: (input: Record<string, unknown>) => api.createSession(slug, input),
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
+  });
+}
+
 export function useUpdateSession(slug: string) {
   const invalidate = useInvalidator();
   return useMutation({
@@ -250,9 +258,9 @@ export function useSendSessionTurn(slug: string) {
     mutationFn: ({ id, input }: { id: string; input: SessionTurnInput }) =>
       api.sendSessionTurn(slug, id, input),
     // `qk.sessions(slug)` prefix-matches the nested transcript keys, so a turn
-    // that appended user/reference turns refreshes open transcripts too — and a
-    // turn that ADOPTED an observed session refreshes the list the freshly
-    // minted thread has to appear in before the panel can select it.
+    // that appended user/reference turns refreshes open transcripts too — and
+    // the list refetch is what carries a first turn's server-minted
+    // `runtimeSessionId` into every picker showing the thread.
     onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
   });
 }

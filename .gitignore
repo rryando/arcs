@@ -30,3 +30,4 @@ AGENTS.md
 
 # Serena MCP local project cache/config
 .serena/
+.codex/

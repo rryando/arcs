@@ -99,6 +99,28 @@ describe("session-store: create", () => {
       createSession(dir, { runtimeType: "claude-code", runtimeSessionId: "___" }),
     ).rejects.toThrow("Invalid runtime session id");
   });
+
+  it("keys a thread minted before its runtime id exists on its record name", async () => {
+    const dir = makeProjectDir();
+    // An ARCS-minted opencode thread: no runtime-native session id exists yet —
+    // the first settled run harvests one and writes it back.
+    const thread = await createSession(dir, {
+      runtimeType: "opencode",
+      recordName: "arcs-thread-demo-1",
+      origin: "arcs",
+    });
+
+    expect(thread.normalizedId).toBe("arcs-thread-demo-1");
+    expect(thread.runtimeSessionId).toBe("");
+    expect((await getSession(dir, "arcs-thread-demo-1")).id).toBe(thread.id);
+  });
+
+  it("rejects a payload with neither a usable runtime id nor a record name", async () => {
+    const dir = makeProjectDir();
+    await expect(
+      createSession(dir, { runtimeType: "opencode", runtimeSessionId: "" }),
+    ).rejects.toThrow("Invalid runtime session id");
+  });
 });
 
 describe("session-store: read", () => {
@@ -182,6 +204,29 @@ describe("session-store: upsert", () => {
 
     expect(updated.status).toBe("failed");
     expect(updated.lastMessageAt).toBe("2026-01-02T00:00:00.000Z");
+  });
+
+  it("never lets a blank-runtime-id upsert clobber a harvested runtime id", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, {
+      runtimeType: "opencode",
+      recordName: "arcs-thread-demo-1",
+      origin: "arcs",
+    });
+    // The first settled run harvested its opencode session id…
+    await updateSession(dir, {
+      id: "arcs-thread-demo-1",
+      runtimeSessionId: "ses_0HarvestedId000000000000",
+    });
+
+    // …and a later upsert that does not know one must not erase it.
+    const refreshed = await upsertSession(dir, {
+      runtimeType: "opencode",
+      recordName: "arcs-thread-demo-1",
+      metadata: { directory: "/repo" },
+    });
+
+    expect(refreshed.runtimeSessionId).toBe("ses_0HarvestedId000000000000");
   });
 });
 
@@ -483,6 +528,25 @@ describe("session-store: checkpoints", () => {
     expect(
       (await updateSession(dir, { id: "cc-checkpoint", lastCheckpointAt: null })).lastCheckpointAt,
     ).toBeUndefined();
+  });
+
+  it("writes a harvested runtime session id through updateSession, verbatim on disk", async () => {
+    const dir = makeProjectDir();
+    await createSession(dir, {
+      runtimeType: "opencode",
+      recordName: "arcs-thread-demo-1",
+      origin: "arcs",
+    });
+
+    const harvested = await updateSession(dir, {
+      id: "arcs-thread-demo-1",
+      runtimeSessionId: "ses_0HarvestedId000000000000",
+    });
+
+    expect(harvested.runtimeSessionId).toBe("ses_0HarvestedId000000000000");
+    // The record KEY is untouched — only the runtime-native id moved.
+    expect(harvested.normalizedId).toBe("arcs-thread-demo-1");
+    expect(rawSessions(dir)[0].runtimeSessionId).toBe("ses_0HarvestedId000000000000");
   });
 });
 

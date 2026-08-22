@@ -22,7 +22,6 @@ const promptFiles = [
   "opencode/arcs/skills/enriching-codegraph-proposals/SKILL.md",
   "opencode/arcs/skills/implementation/SKILL.md",
   "opencode/arcs/skills/init-project/SKILL.md",
-  "opencode/arcs/skills/install-claude-code-hook/SKILL.md",
   "opencode/arcs/skills/systematic-debugging/SKILL.md",
   "opencode/arcs/skills/systematic-debugging/condition-based-waiting.md",
   "opencode/arcs/skills/systematic-debugging/defense-in-depth.md",
@@ -42,8 +41,8 @@ const promptFiles = [
 ] as const;
 
 describe("canonical prompt source budget", () => {
-  it("tracks the exact approved 35-file surface", () => {
-    expect(promptFiles).toHaveLength(35);
+  it("tracks the exact approved 34-file surface", () => {
+    expect(promptFiles).toHaveLength(34);
     expect(new Set(promptFiles).size).toBe(promptFiles.length);
   });
 

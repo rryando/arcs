@@ -31,7 +31,7 @@ export const AGENT_AND_SKILL_MATRIX_BLOCK = `## Optional Specialists and Skills
 - \`code-reviewer\`: review, audit, and risk analysis, including PR review.
 - \`arcs-docs\`: project DAG and documentation synchronization.
 
-Available skills: \`implementation\`, \`test-driven-development\`, \`systematic-debugging\`, \`brainstorming\`, \`writing-plans\`, \`to-diagram\`, \`writing-knowledge\`, \`init-project\`, \`enriching-codegraph-proposals\`, \`deep-pr-review\`, \`caveman-commit\`, and \`install-claude-code-hook\`. Load a skill only when its technique is useful.`;
+Available skills: \`implementation\`, \`test-driven-development\`, \`systematic-debugging\`, \`brainstorming\`, \`writing-plans\`, \`to-diagram\`, \`writing-knowledge\`, \`init-project\`, \`enriching-codegraph-proposals\`, \`deep-pr-review\` and \`caveman-commit\`. Load a skill only when its technique is useful.`;
 
 export const FINITE_HITL_DESIGN_PIPELINE_BLOCK = `## Design and Plans
 

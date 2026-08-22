@@ -9,8 +9,7 @@
  * served index.html (see static.ts), so the SPA holds it from first paint and
  * no other local process can guess it.
  *
- * Deliberately per-SERVER, not per-project (unlike hook-token-store, which
- * authenticates a per-project hook install): it authenticates the browser tab,
+ * Deliberately per-SERVER, not per-project: it authenticates the browser tab,
  * and one tab drives every project. Verification always reads the in-memory
  * value, never the file, so a second server started against the same data dir
  * cannot authorize requests to this one — it only replaces the on-disk copy.
@@ -28,7 +27,6 @@ import { dirname, join } from "node:path";
 import { getDataDir } from "../utils/paths.js";
 import { nowISO } from "../utils/storage-utils.js";
 
-/** Same file shape as src/utils/hook-token-store.ts. */
 interface WebTokenFile {
   token: string;
   createdAt: string;

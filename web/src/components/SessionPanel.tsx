@@ -2,16 +2,15 @@
  * Persistent split-panel conversation view — "chat but not really".
  *
  * One pane over the transcript GET + headless turn POST. The composer has ONE
- * delivery channel: every send dispatches a headless `claude -p` turn via
- * `POST /sessions/:id/turns`. INTENT is the only control — what the turn is
- * allowed to do (`ask` inspects, `change` edits). Turns are asynchronous by
- * contract — the panel says the reply appears when the job finishes, never
- * "sent". The transcript is checkpoint-mirrored, never live.
+ * delivery channel: every send dispatches a one-shot turn via
+ * `POST /sessions/:id/turns`, driven by the thread's own runtime (opencode by
+ * default). INTENT is the only control — what the turn is allowed to do (`ask`
+ * inspects, `change` edits). Turns are asynchronous by contract — the panel
+ * says the reply appears when the run finishes, never "sent".
  *
- * Where a turn LANDS is not a control at all: the server derives it from the
- * selected record (an ARCS thread continues; an observed terminal session is
- * forked into a new ARCS thread — the reply lands in this panel, never in the
- * user's terminal), and the 202 names the write target it chose.
+ * Every session here IS an ARCS thread, so where a turn LANDS is not a choice:
+ * it continues the selected record in place, and the 202 names that record as
+ * the write target.
  *
  * A dispatched job is WATCHED rather than merely awaited: the 202 names the
  * run, and the panel tails that run's event log over its own SSE channel
@@ -31,6 +30,7 @@ import { cx, relativeTime, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
+import { NewThreadDialog } from "./NewThreadDialog";
 import { MAX_LENGTH, WARN_LENGTH } from "./SessionMessageForm";
 import { useToaster } from "./Toaster";
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer";
@@ -127,9 +127,8 @@ function relativeEpoch(ms: number | undefined): string {
 }
 
 /** The run the panel is currently tailing. `sessionId` is the run's WRITE
- *  TARGET (the record the log is keyed on and the reply lands in), which is the
- *  selected session for a resume and the ARCS-owned thread for the other
- *  modes — not necessarily the session that was selected when it was sent. */
+ *  TARGET — the record the log is keyed on and the reply lands in, which for
+ *  this panel's sends is the selected thread itself. */
 interface WatchedRun {
   sessionId: string;
   runId: string;
@@ -166,6 +165,7 @@ export function SessionPanel() {
   // so widening is always a deliberate act.
   const [intent, setIntent] = useState<RunIntent>("ask");
   const [watchedRun, setWatchedRun] = useState<WatchedRun | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   // Shared picker list — unfiltered, linked sessions sorted first. The panel
   // itself does not filter to linked sessions (see the "sort by linkage, never
@@ -194,10 +194,6 @@ export function SessionPanel() {
     [transcript.data?.turns, liveRun],
   );
 
-  // ARCS-owned records are headless bookkeeping ARCS minted itself: a turn
-  // CONTINUES them, while a turn against an observed terminal session FORKS it.
-  // The hint copy below states which of the two the send will do.
-  const arcsOwned = selectedSession?.metadata?.control === "arcs-owned";
   const run = selectedSession?.metadata?.run;
   // Absent outcome = a record from before the write-back existed, not a failure.
   const failedRun = run && run.outcome !== undefined && run.outcome !== "success" ? run : null;
@@ -209,12 +205,6 @@ export function SessionPanel() {
 
   const text = message.trim();
   const tooLong = text.length > MAX_LENGTH;
-  // There is deliberately NO attachment gate on the turn. A turn against an
-  // observed session FORKS it — probed on claude 2.1.223, the fork writes a
-  // separate transcript and leaves the original untouched — so a live terminal
-  // session is safe to drive and the demote-only `isSessionAttached` check
-  // (which read `idle` as "probably nothing attached" and was wrong in both
-  // directions often enough to matter) has nothing left to protect.
   const runPending = sendTurn.isPending;
   const disabled = !selectedSession || !text || tooLong || runPending;
 
@@ -238,18 +228,13 @@ export function SessionPanel() {
       },
       {
         onSuccess: (result) => {
-          // Follow the run to the record it actually landed on. Under adoption
-          // that is a freshly forked thread, not the selected session — reading
-          // it off the response is the only way to know which. A turn that
-          // continued the selected thread names it back, so this is a no-op.
+          // Select the record the run writes to — read off the response rather
+          // than assumed, so the panel can never point at a stale target.
           openSession(result.writeTargetId);
           // Watch the run the 202 named — same key the server built `streamUrl`
           // from, so the live block tails the log that is actually being written.
           setWatchedRun({ sessionId: result.writeTargetId, runId: result.runId });
-          push(
-            "success",
-            "headless claude turn accepted — the reply appears in the transcript when it finishes",
-          );
+          push("success", "turn accepted — the reply appears in the transcript when it finishes");
           setMessage("");
           if (pendingRef) clearRef(); // the reference was consumed by this turn
         },
@@ -315,9 +300,23 @@ export function SessionPanel() {
           ))}
         </select>
         {candidates.length === 0 && (
-          <div className="mt-1 text-[11px] text-term-dim">
-            no sessions registered for this project
+          <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-term-dim">
+            <span>no threads yet</span>
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="hover:text-term-green"
+            >
+              + new thread
+            </button>
           </div>
+        )}
+        {createOpen && (
+          <NewThreadDialog
+            slug={slug}
+            onCreated={(created) => openSession(created.normalizedId)}
+            onClose={() => setCreateOpen(false)}
+          />
         )}
       </div>
 
@@ -382,9 +381,7 @@ export function SessionPanel() {
         {selectedSession && (
           <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
             <span className="text-term-amber">
-              {arcsOwned
-                ? "continues this ARCS thread — the reply appears in this panel when the turn finishes, not live"
-                : "sending forks this terminal session into a new ARCS thread — the reply appears in this panel when the turn finishes, never in your terminal"}
+              continues this thread — the reply appears in this panel when the turn finishes
             </span>
           </div>
         )}

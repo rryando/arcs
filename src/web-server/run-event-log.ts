@@ -37,6 +37,8 @@ import { readdir, readFile, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { appendSessionTurn, readSessionTurns } from "../utils/claude-transcript.js";
 import { normalizeIdentifier } from "../utils/slug.js";
+import type { SessionRuntimeType } from "../utils/storage-utils.js";
+import { getRunDriver } from "./run-driver.js";
 
 /**
  * Ceiling on one run's log — a runaway child cannot fill the disk.
@@ -347,6 +349,14 @@ export interface RunFoldResult {
   alreadyFolded: boolean;
   /** An assistant TEXT turn for this run is in the sidecar (from either call). */
   assistantTextFolded: boolean;
+  /**
+   * The runtime-native session id a driver normalizer harvested from the log,
+   * when one folded it and any line carried an id. This is what lets a first
+   * turn lazily mint the session's `runtimeSessionId` — the caller persists it
+   * after the run settles. Absent for the built-in claude parser (claude ids
+   * reach the record through metadata, not this fold) and when no line had one.
+   */
+  runtimeSessionId?: string;
 }
 
 const EMPTY_FOLD: RunFoldResult = {
@@ -422,6 +432,20 @@ function foldTurns(raw: string): FoldTurn[] {
 }
 
 /**
+ * Options for one fold. Everything is optional: absent, the fold behaves
+ * exactly as it always has — the built-in claude stream-json parser.
+ */
+export interface FoldRunEventLogOptions {
+  /**
+   * The write-target's runtime type. When a one-shot driver adapter is
+   * registered for it (run-driver.ts), the log folds through that adapter's
+   * normalizer instead of the claude parser — an opencode log's lines are
+   * `{type, sessionID, part}` objects no `assistant` event parser can read.
+   */
+  runtimeType?: SessionRuntimeType;
+}
+
+/**
  * Folds a run's event log down into the session's transcript sidecar: assistant
  * text plus one turn per `tool_use`, appended through `appendSessionTurn` in
  * stream order, each tagged with the run id.
@@ -444,6 +468,7 @@ export async function foldRunEventLog(
   projectDir: string,
   sessionId: string,
   runId: string,
+  options: FoldRunEventLogOptions = {},
 ): Promise<RunFoldResult> {
   try {
     const path = runEventLogPath(projectDir, sessionId, runId);
@@ -462,8 +487,27 @@ export async function foldRunEventLog(
       };
     }
 
-    const turns = foldTurns(await readFile(path, "utf-8"));
-    if (turns.length === 0) return EMPTY_FOLD;
+    const raw = await readFile(path, "utf-8");
+    const driver =
+      options.runtimeType !== undefined ? getRunDriver(options.runtimeType) : undefined;
+    let turns: FoldTurn[];
+    let runtimeSessionId: string | undefined;
+    if (driver !== undefined) {
+      const fold = driver.foldOutput(raw);
+      turns = fold.turns.map(({ text, tool }) => ({
+        text,
+        ...(tool !== undefined && { tool }),
+      }));
+      runtimeSessionId = fold.runtimeSessionId;
+    } else {
+      turns = foldTurns(raw);
+    }
+    // A run that spoke no reply content still minted its runtime session id —
+    // losing it would fork a fresh thread on the next turn. Report it even when
+    // there is nothing to append.
+    if (turns.length === 0) {
+      return runtimeSessionId === undefined ? EMPTY_FOLD : { ...EMPTY_FOLD, runtimeSessionId };
+    }
 
     let appended = 0;
     let assistantTextFolded = false;
@@ -479,7 +523,12 @@ export async function foldRunEventLog(
       appended += 1;
       if (turn.tool === undefined && turn.text !== "") assistantTextFolded = true;
     }
-    return { appended, alreadyFolded: false, assistantTextFolded };
+    return {
+      appended,
+      alreadyFolded: false,
+      assistantTextFolded,
+      ...(runtimeSessionId !== undefined && { runtimeSessionId }),
+    };
   } catch {
     // Missing log, unreadable sidecar, a full disk — all fold to nothing.
     return EMPTY_FOLD;

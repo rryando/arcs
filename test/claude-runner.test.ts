@@ -870,11 +870,8 @@ describe("runClaudeJob — firstTokenAt (TTFT)", () => {
   });
 });
 
-describe("runClaudeJob — env scrub", () => {
-  it("deletes ARCS_HOOK_* from the child env and inherits the rest", async () => {
-    vi.stubEnv("ARCS_HOOK_TOKEN", "secret-token");
-    vi.stubEnv("ARCS_HOOK_SLUG", "acme");
-    vi.stubEnv("ARCS_HOOK_URL", "http://127.0.0.1:4173/hooks/acme");
+describe("runClaudeJob — child env", () => {
+  it("copies the base env verbatim, dropping undefined-valued entries", async () => {
     vi.stubEnv("ARCS_UNRELATED", "keep-me");
 
     const { spawnCalls, children, spawnImpl } = fakeSpawn();
@@ -883,15 +880,12 @@ describe("runClaudeJob — env scrub", () => {
     await run;
 
     const childEnv = spawnCalls[0].options.env;
-    expect(childEnv?.ARCS_HOOK_TOKEN).toBeUndefined();
-    expect(childEnv?.ARCS_HOOK_SLUG).toBeUndefined();
-    expect(childEnv?.ARCS_HOOK_URL).toBeUndefined();
     expect(childEnv?.ARCS_UNRELATED).toBe("keep-me");
     expect(childEnv?.PATH).toBe(process.env.PATH);
     expect(childEnv?.HOME).toBe(process.env.HOME);
   });
 
-  it("scrubs a custom base env exactly (only ARCS_HOOK_* dropped)", async () => {
+  it("scrubs a custom base env exactly (only undefined entries dropped)", async () => {
     const { spawnCalls, children, spawnImpl } = fakeSpawn();
     const run = runClaudeJob(
       {
@@ -900,9 +894,7 @@ describe("runClaudeJob — env scrub", () => {
         env: {
           PATH: "/bin",
           HOME: "/home/t",
-          ARCS_HOOK_TOKEN: "t",
-          ARCS_HOOK_SLUG: "s",
-          ARCS_HOOK_URL: "u",
+          ARCS_EMPTY: undefined,
         },
       },
       { spawnImpl },

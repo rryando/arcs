@@ -5,21 +5,20 @@
  * rather than a hand-maintained list of paths, so a mutating route added to any
  * route module later is probed automatically and fails this file if it answers
  * anything but 401 unauthenticated. The rest pin the contract around it — the
- * 0o600 token file, the reads that must stay open, the hook endpoint's separate
- * bearer gate, and the token reaching the SPA on BOTH index.html paths.
+ * 401 unauthenticated. The rest pin the contract around it — the 0o600 token
+ * file, the reads that must stay open, and the token reaching the SPA on BOTH
+ * index.html paths.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { writeHookToken } from "../src/utils/hook-token-store.js";
 import { createApp } from "../src/web-server/app.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
 import { currentWebToken, webTokenPath } from "../src/web-server/web-token.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
-const HOOK_TOKEN = "test-hook-token-0123456789";
 const MUTATION_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
 
 /**
@@ -86,7 +85,6 @@ async function withServer(
       }),
       "utf-8",
     );
-    await writeHookToken(projectDir, HOOK_TOKEN);
 
     let server: WebServerHandle | null = null;
     try {
@@ -122,7 +120,7 @@ async function mutate(
 }
 
 describe("web token gate", () => {
-  it("mints a per-server token into a 0o600 file with the hook-token file shape", async () => {
+  it("mints a per-server token into a 0o600 two-field file", async () => {
     await withServer(async () => {
       const path = webTokenPath();
       const file = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
@@ -133,10 +131,8 @@ describe("web token gate", () => {
       expect(typeof file.createdAt).toBe("string");
       expect(Object.keys(file).sort()).toEqual(["createdAt", "token"]);
 
-      // Owner-only: the hook token file used to land world-readable — the
-      // mistake this assertion exists to prevent repeating. That file is 0o600
-      // now too (hook-token-store.ts chmods it), so this guards a regression
-      // rather than describing a live divergence.
+      // Owner-only: a world-readable auth secret on a shared machine lets any
+      // local process drive mutations. This guards that regression.
       expect(statSync(path).mode & 0o777).toBe(0o600);
     });
   });
@@ -177,30 +173,6 @@ describe("web token gate", () => {
       expect(events.status).toBe(200);
       expect(events.headers.get("content-type")).toContain("text/event-stream");
       controller.abort();
-    });
-  });
-
-  it("keeps /api/hook/* on its own bearer gate, untouched by the web token", async () => {
-    await withServer(async ({ base }) => {
-      const event = { hook_event_name: "SessionStart", session_id: "cc-1" };
-
-      // The web token must not open the hook endpoint...
-      const webTokenOnly = await fetch(`${base}/api/hook/demo/event`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-ARCS-Token": currentWebToken() ?? "" },
-        body: JSON.stringify(event),
-      });
-      expect(webTokenOnly.status).toBe(401);
-      expect(((await webTokenOnly.json()) as { code: string }).code).toBe("hook_unauthorized");
-
-      // ...and the hook bearer alone must still work, with no web token present.
-      const bearerOnly = await fetch(`${base}/api/hook/demo/event`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${HOOK_TOKEN}` },
-        body: JSON.stringify(event),
-      });
-      expect(bearerOnly.status).toBe(200);
-      expect(((await bearerOnly.json()) as { ok: boolean }).ok).toBe(true);
     });
   });
 
@@ -255,7 +227,6 @@ describe("web token gate", () => {
       expect(mutating.length).toBeGreaterThan(0);
       const signatures = mutating.map((route) => `${route.method} ${route.path}`);
       expect(signatures).toContain("POST /api/p/:slug/sessions/:id/turns");
-      expect(signatures.filter((sig) => sig.startsWith("POST /api/hook/"))).not.toHaveLength(0);
 
       // The workspace file plane is read-only: both routes exist, both are GET,
       // and NEITHER may appear in the mutating set. A write route added there
@@ -277,12 +248,7 @@ describe("web token gate", () => {
         );
         const { status, code } = await mutate(base, path, { method: route.method });
 
-        if (route.path.startsWith("/api/hook/")) {
-          // Exempt from the web token by design — its own bearer gate answers.
-          expect({ path, status, code }).toEqual({ path, status: 401, code: "hook_unauthorized" });
-        } else {
-          expect({ path, status, code }).toEqual({ path, status: 401, code: "web_unauthorized" });
-        }
+        expect({ path, status, code }).toEqual({ path, status: 401, code: "web_unauthorized" });
       }
     });
   });
