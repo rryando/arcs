@@ -9,7 +9,7 @@ description: Create or update a helper-managed Mermaid execution diagram
 
 Task metadata is the source of truth. The `.diagram.mmd` file is derived data for execution order and status.
 
-Use `manage-diagram.mjs` with the supported `flowchart TD` format. Prefer ARCS CLI wrappers:
+Use `manage-diagram.mjs` with supported `flowchart TD` format. Prefer ARCS CLI wrappers:
 
 - `arcs diagram init <slug> <planId>`
 - `arcs diagram inspect <slug> <planId>`
@@ -21,7 +21,7 @@ Use `manage-diagram.mjs` with the supported `flowchart TD` format. Prefer ARCS C
 
 Each node uses stable `T001`-style IDs and records title, status, skill, work mode, scope, acceptance, verify command, and dependencies. Implementation tasks use `skill: implementation` with `work-mode: bounded|inspect`.
 
-Dependencies come from task `dependsOn`; do not hand-maintain conflicting arrows. New plans begin in backlog. Use the standard `done`, `inProgress`, `blocked`, and `backlog` classes.
+Dependencies come from task `dependsOn`; do not hand-maintain conflicting arrows. New plans begin in backlog. Use standard `done`, `inProgress`, `blocked`, and `backlog` classes.
 
 ## Update
 

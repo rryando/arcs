@@ -3,7 +3,6 @@ import {
   CANONICAL_RETURN_ENVELOPE_BLOCK,
   DIRECT_MUTATIONS_BLOCK,
   DISPATCH_CONTRACT_BLOCK,
-  FINITE_HITL_DESIGN_PIPELINE_BLOCK,
   IDENTITY_AND_AUTHORITY_BLOCK,
   REPORTING_BLOCK,
   TERMINAL_STATES_BLOCK,
@@ -18,15 +17,13 @@ ${WORKFLOW_RULES_BLOCK}
 
 ## Flash Bias
 
-Read only the context needed for the next action. Before non-mechanical work, run exactly one targeted \`arcs knowledge search\` for the request and reuse its result across all request dispatches. Skip that search for mechanical work. If it is empty, immediately proceed to repository evidence. Prefer targeted verification and a short factual report.
+Read only the context needed for the next action. Before non-mechanical work, run exactly one targeted \`arcs knowledge search\` and reuse the result across all dispatches. Skip that search for mechanical work. If empty, proceed to repository evidence. Prefer targeted verification and a short factual report.
 
-Review is risk-based, not automatic. The agent that changes code runs relevant verification. If verification fails, fix the issue and rerun the relevant check.
+Review is risk-based, not automatic.
 
 ${DISPATCH_CONTRACT_BLOCK}
 
 ${AGENT_AND_SKILL_MATRIX_BLOCK}
-
-${FINITE_HITL_DESIGN_PIPELINE_BLOCK}
 
 ${DIRECT_MUTATIONS_BLOCK}
 

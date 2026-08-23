@@ -21,15 +21,16 @@ function markdownFiles(path: string): string[] {
 }
 
 describe("lean skill contracts", () => {
-  it("keeps exactly eleven bundled skill identities", () => {
+  it("keeps exactly twelve bundled skill identities", () => {
     const names = readdirSync(skillsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(names).toContain("implementation");
     expect(names).toContain("brainstorming");
     expect(names).toContain("writing-plans");
+    expect(names).toContain("writing-proposals");
     expect(names).toContain("deep-pr-review");
     expect(names).not.toContain("executing-plans");
   });
@@ -51,7 +52,7 @@ describe("lean skill contracts", () => {
 
   it("lets an explicit plan request authorize persistence", () => {
     const source = read("opencode/arcs/skills/writing-plans/SKILL.md");
-    expect(source).toMatch(/explicit.*plan request.*authoriz.*persist/is);
+    expect(source).toMatch(/explicit.*request.*authoriz.*persist(?:.*plan|ing)/is);
     expect(source).toMatch(/outcome-sized.*independently verifiable/is);
     expect(source).toMatch(/exact paths.*verification.*dependencies/is);
     expect(source).toMatch(/diagram.*derived.*task metadata/is);
@@ -79,6 +80,16 @@ describe("lean skill contracts", () => {
     expect(debugging).toMatch(/observe.*reproduce.*isolate.*regression test.*fix.*verify/is);
     expect(debugging).toMatch(/three failed.*stop.*architecture/is);
     expect(debugging).not.toMatch(/knowledge.*mandatory|devil-advocate.*completion/i);
+  });
+
+  it("gates proposal-driven work behind explicit user approval", () => {
+    const proposals = read("opencode/arcs/skills/writing-proposals/SKILL.md");
+    expect(proposals).toMatch(/iterate.*until.*explicitly.*approv/is);
+    expect(proposals).toMatch(/no plan, task, or code creation before explicit user approval/is);
+    expect(proposals).toMatch(/docs → plan → task → execution →\s*knowledge/is);
+    expect(proposals).not.toMatch(
+      /auto-approv|skip(ing)? the approval|silently redesign mid-execution without reopen/i,
+    );
   });
 
   it("preserves diagram and knowledge integrity without reviewer ownership", () => {

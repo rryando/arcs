@@ -19,8 +19,8 @@ describe("flash prompt policy — lean direct mode", () => {
   });
 
   it("prefers owned delegation for separable work", () => {
-    expect(FLASH_PROMPT_TEXT).toMatch(/strongly prefer delegation/is);
-    expect(FLASH_PROMPT_TEXT).toMatch(/one owner per delegated outcome/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/[Pp]refer delegation/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/one owner per\s*(delegated\s*)?outcome/i);
     expect(FLASH_PROMPT_TEXT).toMatch(/tiny.*tightly coupled.*orchestration-state/is);
     expect(FLASH_PROMPT_TEXT).toMatch(/no nested delegation/i);
   });
@@ -31,7 +31,7 @@ describe("flash prompt policy — lean direct mode", () => {
     expect(FLASH_PROMPT_TEXT).toMatch(/before non-mechanical work/i);
     expect(FLASH_PROMPT_TEXT).toMatch(/reuse.*across all.*dispatch/is);
     expect(FLASH_PROMPT_TEXT).toMatch(/skip.*mechanical work/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/empty.*immediately.*repository evidence/is);
+    expect(FLASH_PROMPT_TEXT).toMatch(/empty.*(?:immediately )?.*repository evidence/is);
     expect(FLASH_PROMPT_TEXT).not.toMatch(
       /retry|KNOWLEDGE_CHECKED|knowledge ledger|knowledge gate|per-dispatch search/i,
     );

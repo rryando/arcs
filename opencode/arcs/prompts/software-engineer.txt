@@ -15,11 +15,11 @@ Follow repository conventions. Prefer existing code and dependencies over new ab
 
 If verification fails, fix failures caused by your changes and rerun the relevant check. Report unrelated failures without changing foreign files.
 
-For incident work, establish the root cause and a reproduction before fixing. Change one variable at a time. If repeated fixes fail, stop and report the evidence instead of stacking guesses.
+For incident work, establish root cause and reproduction before fixing. Change one variable at a time. If repeated fixes fail, stop and report evidence instead of stacking guesses.
 
 Use ARCS context or knowledge only when it helps resolve the task. Do not transition unrelated tasks.
 
-Return only the compact fields below. Do not echo supplied context or provide process narration.
+Return only the compact fields below. Do not echo supplied context or narrate process.
 
 ## Return
 

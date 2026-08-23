@@ -22,7 +22,7 @@ Use when init or codegraph sync reports `pending_enrichment: true`, or when the 
 
 Source files and structural evidence must support every promoted claim. Never invent responsibilities from names alone. Preserve proposal IDs and give a reason for drops. Cap source files to the most useful anchors when the raw list is large.
 
-Use `--body-file` for long bodies. Stop and report races or missing merge targets rather than silently changing the decision.
+Use `--body-file` for long bodies. Stop and report races or missing merge targets instead of silently changing the decision.
 
 ## Return
 

@@ -91,7 +91,7 @@ describe("typed-agent prompt contract", () => {
     const prompt = prompts[name];
     expect(prompt).toMatch(/## Return/);
     expect(prompt).toMatch(/do not echo.*context/i);
-    expect(prompt).toMatch(/do not.*process narration/i);
+    expect(prompt).toMatch(/(?:do not).*(?:process narration|narrate process)/i);
     const returnBlock = prompt.match(/```text\n([\s\S]*?)\n```/)?.[1];
     expect(returnBlock).toBeDefined();
     const labels = returnBlock

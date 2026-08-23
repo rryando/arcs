@@ -7,19 +7,19 @@ description: Use when material design uncertainty must be resolved before implem
 
 ## When
 
-Use for material design uncertainty: unclear user-visible behavior, architecture, scope, irreversible choices, or meaningful trade-offs. Skip it for clear, local, reversible work.
+Use for material design uncertainty: unclear user-visible behavior, architecture, scope, irreversible choices, or meaningful trade-offs. Skip for clear, local, reversible work.
 
 ## Method
 
-1. Restate the goal, scope, non-goals, and observable done condition.
+1. Restate goal, scope, non-goals, and observable done condition.
 2. Resolve repository and tool-discoverable facts before asking the user.
 3. Ask only about a material user-owned decision that changes behavior, scope, risk, or trade-offs. Batch independent questions when useful.
 4. Recommend one minimal design with boundaries, decisions, risks, and verification.
-5. Ask the user to approve or revise the design.
+5. Ask the user to approve or revise.
 
 Do not manufacture questions. Choose trivial reversible details from project conventions. Challenge scope only with concrete evidence. Keep YAGNI, security, accessibility, validation, and data-loss protections intact.
 
-Design approval means the design is settled. If the user also requested implementation or a plan, continue directly; ask again only when the goal or material scope changes.
+Design approval means the design is settled. If the user also requested implementation or a plan, continue directly; ask again only when goal or material scope changes.
 
 ## Output
 

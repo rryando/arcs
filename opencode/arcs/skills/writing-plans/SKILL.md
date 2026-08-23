@@ -7,7 +7,7 @@ description: Create and maintain concise ARCS plans, tasks, and execution diagra
 
 ## When
 
-Use for broad, multi-step, architectural, or explicitly requested plans. A clear explicit plan request authorizes drafting and persisting the plan; do not ask for the same approval twice.
+Use for broad, multi-step, architectural, or explicitly requested plans. A clear explicit request authorizes drafting and persisting the plan; do not ask for the same approval twice.
 
 ## Plan Shape
 
@@ -31,7 +31,7 @@ Use current CLI syntax from `arcs --commands --json`:
 
 The diagram is derived from task metadata, which remains authoritative. Use `to-diagram` when diagram tooling details matter.
 
-During execution, keep tasks and diagrams aligned without reopening approval. Ask only when the goal, material scope, dependency strategy, or destructive/external effect changes.
+During execution, keep tasks and diagrams aligned without reopening approval. Ask only when goal, material scope, dependency strategy, or destructive/external effect changes.
 
 An optional reviewer may check a risky or complex plan using `plan-document-reviewer-prompt.md`; ordinary plans do not require it.
 
