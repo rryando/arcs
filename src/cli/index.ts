@@ -1,7 +1,7 @@
 import "./commands/index.js"; // Trigger command registrations
 import { parseArgs } from "./arg-parser.js";
 import { getCommand } from "./command-registry.js";
-import { handleDagCommand } from "./dag-commands.js";
+import { handleDagCommand, KNOWN_DAG_COMMANDS } from "./dag-commands.js";
 import {
   formatCommandsDiscovery,
   generateCommandHelp,
@@ -16,19 +16,16 @@ import { runSetup } from "./setup.js";
 
 /**
  * Determine the longest-match command path from raw args.
- * Tries two-word path first (e.g. "task transition"), then single word.
+ * Tries 3-word, 2-word, then 1-word path. This handles commands like
+ * `knowledge search bm25` or `proposal-doc create` as registry entries.
  */
 function determineCommandPath(args: string[]): { path: string; remaining: string[] } | undefined {
-  if (args.length >= 2) {
-    const twoWord = `${args[0]} ${args[1]}`;
-    if (getCommand(twoWord)) {
-      return { path: twoWord, remaining: args.slice(2) };
-    }
-  }
-  if (args.length >= 1) {
-    const oneWord = args[0];
-    if (getCommand(oneWord)) {
-      return { path: oneWord, remaining: args.slice(1) };
+  // Try at most 3 words as the command path (e.g. "knowledge search bm25")
+  const maxWords = Math.min(args.length, 3);
+  for (let n = maxWords; n >= 1; n--) {
+    const path = args.slice(0, n).join(" ");
+    if (getCommand(path)) {
+      return { path, remaining: args.slice(n) };
     }
   }
   return undefined;
@@ -87,19 +84,10 @@ export async function handleCli(args: string[]): Promise<boolean> {
       await runSetup("config");
       return true;
 
-    case "task":
-    case "plan":
-    case "knowledge":
-    case "diagram":
-    case "project":
-    case "doc":
-    case "dependency":
-    case "paths":
-    case "loop":
-    case "graph":
-      return handleDagCommand(command, args.slice(1));
-
     default:
+      if (KNOWN_DAG_COMMANDS.includes(command as typeof KNOWN_DAG_COMMANDS[number])) {
+        return handleDagCommand(command, args.slice(1));
+      }
       return false;
   }
 }

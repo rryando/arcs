@@ -51,9 +51,9 @@ describe("docs and skills smoke tests", () => {
   });
 
   it("keeps the canonical prompt aligned with root guidance", () => {
-    expect(orchestratePrompt).toMatch(/UNDERSTAND.*WORK.*VERIFY.*REPORT/is);
+    expect(orchestratePrompt).toMatch(/PARSE.*DISPATCH.*COLLECT.*SYNTHESIZE.*REPORT/is);
     expect(orchestratePrompt).toMatch(/inspect source.*edit files.*run commands.*verify/is);
-    expect(orchestratePrompt).toMatch(/[Pp]refer delegation/i);
+    expect(orchestratePrompt).toMatch(/delegate aggressively/i);
     expect(orchestratePrompt).not.toMatch(/only completion verifier|PHASE_GATE|exact artifact/i);
   });
 

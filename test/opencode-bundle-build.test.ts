@@ -385,6 +385,7 @@ describe("opencode bundle runtime manifest", () => {
         "to-diagram": ["SKILL.md", "scripts/manage-diagram.mjs"],
         "writing-knowledge": ["SKILL.md"],
         "writing-plans": ["SKILL.md", "plan-document-reviewer-prompt.md"],
+        "writing-proposals": ["SKILL.md"],
       },
       agents: [],
       plugin: [],

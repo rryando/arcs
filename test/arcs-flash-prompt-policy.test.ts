@@ -7,29 +7,30 @@ import {
   WORKFLOW_RULES_BLOCK,
 } from "../src/cli/orchestrator-shared-blocks.js";
 
-describe("flash prompt policy — lean direct mode", () => {
-  it("is a thin speed-oriented variant of the direct lifecycle", () => {
+describe("flash prompt policy — dispatch-first with flash bias", () => {
+  it("is a thin speed-oriented orchestrator variant", () => {
     expect(FLASH_PROMPT_TEXT).toContain("arcs-flash");
-    expect(FLASH_PROMPT_TEXT).toMatch(/minimal context/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/UNDERSTAND\s*→\s*WORK\s*→\s*VERIFY\s*→\s*REPORT/);
+    expect(FLASH_PROMPT_TEXT).toMatch(/minimal-context/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/PARSE\s*→\s*DISPATCH\s*→\s*COLLECT\s*→\s*SYNTHESIZE\s*→\s*REPORT/);
     expect(FLASH_PROMPT_TEXT).toContain(IDENTITY_AND_AUTHORITY_BLOCK);
     expect(FLASH_PROMPT_TEXT).toContain(WORKFLOW_RULES_BLOCK);
     expect(FLASH_PROMPT_TEXT).toContain(DIRECT_MUTATIONS_BLOCK);
     expect(FLASH_PROMPT_TEXT).toContain(AGENT_AND_SKILL_MATRIX_BLOCK);
   });
 
-  it("prefers owned delegation for separable work", () => {
-    expect(FLASH_PROMPT_TEXT).toMatch(/[Pp]refer delegation/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/one owner per\s*(delegated\s*)?outcome/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/tiny.*tightly coupled.*orchestration-state/is);
+  it("delegates aggressively via routing tiers", () => {
+    expect(FLASH_PROMPT_TEXT).toMatch(/delegate aggressively/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/Implement.*Fix.*software-engineer/is);
+    expect(FLASH_PROMPT_TEXT).toMatch(/Explore.*Investigate.*graph-explorer/is);
+    expect(FLASH_PROMPT_TEXT).toMatch(/one owner per outcome/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/tiny tightly coupled/i);
     expect(FLASH_PROMPT_TEXT).toMatch(/no nested delegation/i);
   });
 
   it("searches knowledge exactly once for non-mechanical requests", () => {
     expect(FLASH_PROMPT_TEXT).toMatch(/exactly one targeted `arcs knowledge search`/i);
     expect(FLASH_PROMPT_TEXT.match(/arcs knowledge search/gi)).toHaveLength(1);
-    expect(FLASH_PROMPT_TEXT).toMatch(/before non-mechanical work/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/reuse.*across all.*dispatch/is);
+    expect(FLASH_PROMPT_TEXT).toMatch(/before dispatching non-mechanical/i);
     expect(FLASH_PROMPT_TEXT).toMatch(/skip.*mechanical work/i);
     expect(FLASH_PROMPT_TEXT).toMatch(/empty.*(?:immediately )?.*repository evidence/is);
     expect(FLASH_PROMPT_TEXT).not.toMatch(
@@ -37,15 +38,10 @@ describe("flash prompt policy — lean direct mode", () => {
     );
   });
 
-  it("does not add tier or completion gates", () => {
+  it("dispatches all separable units in parallel on first action", () => {
+    expect(FLASH_PROMPT_TEXT).toMatch(/parallel.*first action|first action.*parallel/is);
     expect(FLASH_PROMPT_TEXT).not.toMatch(/Tier [0-3]|Every return is gated/);
     expect(FLASH_PROMPT_TEXT).not.toMatch(/completion gate.*never skipped/i);
     expect(FLASH_PROMPT_TEXT).not.toMatch(/only completion verifier/i);
-  });
-
-  it("keeps review optional and verification owned by the worker", () => {
-    expect(FLASH_PROMPT_TEXT).toMatch(/agent that changes.*runs.*relevant verification/is);
-    expect(FLASH_PROMPT_TEXT).toMatch(/review.*risk|risk.*review/is);
-    expect(FLASH_PROMPT_TEXT).toMatch(/verification fails.*fix.*rerun/is);
   });
 });

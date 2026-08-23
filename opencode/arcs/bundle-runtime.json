@@ -41,6 +41,9 @@
     "writing-knowledge": [
       "SKILL.md"
     ],
+    "writing-proposals": [
+      "SKILL.md"
+    ],
     "writing-plans": [
       "SKILL.md",
       "plan-document-reviewer-prompt.md"

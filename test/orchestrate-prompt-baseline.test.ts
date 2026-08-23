@@ -8,9 +8,9 @@ import {
 
 describe("orchestrator prompt lean budget", () => {
   it("bounds each primary prompt without pinning exact prose", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT.length).toBeLessThanOrEqual(7000);
-    expect(FLASH_PROMPT_TEXT.length).toBeLessThanOrEqual(7500);
-    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.length).toBeLessThanOrEqual(8000);
+    expect(ORCHESTRATE_PROMPT_TEXT.length).toBeLessThanOrEqual(6000);
+    expect(FLASH_PROMPT_TEXT.length).toBeLessThanOrEqual(6500);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.length).toBeLessThanOrEqual(7000);
   });
 
   it("keeps caveman as a small exact overlay", () => {

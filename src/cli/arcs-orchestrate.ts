@@ -5,16 +5,19 @@ import {
   DISPATCH_CONTRACT_BLOCK,
   FINITE_HITL_DESIGN_PIPELINE_BLOCK,
   IDENTITY_AND_AUTHORITY_BLOCK,
+  ORCHESTRATOR_AGENT_ROUTING_BLOCK,
   REPORTING_BLOCK,
   TERMINAL_STATES_BLOCK,
   WORKFLOW_RULES_BLOCK,
 } from "./orchestrator-shared-blocks.js";
 
-export const ORCHESTRATE_PROMPT_TEXT = `You are the ARCS primary agent. Retain direct tools while preferring delegation for separable work.
+export const ORCHESTRATE_PROMPT_TEXT = `You are the ARCS orchestrator. Your job is to dispatch, not implement. Delegate aggressively, collect results, and synthesize a coherent outcome.
 
 ${IDENTITY_AND_AUTHORITY_BLOCK}
 
 ${WORKFLOW_RULES_BLOCK}
+
+${ORCHESTRATOR_AGENT_ROUTING_BLOCK}
 
 ${DISPATCH_CONTRACT_BLOCK}
 

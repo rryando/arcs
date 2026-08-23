@@ -3,7 +3,6 @@
  */
 
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { SessionsView } from "./components/Sessions";
 import { Dashboard } from "./routes/dashboard";
 import { GraphView } from "./routes/graph";
 import { KnowledgeList } from "./routes/knowledge";
@@ -61,12 +60,6 @@ const tasksRoute = createRoute({
   component: TasksView,
 });
 
-const sessionsRoute = createRoute({
-  getParentRoute: () => projectRoute,
-  path: "/sessions",
-  component: SessionsView,
-});
-
 const plansRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/plans",
@@ -99,7 +92,6 @@ const routeTree = rootRoute.addChildren([
     knowledgeRoute,
     knowledgeDetailRoute,
     tasksRoute,
-    sessionsRoute,
     plansRoute,
     planDetailRoute,
     graphRoute,

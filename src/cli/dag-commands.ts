@@ -26,6 +26,29 @@ function printUsage(): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Command prefixes that route to handleDagCommand for descriptive error messages.
+ * These are commands with subcommands (e.g. "plan create") but no single-word
+ * registry entry — registry-first routing in index.ts catches the two-word forms,
+ * this list provides helpful errors when the user types just the prefix.
+ *
+ * Keep sorted. The same list is used in index.ts for the switch/case fallback.
+ */
+export const KNOWN_DAG_COMMANDS = [
+  "dependency",
+  "diagram",
+  "doc",
+  "graph",
+  "knowledge",
+  "loop",
+  "paths",
+  "plan",
+  "project",
+  "proposal",
+  "proposal-doc",
+  "task",
+] as const satisfies readonly string[];
+
+/**
  * Dispatches DAG CLI subcommands via the registry. Returns true if handled.
  * Kept as export for backward compatibility with src/cli/index.ts and tests.
  */
@@ -45,24 +68,23 @@ export async function handleDagCommand(command: string, args: string[]): Promise
 
   if (!lean && isLeanMode([])) lean = true;
 
-  // Delegate to registry
+  // Delegate to registry — try N-word paths from remaining args
   const firstPositional = rest.find((a) => !a.startsWith("-"));
   let registeredCmd: AnyCommandDef | undefined;
   let remaining: string[];
 
   if (firstPositional) {
-    const twoWord = `${command} ${firstPositional}`;
-    const cmd = getCommand(twoWord);
-    if (cmd) {
-      registeredCmd = cmd;
-      remaining = [];
-      let removed = false;
-      for (const a of rest) {
-        if (!removed && a === firstPositional) {
-          removed = true;
-          continue;
-        }
-        remaining.push(a);
+    // Find the longest command path that matches: command + up to 2 sub-words
+    const posIdx = rest.indexOf(firstPositional);
+    const suffixArgs = rest.slice(posIdx);
+    const maxWords = Math.min(suffixArgs.length, 2);
+    for (let n = maxWords; n >= 1; n--) {
+      const candidate = `${command} ${suffixArgs.slice(0, n).join(" ")}`;
+      const cmd = getCommand(candidate);
+      if (cmd) {
+        registeredCmd = cmd;
+        remaining = [...rest.slice(0, posIdx), ...rest.slice(posIdx + n)];
+        break;
       }
     }
   }
@@ -75,18 +97,7 @@ export async function handleDagCommand(command: string, args: string[]): Promise
   }
   if (!registeredCmd) {
     // Known DAG commands without a matching registry entry
-    const knownCommands = [
-      "task",
-      "plan",
-      "knowledge",
-      "diagram",
-      "doc",
-      "dependency",
-      "paths",
-      "loop",
-      "project",
-    ];
-    if (knownCommands.includes(command)) {
+    if (KNOWN_DAG_COMMANDS.includes(command as typeof KNOWN_DAG_COMMANDS[number])) {
       if (rest.includes("--help")) {
         printUsage();
       } else if (firstPositional) {

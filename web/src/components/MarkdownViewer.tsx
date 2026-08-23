@@ -21,7 +21,7 @@ import {
   extractSections,
 } from "../lib/markdown-headings";
 import type { ReferenceSource } from "../lib/reference-resolver";
-import { useSessionPanel } from "./SessionPanel";
+import { useAskAIPanel } from "./AskAIPanel";
 
 function textOfChildren(children: unknown): string {
   if (typeof children === "string") return children;
@@ -60,7 +60,7 @@ export function MarkdownViewer({
    *  are present. */
   referenceSource?: ReferenceSource;
 }) {
-  const { openWithRef } = useSessionPanel();
+  const { openWithRef } = useAskAIPanel();
   const location = useLocation();
   const headings = useMemo(() => extractHeadings(content), [content]);
   const sections = useMemo(() => extractSections(content), [content]);

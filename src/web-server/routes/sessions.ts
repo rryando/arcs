@@ -749,6 +749,47 @@ async function mintThread(
 }
 
 /**
+ * The implicit Ask-AI thread: one ARCS-owned thread per project that the Ask-AI
+ * panel chats through, addressed by the virtual id `ask` — no thread picker,
+ * no create ceremony. The record's name is `ask-ai`, so its `normalizedId` (and
+ * therefore its transcript sidecar and run logs) is stable across processes.
+ */
+const ASK_THREAD_ALIAS = "ask";
+const ASK_THREAD_NAME = "ask-ai";
+
+/**
+ * The project's implicit Ask-AI thread, minted on first use.
+ *
+ * A record already holding the `ask-ai` name but NOT ARCS-owned is refused
+ * rather than claimed or silently shadowed: the name would otherwise key two
+ * different transcripts depending on which resolution won.
+ */
+async function resolveAskThread(projectDir: string, slug: string): Promise<SessionMeta> {
+  const existing = await readThreadRecord(projectDir, ASK_THREAD_NAME);
+  if (existing !== undefined) {
+    if (existing.origin !== "arcs") {
+      throw new DagError(
+        "TURN_THREAD_NOT_OWNED",
+        `the name "${ASK_THREAD_NAME}" is held by a non-ARCS record — free or rename it to use Ask AI`,
+      );
+    }
+    return existing;
+  }
+  return mintThread(projectDir, slug, ASK_THREAD_NAME);
+}
+
+/** The turn's target session: the `ask` alias names the implicit thread. */
+async function resolveTurnSession(
+  projectDir: string,
+  slug: string,
+  rawId: string,
+): Promise<SessionMeta> {
+  return rawId === ASK_THREAD_ALIAS
+    ? resolveAskThread(projectDir, slug)
+    : getSession(projectDir, rawId);
+}
+
+/**
  * Resolves the record this turn writes to.
  *
  * Two branches, and only these two:
@@ -879,7 +920,7 @@ sessionsRoute.post("/api/p/:slug/sessions/:id/turns", async (c) =>
       // `guards` is validated by the schema and deliberately not read here —
       // the change-intent preflight that consumes it is a separate task.
       const { intent, message, refs, threadRef } = await parseBody(c, turnSchema);
-      const session = await getSession(projectDir, c.req.param("id"));
+      const session = await resolveTurnSession(projectDir, slug, c.req.param("id"));
 
       const target = await resolveTurnTarget(projectDir, slug, session, threadRef);
       const { writeTarget, dir } = target;
@@ -1099,7 +1140,15 @@ sessionsRoute.delete("/api/p/:slug/sessions/:id", async (c) =>
 sessionsRoute.get("/api/p/:slug/sessions/:id/transcript", async (c) =>
   respond(c, async () => {
     const projectDir = requireProjectDir(c.req.param("slug"));
-    const session = await getSession(projectDir, c.req.param("id"));
+    // The ask alias reads WITHOUT minting: an untouched Ask-AI thread is an
+    // empty transcript, not a record created by a GET.
+    let session: SessionMeta | undefined;
+    if (c.req.param("id") === ASK_THREAD_ALIAS) {
+      session = await readThreadRecord(projectDir, ASK_THREAD_NAME);
+      if (session === undefined) return { turns: [], mirroredAt: null };
+    } else {
+      session = await getSession(projectDir, c.req.param("id"));
+    }
 
     let mirroredAt: string | null = null;
     try {

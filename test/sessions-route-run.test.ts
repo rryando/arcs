@@ -681,6 +681,76 @@ describe("POST /api/p/:slug/sessions/:id/turns — opencode one-shot runs", () =
 });
 
 // ---------------------------------------------------------------------------
+// POST /turns — the `ask` alias: the implicit per-project Ask-AI thread
+// ---------------------------------------------------------------------------
+
+describe("POST /api/p/:slug/sessions/:id/turns — the ask alias (implicit Ask-AI thread)", () => {
+  it("mints the implicit ask-ai thread on first turn and answers 202 naming it", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const { status, envelope } = await postTurn(base, "ask", {
+        intent: "ask",
+        message: "hello docs",
+      });
+
+      expect(status).toBe(202);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.data?.writeTargetId).toBe("ask-ai");
+
+      const minted = await getSession(projectDir, "ask-ai");
+      expect(minted.runtimeType).toBe("opencode");
+      expect(minted.origin).toBe("arcs");
+      // Driven by the driver, one-shot, no title — same argv as a fresh thread.
+      expect(capturedOptions[0]).toEqual({ binary: "opencode" });
+      expect(capturedJobs[0].argv).toEqual(["run", "--format", "json", "hello docs"]);
+    });
+  });
+
+  it("reuses the SAME implicit thread on every later ask turn — one record, one conversation", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      runStdout = ndjson(ocStepStart(), ocText("Done."), {
+        type: "step_finish",
+        timestamp: 9,
+        sessionID: OC_SESSION,
+      });
+
+      await postTurn(base, "ask", { intent: "ask", message: "first" });
+      const stored = await expectSettled(projectDir, "ask-ai");
+      expect(stored.runtimeSessionId).toBe(OC_SESSION);
+
+      const second = await postTurn(base, "ask", { intent: "ask", message: "second" });
+      expect(second.status).toBe(202);
+      // Continuation through the harvested runtime session id, not a re-mint.
+      expect(capturedJobs[1].argv).toEqual([
+        "run",
+        "--format",
+        "json",
+        "-s",
+        OC_SESSION,
+        "second",
+      ]);
+      expect(await getSessions(base)).toHaveLength(1);
+    });
+  });
+
+  it("reads the ask transcript WITHOUT minting — an untouched thread is empty, not a record from a GET", async () => {
+    await withRunRouteCtx(async ({ base, projectDir }) => {
+      const res = await fetch(`${base}/api/p/demo/sessions/ask/transcript`, {
+        headers: { "X-ARCS-Token": currentWebToken() ?? "" },
+      });
+      const envelope = (await res.json()) as {
+        ok: boolean;
+        data?: { turns: unknown[]; mirroredAt: string | null };
+      };
+      expect(res.status).toBe(200);
+      expect(envelope.data).toEqual({ turns: [], mirroredAt: null });
+      await expect(getSession(projectDir, "ask-ai")).rejects.toMatchObject({
+        code: "ITEM_NOT_FOUND",
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /turns — legacy claude-code threads (--session-id seed / --resume)
 // ---------------------------------------------------------------------------
 

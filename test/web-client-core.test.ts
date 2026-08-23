@@ -22,7 +22,7 @@ import {
   type RunStreamState,
   runStreamText,
 } from "../web/src/api/sse.js";
-import { composeTurnList } from "../web/src/components/SessionPanel.js";
+import { composeTurnList } from "../web/src/components/AskAIPanel.js";
 import {
   filterSessionsByState,
   isSessionAttached,

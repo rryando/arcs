@@ -7,23 +7,43 @@ import {
   ORCHESTRATE_CAVEMAN_PROMPT_TEXT,
 } from "../src/cli/arcs-orchestrate-caveman.js";
 
-describe("orchestrate prompt policy — delegation-preferred lifecycle", () => {
-  it("lets the primary agent work directly", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/UNDERSTAND\s*→\s*WORK\s*→\s*VERIFY\s*→\s*REPORT/);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/inspect.*edit.*run.*verify/is);
+describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
+  it("uses the PARSE → DISPATCH → COLLECT → SYNTHESIZE → REPORT lifecycle", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /PARSE\s*→\s*DISPATCH\s*→\s*COLLECT\s*→\s*SYNTHESIZE\s*→\s*REPORT/,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/UNDERSTAND\s*→\s*WORK/);
+  });
+
+  it("identifies as orchestrator, not direct implementer", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/orchestrator/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/dispatch.*not implement/i);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/you do not implement/i);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/never read source.*edit files/is);
   });
 
-  it("prefers delegation for separable work while retaining direct tools", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/[Pp]refer delegation/is);
+  it("delegates aggressively via routing tiers", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/delegate aggressively/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /separable implementation.*investigation.*research.*review/is,
+      /Explore.*Investigate.*graph-explorer.*tech-architect.*oncall-ops.*qa-analyst/is,
     );
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/tiny.*tightly coupled.*orchestration-state/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/one owner per\s*(delegated\s*)?outcome/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Implement.*Fix.*software-engineer/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/DAG.*Knowledge.*arcs-docs/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Review.*Audit.*code-reviewer/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Research.*Synthesize.*docs-researcher/is);
+  });
+
+  it("covers special-case direct work", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/tiny tightly coupled/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/orchestration-state/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/final synthesis.*reporting/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/one owner per outcome/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/no nested delegation/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/delegate.*reviewer.*repair.*chains/i);
+  });
+
+  it("routes independent units in parallel", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/parallel/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/wait for all.*return/i);
   });
 
   it("uses the exact lean dispatch and return contracts", () => {
@@ -45,25 +65,13 @@ describe("orchestrate prompt policy — delegation-preferred lifecycle", () => {
 
   it("uses plans and knowledge only when useful", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/plan.*broad|multi-step|architectural/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/knowledge.*when.*prior decision/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/delegate plan creation/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/explicit.*create.*plan.*authoriz/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/goal.*scope.*destructive.*external/is);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/exact artifact authorization/i);
   });
 
-  it("lists exactly five specialists and twelve skills", () => {
-    for (const agent of [
-      "software-engineer",
-      "tech-architect",
-      "graph-explorer",
-      "code-reviewer",
-      "arcs-docs",
-    ]) {
-      expect(ORCHESTRATE_PROMPT_TEXT).toContain(`\`${agent}\``);
-    }
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("`devil-advocate`");
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/code-reviewer.*review.*audit.*risk/is);
-
+  it("lists exactly twelve skills (agent list replaced by routing table)", () => {
     const skillsDir = resolve(import.meta.dirname, "../opencode/arcs/skills");
     const skills = readdirSync(skillsDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -75,16 +83,10 @@ describe("orchestrate prompt policy — delegation-preferred lifecycle", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).not.toContain("`executing-plans`");
   });
 
-  it("makes review and full-project verification risk-based", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/agent that changes.*runs.*relevant verification/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/full-project.*broad|high-risk/is);
+  it("makes review risk-based with code-reviewer in routing table", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Review\s*\/\s*Audit.*code-reviewer/is);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/only completion verifier/i);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/completion gate.*never skipped/i);
-  });
-
-  it("repairs verification failures directly without a gate loop", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/verification fails.*fix.*rerun/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/PHASE_GATE|completion-repair|gate rerun/);
   });
 
   it("keeps destructive, remote, and git effects explicit", () => {

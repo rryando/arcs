@@ -34,6 +34,7 @@ const promptFiles = [
   "opencode/arcs/skills/writing-knowledge/SKILL.md",
   "opencode/arcs/skills/writing-plans/SKILL.md",
   "opencode/arcs/skills/writing-plans/plan-document-reviewer-prompt.md",
+  "opencode/arcs/skills/writing-proposals/SKILL.md",
   "skills/explore-dag.md",
   "skills/init-project.md",
   "skills/orchestrate.md",
@@ -41,8 +42,8 @@ const promptFiles = [
 ] as const;
 
 describe("canonical prompt source budget", () => {
-  it("tracks the exact approved 34-file surface", () => {
-    expect(promptFiles).toHaveLength(34);
+  it("tracks the exact approved 35-file surface", () => {
+    expect(promptFiles).toHaveLength(35);
     expect(new Set(promptFiles).size).toBe(promptFiles.length);
   });
 

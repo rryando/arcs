@@ -265,6 +265,16 @@ export function useSendSessionTurn(slug: string) {
   });
 }
 
+/** The Ask-AI panel's send — one implicit per-project thread, addressed by the
+ *  server's virtual `ask` id. Same invalidation shape as `useSendSessionTurn`. */
+export function useSendAskTurn(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: (input: SessionTurnInput) => api.sendAskTurn(slug, input),
+    onSuccess: () => invalidate([qk.sessions(slug), qk.project(slug)]),
+  });
+}
+
 export function useDeleteSession(slug: string) {
   const invalidate = useInvalidator();
   return useMutation({

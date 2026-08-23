@@ -20,4 +20,5 @@ import "./remember.js";
 import "./done.js";
 import "./status.js";
 import "./proposal.js";
+import "./proposal-doc.js";
 import "./web.js";

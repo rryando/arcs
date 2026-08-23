@@ -1,49 +1,46 @@
 /**
- * Persistent split-panel conversation view — "chat but not really".
+ * Ask AI — the project's single document chat, split-panel.
  *
- * One pane over the transcript GET + headless turn POST. The composer has ONE
- * delivery channel: every send dispatches a one-shot turn via
- * `POST /sessions/:id/turns`, driven by the thread's own runtime (opencode by
- * default). INTENT is the only control — what the turn is allowed to do (`ask`
- * inspects, `change` edits). Turns are asynchronous by contract — the panel
- * says the reply appears when the run finishes, never "sent".
- *
- * Every session here IS an ARCS thread, so where a turn LANDS is not a choice:
- * it continues the selected record in place, and the 202 names that record as
- * the write target.
+ * One pane over the transcript GET + headless turn POST, with NO thread
+ * boundaries: every send dispatches a one-shot turn via `POST /sessions/ask/
+ * turns`, and the server's virtual `ask` id resolves-or-mints the one implicit
+ * ARCS-owned thread per project. There is nothing to pick or create — the
+ * panel is always ready; the first message brings the thread into existence.
+ * INTENT is the only control — what the turn is allowed to do (`ask` inspects,
+ * `change` edits). Turns are asynchronous by contract — the panel says the
+ * reply appears when the run finishes, never "sent".
  *
  * A dispatched job is WATCHED rather than merely awaited: the 202 names the
- * run, and the panel tails that run's event log over its own SSE channel
- * (`useRunStream`), rendering assistant text as it arrives plus a compact tool
- * ticker. The live block and the run's folded sidecar turns are the same
- * content reaching the panel by two routes, so the turn list is composed once
- * (`composeTurnList`) and holds exactly one of them.
+ * run (and its real write target), and the panel tails that run's event log
+ * over its own SSE channel (`useRunStream`), rendering assistant text as it
+ * arrives plus a compact tool ticker. The live block and the run's folded
+ * sidecar turns are the same content reaching the panel by two routes, so the
+ * turn list is composed once (`composeTurnList`) and holds exactly one of them.
  */
 
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
-import type { RunIntent, SessionReference, SessionRunMeta, SessionTurn } from "../api/client";
-import { useSendSessionTurn, useSessionTranscript } from "../api/hooks";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import type { RunIntent, SessionReference, SessionTurn } from "../api/client";
+import { useSendAskTurn, useSessionTranscript } from "../api/hooks";
 import { type RunStreamState, runStreamText, useRunStream } from "../api/sse";
-import { sessionLabel, useSessionCandidates } from "../hooks/useSessionCandidates";
 import { cx, relativeTime, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
-import { NewThreadDialog } from "./NewThreadDialog";
 import { MAX_LENGTH, WARN_LENGTH } from "./SessionMessageForm";
 import { useToaster } from "./Toaster";
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer";
+
+/** The server's virtual id for the implicit per-project Ask-AI thread. */
+const ASK_THREAD_ALIAS = "ask";
 
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
-interface SessionPanelContextValue {
+interface AskAIPanelContextValue {
   /** Panel open/closed — the shell toggle drives this. */
   open: boolean;
-  /** Selected session's normalizedId; null until the user picks one. */
-  selectedSessionId: string | null;
   /** Reference awaiting a send.
    *
    *  The FULL union, matching the transport and the server's
@@ -55,8 +52,8 @@ interface SessionPanelContextValue {
   /** Attach a reference (a doc section, a file slice, a DAG node) and open the
    *  panel. */
   openWithRef: (ref: SessionReference) => void;
-  /** Select a session and open the panel. */
-  openSession: (id: string) => void;
+  /** Open the panel (no target to pick — there is exactly one thread). */
+  openPanel: () => void;
   close: () => void;
   /** Shell-level toggle — opens without selecting, closes when open. */
   toggle: () => void;
@@ -64,42 +61,36 @@ interface SessionPanelContextValue {
   clearRef: () => void;
 }
 
-const SessionPanelContext = createContext<SessionPanelContextValue | null>(null);
+const AskAIPanelContext = createContext<AskAIPanelContextValue | null>(null);
 
-export function SessionPanelProvider({ children }: { children: ReactNode }) {
+export function AskAIPanelProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [pendingRef, setPendingRef] = useState<SessionReference | null>(null);
 
-  const value = useMemo<SessionPanelContextValue>(
+  const value = useMemo<AskAIPanelContextValue>(
     () => ({
       open,
-      selectedSessionId,
       pendingRef,
       openWithRef: (ref) => {
         setPendingRef(ref);
         setOpen(true);
       },
-      openSession: (id) => {
-        setSelectedSessionId(id);
-        setOpen(true);
-      },
+      openPanel: () => setOpen(true),
       close: () => setOpen(false),
       toggle: () => setOpen((v) => !v),
       clearRef: () => setPendingRef(null),
     }),
-    [open, selectedSessionId, pendingRef],
+    [open, pendingRef],
   );
 
-  return <SessionPanelContext.Provider value={value}>{children}</SessionPanelContext.Provider>;
+  return <AskAIPanelContext.Provider value={value}>{children}</AskAIPanelContext.Provider>;
 }
 
-export function useSessionPanel(): SessionPanelContextValue {
-  const ctx = useContext(SessionPanelContext);
-  if (!ctx) throw new Error("useSessionPanel must be used inside SessionPanelProvider");
+export function useAskAIPanel(): AskAIPanelContextValue {
+  const ctx = useContext(AskAIPanelContext);
+  if (!ctx) throw new Error("useAskAIPanel must be used inside AskAIPanelProvider");
   return ctx;
 }
-
 // ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
@@ -115,88 +106,70 @@ const isRunIntent = (value: string): value is RunIntent =>
   (RUN_INTENT_VALUES as readonly string[]).includes(value);
 
 /** A mirror older than this is called out — checkpoints are frequent, so a long
- *  gap usually means the session moved on (or died) without one. */
+ *  gap usually means the thread moved on (or the run died) without one. */
 const MIRROR_STALE_MS = 10 * 60_000;
 
-/** `metadata.run` timestamps are epoch milliseconds (the runner writes
- *  `Date.now()`), while `relativeTime` takes an ISO string — convert here so
- *  the panel never renders an invalid date. */
-function relativeEpoch(ms: number | undefined): string {
-  if (ms === undefined || !Number.isFinite(ms)) return "—";
-  return relativeTime(new Date(ms).toISOString());
-}
-
 /** The run the panel is currently tailing. `sessionId` is the run's WRITE
- *  TARGET — the record the log is keyed on and the reply lands in, which for
- *  this panel's sends is the selected thread itself. */
+ *  TARGET — the record the log is keyed on and the reply lands in: the implicit
+ *  Ask-AI thread's real id, resolved server-side from the `ask` alias. */
 interface WatchedRun {
   sessionId: string;
   runId: string;
 }
 
-/** What a repaired thread-seed failure means for the NEXT turn. Keyed on the
- *  server's `metadata.run.errorCode`, which is only ever written on a failure
- *  the server recognized AND already fixed the record for — so every line here
- *  can promise what happens next rather than describe what went wrong. */
-const RUN_ERROR_HINT: Record<NonNullable<SessionRunMeta["errorCode"]>, string> = {
-  THREAD_SEED_CONFLICT: "claude already held this thread — repaired; the next turn resumes it",
-  THREAD_UNKNOWN_TO_CLAUDE:
-    "claude no longer has this thread — repaired; the next turn starts a fresh one",
-};
+/**
+ * Seconds since `startedAt`, re-rendered once a second — the visible answer to
+ * "is it stuck or is opencode just booting". One-shot runs have a long silent
+ * head (~10s CLI boot + model connect before the first NDJSON line), so the
+ * clock is the only honest signal during it. `null` = no run being watched.
+ */
+function useElapsed(startedAt: number | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  const live = startedAt !== null;
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [live]);
+  return startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
+}
 
-/** What the streamed block's header says, per status. `ended` carries the
- *  outcome instead, so it has no fixed label here. */
+/** What the streamed block's header says, per phase — including WHY nothing
+ *  has appeared yet. `ended` carries the outcome instead, so it has no fixed
+ *  label here. */
 const RUN_STREAM_LABEL: Record<RunStreamState["status"], string> = {
   idle: "",
-  connecting: "connecting…",
-  open: "streaming",
+  connecting: "starting opencode…",
+  open: "",
   ended: "done",
   failed: "stream unavailable — the reply still lands in the transcript",
 };
 
-export function SessionPanel() {
+export function AskAIPanel() {
   const { slug } = useParams({ strict: false }) as { slug: string };
-  const { open, selectedSessionId, pendingRef, openSession, openWithRef, clearRef, close } =
-    useSessionPanel();
+  const { open, pendingRef, openWithRef, clearRef, close } = useAskAIPanel();
   const { push } = useToaster();
-  const sendTurn = useSendSessionTurn(slug);
+  const sendTurn = useSendAskTurn(slug);
   const [message, setMessage] = useState("");
   // Intent describes what a turn may do, and defaults to the read-only policy
   // so widening is always a deliberate act.
   const [intent, setIntent] = useState<RunIntent>("ask");
-  const [watchedRun, setWatchedRun] = useState<WatchedRun | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
+  /** When the watched run was dispatched — the elapsed clock's zero. */
+  const [watchedRun, setWatchedRun] = useState<(WatchedRun & { startedAt: number }) | null>(null);
 
-  // Shared picker list — unfiltered, linked sessions sorted first. The panel
-  // itself does not filter to linked sessions (see the "sort by linkage, never
-  // filter by it" gotcha).
-  const candidates = useSessionCandidates(slug, "");
-  const selectedSession = useMemo(
-    () => candidates.find((s) => s.normalizedId === selectedSessionId) ?? null,
-    [candidates, selectedSessionId],
-  );
-
-  const transcript = useSessionTranscript(slug, selectedSessionId, {
-    // Mounted only while the panel is open AND a session is selected — a
-    // closed panel must not poll.
-    enabled: open && selectedSessionId !== null && selectedSession !== null,
+  const transcript = useSessionTranscript(slug, ASK_THREAD_ALIAS, {
+    // Mounted only while the panel is open — a closed panel must not poll.
+    enabled: open,
   });
 
-  // Tails the accepted run wherever it landed, INDEPENDENTLY of what is on
-  // screen: the tail follows the run's write target, so switching sessions
-  // mid-run neither drops the stream nor re-runs it from zero.
+  // Tails the accepted run on its real write target (resolved server-side from
+  // the alias), so the live block keys the log that is actually being written.
   const runStream = useRunStream(slug, watchedRun?.sessionId ?? null, watchedRun?.runId ?? null);
-  // ...but it is only RENDERED under the session it belongs to. A run's text
-  // under another session's transcript would be a lie about whose reply it is.
-  const liveRun = watchedRun?.sessionId === selectedSessionId ? runStream : null;
   const turnItems = useMemo(
-    () => composeTurnList(transcript.data?.turns ?? [], liveRun),
-    [transcript.data?.turns, liveRun],
+    () => composeTurnList(transcript.data?.turns ?? [], runStream),
+    [transcript.data?.turns, runStream],
   );
-
-  const run = selectedSession?.metadata?.run;
-  // Absent outcome = a record from before the write-back existed, not a failure.
-  const failedRun = run && run.outcome !== undefined && run.outcome !== "success" ? run : null;
 
   const mirroredAt = transcript.data?.mirroredAt ?? null;
   const mirrorAge = mirroredAt === null ? null : Date.now() - new Date(mirroredAt).getTime();
@@ -206,34 +179,32 @@ export function SessionPanel() {
   const text = message.trim();
   const tooLong = text.length > MAX_LENGTH;
   const runPending = sendTurn.isPending;
-  const disabled = !selectedSession || !text || tooLong || runPending;
+  const disabled = !text || tooLong || runPending;
 
   const sendLabel = runPending ? "job running…" : "run";
 
   const submit = () => {
-    if (disabled || !selectedSession) return;
+    if (disabled) return;
 
     // Accepted as HTTP 202; the turn runs out-of-band and the reply lands in
     // the WRITE TARGET's transcript when it finishes.
     sendTurn.mutate(
       {
-        id: selectedSession.normalizedId,
-        input: {
-          intent,
-          message: text,
-          // References ride the turn: the server renders them into the prompt
-          // AND records them on the write target's sidecar.
-          ...(pendingRef && { refs: [pendingRef] }),
-        },
+        intent,
+        message: text,
+        // References ride the turn: the server renders them into the prompt
+        // AND records them on the write target's sidecar.
+        ...(pendingRef && { refs: [pendingRef] }),
       },
       {
         onSuccess: (result) => {
-          // Select the record the run writes to — read off the response rather
-          // than assumed, so the panel can never point at a stale target.
-          openSession(result.writeTargetId);
           // Watch the run the 202 named — same key the server built `streamUrl`
           // from, so the live block tails the log that is actually being written.
-          setWatchedRun({ sessionId: result.writeTargetId, runId: result.runId });
+          setWatchedRun({
+            sessionId: result.writeTargetId,
+            runId: result.runId,
+            startedAt: Date.now(),
+          });
           push("success", "turn accepted — the reply appears in the transcript when it finishes");
           setMessage("");
           if (pendingRef) clearRef(); // the reference was consumed by this turn
@@ -245,80 +216,24 @@ export function SessionPanel() {
 
   return (
     <aside
-      aria-label="session panel"
+      aria-label="ask ai panel"
       className="hidden w-96 shrink-0 flex-col border-l border-term-border bg-term-panel lg:flex"
     >
       {/* title bar */}
       <header className="flex items-center gap-2 border-b border-term-border px-2 py-1">
         <span className="text-term-green">▸</span>
-        <h2 className="text-[12px] font-bold tracking-wide text-term-fg uppercase">
-          session panel
-        </h2>
-        {selectedSession && <Badge color="purple">{selectedSession.runtimeType}</Badge>}
+        <h2 className="text-[12px] font-bold tracking-wide text-term-fg uppercase">ask ai</h2>
+        <Badge color="purple">opencode</Badge>
         <span className="flex-1" />
         <button
           type="button"
-          title="close session panel"
+          title="close ask ai panel"
           onClick={close}
           className="text-term-dim hover:text-term-red"
         >
           ✕
         </button>
       </header>
-
-      {/* session identity bar — which record the composer is pointed at. */}
-      {selectedSession ? (
-        <div className="flex items-center gap-2 border-b border-term-border px-2 py-1 text-[11px]">
-          <span className="flex-1" />
-          <span className="text-term-dim">{truncate(selectedSession.runtimeSessionId, 20)}</span>
-        </div>
-      ) : (
-        <div className="border-b border-term-border px-2 py-1 text-[11px] text-term-dim">
-          pick a session to compose
-        </div>
-      )}
-
-      {/* session picker — every runtime the UI surfaces */}
-      <div className="border-b border-term-border p-2">
-        <div className="mb-1 text-[10px] tracking-wide text-term-dim uppercase">session</div>
-        <select
-          // Falls back to the placeholder option when the selection is hidden
-          // or not loaded — a value with no matching <option> renders blank.
-          value={selectedSession?.normalizedId ?? ""}
-          onChange={(e) => {
-            if (e.target.value) openSession(e.target.value);
-          }}
-          className={inputClass}
-        >
-          <option value="" disabled>
-            pick a session…
-          </option>
-          {candidates.map((s) => (
-            <option key={s.normalizedId} value={s.normalizedId}>
-              {sessionLabel(s)} — {s.runtimeType}
-            </option>
-          ))}
-        </select>
-        {candidates.length === 0 && (
-          <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-term-dim">
-            <span>no threads yet</span>
-            <button
-              type="button"
-              onClick={() => setCreateOpen(true)}
-              className="hover:text-term-green"
-            >
-              + new thread
-            </button>
-          </div>
-        )}
-        {createOpen && (
-          <NewThreadDialog
-            slug={slug}
-            onCreated={(created) => openSession(created.normalizedId)}
-            onClose={() => setCreateOpen(false)}
-          />
-        )}
-      </div>
 
       {/* workspace files — the "point at a file and ask about it" surface. Its
           line-range selection lands in `pendingRef` through `openWithRef`, the
@@ -351,40 +266,27 @@ export function SessionPanel() {
         )}
 
         {/* ONE control: intent — what the turn is allowed to touch. The
-              channel is not a choice; every send is a headless claude turn. */}
-        {selectedSession && (
-          <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
-            <label
-              htmlFor="run-intent"
-              className="text-[10px] tracking-wide text-term-dim uppercase"
-            >
-              intent
-            </label>
-            <select
-              id="run-intent"
-              value={intent}
-              onChange={(e) => setIntent(isRunIntent(e.target.value) ? e.target.value : "ask")}
-              disabled={runPending}
-              title="what this turn is allowed to do in the workspace"
-              className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
-            >
-              <option value="ask" title="read-only: Read, Grep, Glob in plan mode">
-                ask — read only
-              </option>
-              <option value="change" title="adds the edit surface; still no shell by default">
-                change — may edit files
-              </option>
-            </select>
-          </div>
-        )}
-
-        {selectedSession && (
-          <div className="mb-1 flex items-baseline gap-2 text-[11px] text-term-dim">
-            <span className="text-term-amber">
-              continues this thread — the reply appears in this panel when the turn finishes
-            </span>
-          </div>
-        )}
+              channel is not a choice; every send is a one-shot opencode run. */}
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
+          <label htmlFor="run-intent" className="text-[10px] tracking-wide text-term-dim uppercase">
+            intent
+          </label>
+          <select
+            id="run-intent"
+            value={intent}
+            onChange={(e) => setIntent(isRunIntent(e.target.value) ? e.target.value : "ask")}
+            disabled={runPending}
+            title="what this turn is allowed to do in the workspace"
+            className="border border-term-border bg-term-inset px-1.5 py-0.5 text-[11px] text-term-fg outline-none focus:border-term-green/60 disabled:opacity-50"
+          >
+            <option value="ask" title="read-only: Read, Grep, Glob in plan mode">
+              ask — read only
+            </option>
+            <option value="change" title="adds the edit surface; still no shell by default">
+              change — may edit files
+            </option>
+          </select>
+        </div>
 
         <textarea
           value={message}
@@ -395,10 +297,8 @@ export function SessionPanel() {
               submit();
             }
           }}
-          disabled={!selectedSession || runPending}
-          placeholder={
-            selectedSession ? "message for the agent…" : "pick a session first — no target yet"
-          }
+          disabled={runPending}
+          placeholder="ask about these documents…"
           rows={3}
           className={cx(inputClass, "resize-y leading-snug disabled:opacity-50")}
         />
@@ -408,7 +308,7 @@ export function SessionPanel() {
             {text.length} characters —{" "}
             {tooLong
               ? `over the ${MAX_LENGTH} character ceiling for one message; trim it before sending`
-              : "large messages may be slow to deliver or truncated by the target session"}
+              : "large messages may be slow to deliver or truncated by the runtime"}
           </div>
         )}
 
@@ -422,70 +322,53 @@ export function SessionPanel() {
             {sendLabel}
           </button>
           <span className="flex-1" />
-          {selectedSession && (
-            <span className="text-[10px] text-term-dim">
-              <span className="kbd">ctrl</span>+<span className="kbd">enter</span> send
-            </span>
-          )}
+          <span className="text-[10px] text-term-dim">
+            <span className="kbd">ctrl</span>+<span className="kbd">enter</span> send
+          </span>
         </div>
       </div>
 
       {/* transcript — checkpoint-mirrored, never live */}
-      {selectedSession !== null && (
-        <section
-          className="flex min-h-0 flex-1 flex-col"
-          aria-label="checkpoint-mirrored transcript"
-        >
-          <header className="flex items-center gap-2 border-b border-term-border px-2 py-1">
-            <h3 className="text-[10px] font-bold tracking-wide text-term-dim uppercase">
-              transcript
-            </h3>
-            <span className="flex-1" />
-            {/* Mirror freshness, not a static claim: the transcript is only as
-                current as the last checkpoint, and a stale one is the usual
-                reason a reply seems missing. */}
-            <span
-              title="the transcript is a checkpoint mirror — refreshed at each checkpoint, never live"
-              className={cx("text-[10px]", mirrorStale ? "text-term-amber" : "text-term-dim")}
-            >
-              {mirroredAt === null ? "never mirrored" : `last mirror ${relativeTime(mirroredAt)}`}
-            </span>
-          </header>
-          {failedRun && (
-            <div className="border-b border-term-red/40 px-2 py-1 text-[11px] text-term-red">
-              run failed — {failedRun.error ?? failedRun.outcome}
-              <span className="ml-2 text-term-dim">{relativeEpoch(failedRun.endedAt)}</span>
-              {/* A recognized failure the server already repaired the record
-                  for: say what the next turn will do instead of leaving the
-                  reader to interpret claude's stderr. */}
-              {failedRun.errorCode && (
-                <span className="mt-0.5 block text-term-amber">
-                  {RUN_ERROR_HINT[failedRun.errorCode]}
-                </span>
-              )}
-            </div>
-          )}
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <section className="flex min-h-0 flex-1 flex-col" aria-label="checkpoint-mirrored transcript">
+        <header className="flex items-center gap-2 border-b border-term-border px-2 py-1">
+          <h3 className="text-[10px] font-bold tracking-wide text-term-dim uppercase">
+            transcript
+          </h3>
+          <span className="flex-1" />
+          {/* Mirror freshness, not a static claim: the transcript is only as
+              current as the last checkpoint, and a stale one is the usual
+              reason a reply seems missing. */}
+          <span
+            title="the transcript is a checkpoint mirror — refreshed at each checkpoint, never live"
+            className={cx("text-[10px]", mirrorStale ? "text-term-amber" : "text-term-dim")}
+          >
+            {mirroredAt === null ? "never mirrored" : `last mirror ${relativeTime(mirroredAt)}`}
+          </span>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {transcript.isLoading && turnItems.length === 0 ? (
               <div className="text-[11px] text-term-dim">loading…</div>
             ) : turnItems.length === 0 ? (
               <div className="text-[11px] text-term-dim">
-                no turns mirrored yet — appears after the session's first checkpoint
+                no turns yet — ask something and the reply appears here
               </div>
             ) : (
               // ONE list, from ONE composition — the live block and the folded
               // turns of a run are never both in it (see `composeTurnList`).
               turnItems.map((item) =>
                 item.kind === "stream" ? (
-                  <StreamedRunBlock key="run-stream" stream={item.stream} />
+                  <StreamedRunBlock
+                    key="run-stream"
+                    stream={item.stream}
+                    startedAt={watchedRun?.startedAt ?? Date.now()}
+                  />
                 ) : (
                   <TurnRow key={item.turn.id} turn={item.turn} slug={slug} />
                 ),
               )
             )}
-          </div>
-        </section>
-      )}
+        </div>
+      </section>
     </aside>
   );
 }
@@ -580,11 +463,22 @@ export function composeTurnList(turns: SessionTurn[], live: RunStreamState | nul
  * The run in flight: its text as it arrives, and a compact ticker of the tools
  * it is calling — name and target, never a transcript of their arguments.
  *
+ * The header carries a phase + a live elapsed clock, because a one-shot run's
+ * first ~10s are structurally silent (opencode CLI boot + model connect emit
+ * nothing) and an unexplained blank reads as a hang. Phases, from the stream
+ * alone:
+ *   connecting            → "starting opencode…"   (SSE not open yet)
+ *   open, no text/tools   → "waiting for the model's first token…"
+ *   open, tools ticking   → "working"              (tools ARE the progress)
+ *   ended                 → outcome + total time
+ *
  * Transient by design. This block is what the folded sidecar turns replace, so
  * it is styled as a live edge (a rule down the side) rather than as a turn.
  */
-function StreamedRunBlock({ stream }: { stream: RunStreamState }) {
+function StreamedRunBlock({ stream, startedAt }: { stream: RunStreamState; startedAt: number }) {
   const text = runStreamText(stream);
+  const elapsed = useElapsed(stream.status === "ended" ? null : startedAt);
+  const quietHead = stream.status === "open" && text === "" && stream.tools.length === 0;
   return (
     <div className="mb-2 border-l-2 border-term-cyan/50 pl-2">
       <div className="flex items-baseline gap-2">
@@ -596,10 +490,19 @@ function StreamedRunBlock({ stream }: { stream: RunStreamState }) {
           )}
         >
           {stream.status === "ended" && stream.outcome
-            ? stream.outcome
+            ? `${stream.outcome} · ${elapsed}s`
             : RUN_STREAM_LABEL[stream.status]}
         </span>
+        {stream.status !== "ended" && (
+          <span className="text-[10px] tabular-nums text-term-dim">{elapsed}s</span>
+        )}
       </div>
+      {quietHead && (
+        <div className="mt-0.5 text-[11px] text-term-dim">
+          opencode is booting and connecting to the model — the first token usually lands after
+          ~10s; tool activity appears here the moment it starts
+        </div>
+      )}
       {stream.tools.length > 0 && (
         <div className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] leading-snug text-term-dim">
           {stream.tools.map((tool) => (
@@ -610,9 +513,7 @@ function StreamedRunBlock({ stream }: { stream: RunStreamState }) {
           ))}
         </div>
       )}
-      {text === "" ? (
-        <div className="text-[11px] text-term-dim">waiting for the first token…</div>
-      ) : (
+      {text !== "" && (
         <div className="break-words text-[12px] whitespace-pre-wrap text-term-fg">{text}</div>
       )}
       {/* The log is not the whole stream — a hole, not an ending. Only ever

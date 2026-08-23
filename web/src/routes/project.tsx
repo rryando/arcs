@@ -1,15 +1,15 @@
 /**
  * Project shell — header + tab bar + nested outlet.
  *
- * The session panel is mounted around the Outlet: `SessionPanelProvider` owns
- * the panel state, and `SessionPanel` renders as a right sibling of the outlet
+ * The Ask-AI panel is mounted around the Outlet: `AskAIPanelProvider` owns
+ * the panel state, and `AskAIPanel` renders as a right sibling of the outlet
  * (a split pane) only while open — hidden entirely below the lg breakpoint.
  */
 
 import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { useProject } from "../api/hooks";
+import { AskAIPanel, AskAIPanelProvider, useAskAIPanel } from "../components/AskAIPanel";
 import { Badge, statusColor } from "../components/Badge";
-import { SessionPanel, SessionPanelProvider, useSessionPanel } from "../components/SessionPanel";
 import { cx, truncate } from "../lib/format";
 
 const TABS = [
@@ -44,14 +44,14 @@ export function ProjectShell() {
   }
 
   return (
-    <SessionPanelProvider>
+    <AskAIPanelProvider>
       <ShellFrame slug={slug} pathname={pathname} />
-    </SessionPanelProvider>
+    </AskAIPanelProvider>
   );
 }
 
 function ShellFrame({ slug, pathname }: { slug: string; pathname: string }) {
-  const { open } = useSessionPanel();
+  const { open } = useAskAIPanel();
   const { data: project } = useProject(slug);
   const base = `/p/${slug}`;
 
@@ -113,7 +113,7 @@ function ShellFrame({ slug, pathname }: { slug: string; pathname: string }) {
           <div className="min-w-0 flex-1 overflow-hidden">
             <Outlet />
           </div>
-          {open && <SessionPanel />}
+          {open && <AskAIPanel />}
         </div>
       </div>
     </div>
@@ -122,13 +122,13 @@ function ShellFrame({ slug, pathname }: { slug: string; pathname: string }) {
 
 /** Shell-level toggle for the session panel — only meaningful at lg+. */
 function PanelToggle() {
-  const { open, toggle } = useSessionPanel();
+  const { open, toggle } = useAskAIPanel();
   return (
     <button
       type="button"
       onClick={toggle}
       aria-pressed={open}
-      title={open ? "close session panel" : "open session panel"}
+      title={open ? "close ask ai panel" : "open ask ai panel"}
       className={cx(
         "hidden items-center gap-1 border px-2 py-1 text-[12px] lg:inline-flex",
         open
@@ -136,7 +136,7 @@ function PanelToggle() {
           : "border-term-border text-term-dim hover:text-term-fg",
       )}
     >
-      <span>{open ? "▮" : "▤"}</span> session panel
+      <span>{open ? "▮" : "▤"}</span> ask ai
     </button>
   );
 }
