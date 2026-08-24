@@ -97,7 +97,7 @@ export async function handleDagCommand(command: string, args: string[]): Promise
   }
   if (!registeredCmd) {
     // Known DAG commands without a matching registry entry
-    if (KNOWN_DAG_COMMANDS.includes(command as typeof KNOWN_DAG_COMMANDS[number])) {
+    if (KNOWN_DAG_COMMANDS.includes(command as (typeof KNOWN_DAG_COMMANDS)[number])) {
       if (rest.includes("--help")) {
         printUsage();
       } else if (firstPositional) {

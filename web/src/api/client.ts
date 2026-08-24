@@ -599,8 +599,7 @@ export const api = {
   /** One Ask-AI turn — the same turn contract, addressed to the project's
    *  implicit thread via the server's virtual `ask` id, which resolves-or-mints
    *  it. The 202's `writeTargetId` names the real record (and its stream). */
-  sendAskTurn: (slug: string, input: SessionTurnInput) =>
-    api.sendSessionTurn(slug, "ask", input),
+  sendAskTurn: (slug: string, input: SessionTurnInput) => api.sendSessionTurn(slug, "ask", input),
 
   /** Read-only workspace file plane. Both calls are GETs by contract — there is
    *  no write counterpart, and adding one here would need a route that

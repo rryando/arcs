@@ -346,27 +346,27 @@ export function AskAIPanel() {
           </span>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {transcript.isLoading && turnItems.length === 0 ? (
-              <div className="text-[11px] text-term-dim">loading…</div>
-            ) : turnItems.length === 0 ? (
-              <div className="text-[11px] text-term-dim">
-                no turns yet — ask something and the reply appears here
-              </div>
-            ) : (
-              // ONE list, from ONE composition — the live block and the folded
-              // turns of a run are never both in it (see `composeTurnList`).
-              turnItems.map((item) =>
-                item.kind === "stream" ? (
-                  <StreamedRunBlock
-                    key="run-stream"
-                    stream={item.stream}
-                    startedAt={watchedRun?.startedAt ?? Date.now()}
-                  />
-                ) : (
-                  <TurnRow key={item.turn.id} turn={item.turn} slug={slug} />
-                ),
-              )
-            )}
+          {transcript.isLoading && turnItems.length === 0 ? (
+            <div className="text-[11px] text-term-dim">loading…</div>
+          ) : turnItems.length === 0 ? (
+            <div className="text-[11px] text-term-dim">
+              no turns yet — ask something and the reply appears here
+            </div>
+          ) : (
+            // ONE list, from ONE composition — the live block and the folded
+            // turns of a run are never both in it (see `composeTurnList`).
+            turnItems.map((item) =>
+              item.kind === "stream" ? (
+                <StreamedRunBlock
+                  key="run-stream"
+                  stream={item.stream}
+                  startedAt={watchedRun?.startedAt ?? Date.now()}
+                />
+              ) : (
+                <TurnRow key={item.turn.id} turn={item.turn} slug={slug} />
+              ),
+            )
+          )}
         </div>
       </section>
     </aside>

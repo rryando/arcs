@@ -720,14 +720,7 @@ describe("POST /api/p/:slug/sessions/:id/turns — the ask alias (implicit Ask-A
       const second = await postTurn(base, "ask", { intent: "ask", message: "second" });
       expect(second.status).toBe(202);
       // Continuation through the harvested runtime session id, not a re-mint.
-      expect(capturedJobs[1].argv).toEqual([
-        "run",
-        "--format",
-        "json",
-        "-s",
-        OC_SESSION,
-        "second",
-      ]);
+      expect(capturedJobs[1].argv).toEqual(["run", "--format", "json", "-s", OC_SESSION, "second"]);
       expect(await getSessions(base)).toHaveLength(1);
     });
   });

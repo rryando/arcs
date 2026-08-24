@@ -85,7 +85,7 @@ export async function handleCli(args: string[]): Promise<boolean> {
       return true;
 
     default:
-      if (KNOWN_DAG_COMMANDS.includes(command as typeof KNOWN_DAG_COMMANDS[number])) {
+      if (KNOWN_DAG_COMMANDS.includes(command as (typeof KNOWN_DAG_COMMANDS)[number])) {
         return handleDagCommand(command, args.slice(1));
       }
       return false;

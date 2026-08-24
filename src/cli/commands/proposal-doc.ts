@@ -132,9 +132,13 @@ async function handleProposalDocCreate(
 
   const filePath = proposalDocPath(workspaceRoot, id);
   if (existsSync(filePath)) {
-    return failure(ERROR_CODES.CREATE_ERROR, `Proposal doc already exists: docs/proposals/${id}.proposal.md`, {
-      hint: `Use 'arcs proposal-doc edit ${slug} ${id}' to update it.`,
-    });
+    return failure(
+      ERROR_CODES.CREATE_ERROR,
+      `Proposal doc already exists: docs/proposals/${id}.proposal.md`,
+      {
+        hint: `Use 'arcs proposal-doc edit ${slug} ${id}' to update it.`,
+      },
+    );
   }
 
   // Resolve body content: inline > file > stdin > template
@@ -201,7 +205,6 @@ async function handleProposalDocList(
 
   const ids = listProposalIds(workspaceRoot);
   const proposals = ids.map((id) => {
-    const filePath = proposalDocPath(workspaceRoot, id);
     return { id, path: `docs/proposals/${id}.proposal.md` };
   });
 
@@ -335,11 +338,9 @@ async function handleProposalDocEdit(
     filePath = proposalDocAcceptedPath(workspaceRoot, id);
     status = "accepted";
     if (!existsSync(filePath)) {
-      return failure(
-        ERROR_CODES.ENTITY_NOT_FOUND,
-        `Proposal doc not found: ${id}`,
-        { hint: `Run 'arcs proposal-doc list ${slug}' to see available proposals.` },
-      );
+      return failure(ERROR_CODES.ENTITY_NOT_FOUND, `Proposal doc not found: ${id}`, {
+        hint: `Run 'arcs proposal-doc list ${slug}' to see available proposals.`,
+      });
     }
   }
 

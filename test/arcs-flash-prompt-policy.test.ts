@@ -11,7 +11,9 @@ describe("flash prompt policy — dispatch-first with flash bias", () => {
   it("is a thin speed-oriented orchestrator variant", () => {
     expect(FLASH_PROMPT_TEXT).toContain("arcs-flash");
     expect(FLASH_PROMPT_TEXT).toMatch(/minimal-context/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/PARSE\s*→\s*DISPATCH\s*→\s*COLLECT\s*→\s*SYNTHESIZE\s*→\s*REPORT/);
+    expect(FLASH_PROMPT_TEXT).toMatch(
+      /PARSE\s*→\s*DISPATCH\s*→\s*COLLECT\s*→\s*SYNTHESIZE\s*→\s*REPORT/,
+    );
     expect(FLASH_PROMPT_TEXT).toContain(IDENTITY_AND_AUTHORITY_BLOCK);
     expect(FLASH_PROMPT_TEXT).toContain(WORKFLOW_RULES_BLOCK);
     expect(FLASH_PROMPT_TEXT).toContain(DIRECT_MUTATIONS_BLOCK);
