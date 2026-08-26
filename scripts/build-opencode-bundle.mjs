@@ -17,12 +17,12 @@ function ensureParentDirectory(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
 }
 
-function pruneUndeclaredFiles(rootPath, allowedFiles) {
+function pruneUndeclaredFiles(rootPath, outputRoot, allowedFiles) {
   for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
     const entryPath = resolve(rootPath, entry.name);
 
     if (entry.isDirectory()) {
-      pruneUndeclaredFiles(entryPath, allowedFiles);
+      pruneUndeclaredFiles(entryPath, outputRoot, allowedFiles);
 
       if (readdirSync(entryPath).length === 0) {
         rmSync(entryPath, { recursive: true, force: true });
@@ -31,14 +31,15 @@ function pruneUndeclaredFiles(rootPath, allowedFiles) {
       continue;
     }
 
-    const relativePath = normalizeRelativePath(relative(defaultOutputRootCurrent, entryPath));
+    // Relative paths are computed against the top-level output root (not the
+    // current recursion root) so they match the manifest-declared paths that
+    // allowedFiles is keyed on.
+    const relativePath = normalizeRelativePath(relative(outputRoot, entryPath));
     if (!allowedFiles.has(relativePath)) {
       rmSync(entryPath, { force: true });
     }
   }
 }
-
-let defaultOutputRootCurrent = defaultOutputRoot;
 
 /**
  * Generates the ARCS Orchestrator, ARCS Caveman, and ARCS Flash prompt .txt
@@ -130,8 +131,6 @@ async function main() {
 
   const declaredFiles = listDeclaredFiles(runtimeManifest);
 
-  defaultOutputRootCurrent = outputRoot;
-
   // Validate that every manifest-declared file already exists in the bundle.
   // The bundle directory IS the source of truth — files are authored here,
   // not copied from anywhere external.
@@ -156,7 +155,7 @@ async function main() {
 
   mkdirSync(outputRoot, { recursive: true });
   await generateOrchestratorPrompts(outputRoot);
-  pruneUndeclaredFiles(outputRoot, allowedOutputFiles);
+  pruneUndeclaredFiles(outputRoot, outputRoot, allowedOutputFiles);
 }
 
 try {
