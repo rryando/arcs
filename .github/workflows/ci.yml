@@ -15,20 +15,17 @@ jobs:
   check:
     name: Lint, Typecheck, Test, Build
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [20, 22]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 # git.test.ts needs history (HEAD~1)
 
-      - name: Setup Node ${{ matrix.node-version }}
+      # Single latest-stable Node only — we do not support older lines.
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 24
           cache: npm
 
       - name: Install dependencies

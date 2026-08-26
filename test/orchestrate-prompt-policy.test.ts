@@ -102,9 +102,7 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
 describe("orchestrate prompt policy — plan worktree discipline", () => {
   it("ensures a plan worktree before dispatching implementation", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/arcs worktree ensure <slug> <planId>/);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /returned path verbatim in SCOPE/is,
-    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/returned path verbatim in SCOPE/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/confine delegate edits\/tests to it/i);
   });
 
