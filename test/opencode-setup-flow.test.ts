@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runSetup } from "../src/cli/setup.js";
+import { getDataDir } from "../src/utils/paths.js";
 import { withTempHomeDir } from "./helpers/temp-home-dir.js";
 
 vi.mock("@clack/prompts", () => {
@@ -124,6 +125,34 @@ describe("OpenCode setup flow", () => {
       expect(installer.installArcsBundle).toHaveBeenCalledWith({
         autoConfirmReplacement: false,
       });
+    });
+  });
+
+  it("persists none as the default variant for every OpenCode tier", async () => {
+    const prompts = await import("@clack/prompts");
+
+    vi.mocked((prompts as any).__confirm)
+      .mockResolvedValueOnce(false) // customizeAgents
+      .mockResolvedValueOnce(true) // register agent
+      .mockResolvedValueOnce(false) // decline codegraph install
+      .mockResolvedValueOnce(false); // decline RTK install
+
+    await withTempHomeDir(async (homeDir) => {
+      await runSetup("init");
+
+      const config = JSON.parse(
+        readFileSync(resolve(getDataDir(), "config.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      expect(config.opencodeModelVariants).toEqual({
+        heavy: "none",
+        standard: "none",
+        light: "none",
+      });
+
+      const opencodeConfig = JSON.parse(
+        readFileSync(resolve(homeDir, ".config", "opencode", "opencode.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      expect(opencodeConfig).not.toHaveProperty("arcs_variants");
     });
   });
 

@@ -154,6 +154,29 @@ function addPrimaryAgents(bundleRoot: string, ids: string[]) {
   });
 }
 
+function addTechArchitectAgent(bundleRoot: string) {
+  writeFile(bundleRoot, "prompts/tech-architect.txt", "tech architect prompt body");
+  mutateRegistry(bundleRoot, (agents) => {
+    agents.push({
+      id: "tech-architect",
+      status: "active",
+      kind: "subagent",
+      tier: "heavy",
+      modes: ["opencode", "claudecode"],
+      source: "prompts/tech-architect.txt",
+      destination: "prompts/tech-architect.txt",
+      description: "Architecture and analysis specialist.",
+      permissions: {
+        edit: "deny",
+        bash: "allow",
+        webfetch: "allow",
+        mcp: "allow",
+        task: "deny",
+      },
+    });
+  });
+}
+
 describe("deploy-claudecode-bundle", () => {
   it("defaults to dry-run and reports files to add", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-dry-"));
@@ -899,6 +922,7 @@ describe("deploy-claudecode-bundle", () => {
 
     try {
       const bundleRoot = setupBundleRoot(tempRoot);
+      addTechArchitectAgent(bundleRoot);
 
       const proc = runDeploy({
         DEPLOY_BUNDLE_ROOT: bundleRoot,
@@ -921,6 +945,10 @@ describe("deploy-claudecode-bundle", () => {
       const seContent = readFileSync(resolve(configRoot, "agents/software-engineer.md"), "utf-8");
       expect(seContent).toContain("model: claude-opus-4-5");
 
+      // tech-architect returns to the heavy tier
+      const taContent = readFileSync(resolve(configRoot, "agents/tech-architect.md"), "utf-8");
+      expect(taContent).toContain("model: claude-opus-4-5");
+
       // devil-advocate is standard tier
       const daContent = readFileSync(resolve(configRoot, "agents/devil-advocate.md"), "utf-8");
       expect(daContent).toContain("model: claude-sonnet-4-5");
@@ -939,12 +967,13 @@ describe("deploy-claudecode-bundle", () => {
     }
   });
 
-  it("defaults to 'inherit' for all tiers when DEPLOY_MODEL_* env vars are not set", () => {
+  it("keeps Claude Code to its three model tiers when unset", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "claudecode-deploy-models-default-"));
     const configRoot = resolve(tempRoot, "config");
 
     try {
       const bundleRoot = setupBundleRoot(tempRoot);
+      addTechArchitectAgent(bundleRoot);
 
       const proc = runDeploy({
         DEPLOY_BUNDLE_ROOT: bundleRoot,
@@ -955,6 +984,8 @@ describe("deploy-claudecode-bundle", () => {
       expect(proc.status).toBe(0);
       const seContent = readFileSync(resolve(configRoot, "agents/software-engineer.md"), "utf-8");
       expect(seContent).toContain("model: inherit");
+      const taContent = readFileSync(resolve(configRoot, "agents/tech-architect.md"), "utf-8");
+      expect(taContent).toContain("model: inherit");
 
       const installedManifest = JSON.parse(
         readFileSync(resolve(configRoot, ".arcs-bundle.json"), "utf-8"),

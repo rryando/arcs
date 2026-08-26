@@ -114,7 +114,7 @@ npm install -g @rryando/arcs
 arcs init
 ```
 
-`arcs init` runs an interactive wizard that detects **OpenCode** and/or **Claude Code** on your PATH, lets you pick which platform(s) to configure, selects heavy / standard / light model tiers from your authenticated providers, and deploys the ARCS agent + skill bundle to the right config directories.
+`arcs init` runs an interactive wizard that detects **OpenCode** and/or **Claude Code** on your PATH, lets you pick which platform(s) to configure, and selects heavy / standard / light model tiers. OpenCode also assigns a per-tier model variant (defaulting to `none`); Claude Code retains its three model tiers. It then deploys the ARCS agent + skill bundle to the right config directories.
 
 Then, from your project root, open the host, select an ARCS orchestrator, and ask it to initialize. It scans the repo and populates the graph — overview, tasks, plans, and a first pass of structural knowledge.
 

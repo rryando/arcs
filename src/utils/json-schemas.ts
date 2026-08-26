@@ -23,6 +23,13 @@ export type PackageJson = z.infer<typeof packageJsonSchema>;
 export const cliConfigSchema = z.object({
   version: z.literal("1"),
   ides: z.array(z.string()),
+  opencodeModelVariants: z
+    .object({
+      heavy: z.string(),
+      standard: z.string(),
+      light: z.string(),
+    })
+    .optional(),
 });
 
 export type CliConfig = z.infer<typeof cliConfigSchema>;

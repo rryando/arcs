@@ -13,6 +13,7 @@ import { ensureDataDir, getDataDir } from "../utils/paths.js";
 export interface ArcsConfig {
   version: "1";
   ides: string[];
+  opencodeModelVariants?: ModelVariants;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,17 @@ export function readConfig(): ArcsConfig {
 }
 
 /**
+ * Reads config for setup flows. Invalid persisted config is discarded so init/config can
+ * recover by writing a fresh valid config after the user completes setup.
+ */
+export function readConfigOrDefault(): ArcsConfig {
+  const raw = readJsonSafeSync<unknown>(configPath());
+  if (raw === undefined) return defaultConfig();
+  const result = cliConfigSchema.safeParse(raw);
+  return result.success ? result.data : defaultConfig();
+}
+
+/**
  * Writes config to disk. Ensures data dir exists first.
  */
 export function writeConfig(config: ArcsConfig): void {
@@ -79,8 +91,19 @@ export type ModelTierConfig = {
   heavy: string;
   standard: string;
   light: string;
+  /** OpenCode model-scoped variants applied to every agent in the tier. */
+  variants?: ModelVariants;
   perAgent?: Record<string, string>;
 };
+
+export type ModelVariants = {
+  heavy: string;
+  standard: string;
+  light: string;
+};
+
+/** Default OpenCode variant: no additional thinking. */
+export const DEFAULT_MODEL_VARIANT = "none";
 
 /**
  * Reads ~/.config/opencode/opencode.json. Returns parsed JSON or null on failure.
@@ -132,14 +155,13 @@ export async function diagnoseOpenCodeConfig(): Promise<
  * - A parseable file that is not an ARCS Claude Code bundle manifest (wrong `bundleId`
  *   or no installed agents) is "missing", not "corrupt" — it is a foreign/unrelated
  *   file, not damage.
- * - A valid manifest whose `tierModels` is absent or incomplete is "ok" WITHOUT
- *   `tierModels` (e.g. a bundle deployed before this field existed). Tier read-back is
- *   strictly all-or-nothing: a partial substitution could silently mis-tier agents on
- *   the next deploy, so a half-known selection is reported as no selection at all.
+ * - A valid manifest whose heavy/standard/light `tierModels` are absent or incomplete is
+ *   "ok" WITHOUT `tierModels` (e.g. a bundle deployed before this field existed). Only
+ *   the three Claude Code model tiers are persisted.
  */
 export async function diagnoseClaudeCodeBundle(): Promise<
   | { status: "missing"; path: string }
-  | { status: "ok"; path: string; tierModels?: { heavy: string; standard: string; light: string } }
+  | { status: "ok"; path: string; tierModels?: ModelTierConfig }
   | { status: "corrupt"; path: string; error: string }
 > {
   const path = join(homedir(), ".claude", ".arcs-bundle.json");
@@ -194,11 +216,12 @@ export function extractModelPreFills(config: unknown): ModelTierConfig {
   const obj = config as Record<string, unknown>;
   const model = typeof obj.model === "string" ? obj.model : "";
   const smallModel = typeof obj.small_model === "string" ? obj.small_model : "";
-  return {
+  const result: ModelTierConfig = {
     heavy: model,
     standard: model,
     light: smallModel || model,
   };
+  return result;
 }
 
 // ---------------------------------------------------------------------------

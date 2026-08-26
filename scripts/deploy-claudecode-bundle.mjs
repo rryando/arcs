@@ -106,7 +106,7 @@ function resolveBundlePromptPath(value) {
 // ---------------------------------------------------------------------------
 // Model tier configuration
 // ---------------------------------------------------------------------------
-// Env vars: DEPLOY_MODEL_HEAVY, DEPLOY_MODEL_STANDARD, DEPLOY_MODEL_LIGHT
+// Env vars: DEPLOY_MODEL_HEAVY, DEPLOY_MODEL_STANDARD, DEPLOY_MODEL_LIGHT.
 // Each defaults to "inherit" if unset.
 const tierModels = {
   heavy: process.env.DEPLOY_MODEL_HEAVY || "inherit",

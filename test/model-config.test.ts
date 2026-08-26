@@ -13,10 +13,12 @@ import {
   diagnoseClaudeCodeBundle,
   diagnoseOpenCodeConfig,
   extractModelPreFills,
+  readConfigOrDefault,
   readOpenCodeConfig,
 } from "../src/cli/config.js";
 import { applyAgentModelConfig, writeOpencodeAgent } from "../src/cli/instructions.js";
 import { agentRegistryRecordSchema } from "../src/utils/json-schemas.js";
+import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
 describe("agent registry", () => {
   it("reads the package manifest as the canonical typed registry", () => {
@@ -147,6 +149,15 @@ describe("agent registry", () => {
   });
 });
 
+describe("ARCS setup config", () => {
+  it("recovers from a schema-invalid persisted config", async () => {
+    await withTempDataDir(async (dataDir) => {
+      writeFileSync(join(dataDir, "config.json"), JSON.stringify({ version: "1", ides: "bad" }));
+      expect(readConfigOrDefault()).toEqual({ version: "1", ides: [] });
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // A. extractModelPreFills (pure function)
 // ---------------------------------------------------------------------------
@@ -185,6 +196,19 @@ describe("extractModelPreFills", () => {
       heavy: "",
       standard: "",
       light: "foo/baz",
+    });
+  });
+
+  it("does not infer variants from a legacy agent model override", () => {
+    expect(
+      extractModelPreFills({
+        model: "foo/bar",
+        agent: { "tech-architect": { model: "legacy/override" } },
+      }),
+    ).toEqual({
+      heavy: "foo/bar",
+      standard: "foo/bar",
+      light: "foo/bar",
     });
   });
 
@@ -492,6 +516,8 @@ describe("applyAgentModelConfig", () => {
     // Primary agents are standard tier
     expect(result.agent["ARCS Orchestrator"].model).toBe("mid/model");
     expect(result.agent["ARCS Caveman"].model).toBe("mid/model");
+    expect(result.agent["ARCS Orchestrator"].variant).toBe("none");
+    expect(result.agent["graph-explorer"].variant).toBe("none");
   });
 
   it("applies perAgent override to sub-agents", async () => {
@@ -513,6 +539,47 @@ describe("applyAgentModelConfig", () => {
     const result = JSON.parse(await readFile(configFile, "utf-8"));
     expect(result.agent["graph-explorer"].model).toBe("custom/explorer");
     expect(result.agent["software-engineer"].model).toBe("big/model");
+  });
+
+  it("applies per-tier OpenCode variants with a default of none", async () => {
+    const config = {
+      agent: {
+        "tech-architect": { prompt: "architect" },
+      },
+    };
+    writeFileSync(configFile, JSON.stringify(config));
+
+    applyAgentModelConfig({
+      heavy: "big/model",
+      standard: "mid/model",
+      light: "small/model",
+      variants: { heavy: "max", standard: "high", light: "none" },
+    });
+
+    const result = JSON.parse(await readFile(configFile, "utf-8"));
+    expect(result.agent["tech-architect"].model).toBe("big/model");
+    expect(result.agent["tech-architect"].variant).toBe("max");
+  });
+
+  it("preserves a perAgent model override while applying its tier variant", async () => {
+    const config = {
+      agent: {
+        "tech-architect": { prompt: "architect" },
+      },
+    };
+    writeFileSync(configFile, JSON.stringify(config));
+
+    applyAgentModelConfig({
+      heavy: "big/model",
+      standard: "mid/model",
+      light: "small/model",
+      variants: { heavy: "max", standard: "high", light: "none" },
+      perAgent: { "tech-architect": "custom/architect" },
+    });
+
+    const result = JSON.parse(await readFile(configFile, "utf-8"));
+    expect(result.agent["tech-architect"].model).toBe("custom/architect");
+    expect(result.agent["tech-architect"].variant).toBe("max");
   });
 
   it("applies perAgent override to primary agents", async () => {

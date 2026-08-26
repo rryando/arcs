@@ -10,15 +10,18 @@ import { type AgentTier, getActiveAgents, getAgentsByTier } from "./agent-regist
 import { detectArcsBundleInstall, installArcsBundle } from "./bundle-installer.js";
 import {
   type ArcsConfig,
+  DEFAULT_MODEL_VARIANT,
   diagnoseClaudeCodeBundle,
   diagnoseOpenCodeConfig,
   extractModelPreFills,
   getAvailableModels,
   getClaudeCodeModels,
   type ModelTierConfig,
+  type ModelVariants,
   type ProviderModels,
   readClaudeCodeCurrentModel,
   readClaudeCodeCurrentPrimaryAgent,
+  readConfigOrDefault,
   writeConfig,
 } from "./config.js";
 import {
@@ -213,6 +216,8 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
   let opencodeAgentActive = false;
   let claudecodeDeployed = false;
+  let opencodeModelVariants: ModelVariants | undefined;
+  const arcsConfig = readConfigOrDefault();
 
   // ── OpenCode configuration and installation flow ──────────────────────────
   if (selectedOpenCode) {
@@ -220,10 +225,13 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     const configDiagnosis = await diagnoseOpenCodeConfig();
     const openCodeConfig = configDiagnosis.status === "ok" ? configDiagnosis.config : null;
     const preFills = extractModelPreFills(openCodeConfig);
+    if (arcsConfig.opencodeModelVariants) {
+      preFills.variants = arcsConfig.opencodeModelVariants;
+    }
 
     if (configDiagnosis.status === "ok") {
       p.note(
-        `Found models:\n  model: ${preFills.heavy || "(not set)"}\n  small_model: ${preFills.light || "(not set)"}`,
+        `Found models:\n  model: ${preFills.heavy || "(not set)"}\n  small_model: ${preFills.light || "(not set)"}\n  variants: ${formatVariants(preFills)}`,
         "OpenCode Config",
       );
     } else if (configDiagnosis.status === "corrupt") {
@@ -240,15 +248,15 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
     // ── Reuse fast path ───────────────────────────────────────────────────────
     // Only offered when OpenCode is already fully configured: the config parses,
-    // the ARCS agents are registered, and every tier resolved to a real model
-    // identifier. Any missing leg falls through to the prompt sequence below.
+    // the ARCS agents are registered, and the required heavy/standard/light tiers
+    // resolved to real model identifiers.
     const reusableModelConfig: ModelTierConfig | null =
       configDiagnosis.status === "ok" &&
       opencodeHasAgent() &&
       preFills.heavy &&
       preFills.standard &&
       preFills.light
-        ? { heavy: preFills.heavy, standard: preFills.standard, light: preFills.light }
+        ? { ...preFills }
         : null;
 
     // T004 will wire modelConfig into agent registration calls below.
@@ -260,7 +268,8 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           "Reuse the existing OpenCode model config?\n" +
           `  heavy: ${reusableModelConfig.heavy}\n` +
           `  standard: ${reusableModelConfig.standard}\n` +
-          `  light: ${reusableModelConfig.light}`,
+          `  light: ${reusableModelConfig.light}\n` +
+          `  variants: ${formatVariants(reusableModelConfig)}`,
         initialValue: true,
       });
 
@@ -317,10 +326,22 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
       p.note(`Used by: ${tierAgentNames("light")}`, "Light tier agents");
 
+      const variants = {
+        heavy: await selectVariant("Heavy model variant", preFills.variants?.heavy),
+        standard: await selectVariant("Standard model variant", preFills.variants?.standard),
+        light: await selectVariant("Light model variant", preFills.variants?.light),
+      };
+
+      if (Object.values(variants).some((variant) => p.isCancel(variant))) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
       modelConfig = {
         heavy: heavyModel as string,
         standard: standardModel as string,
         light: lightModel as string,
+        variants: variants as ModelVariants,
       };
 
       // Step 3.5e — Optional per-agent customization
@@ -350,7 +371,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         const perAgent: Record<string, string> = {};
 
         for (const agent of agentTiers) {
-          const tierModel = modelConfig[agent.tier];
+          const tierModel = modelConfig[agent.tier] ?? modelConfig.heavy;
           const override = await selectModelForAgent(
             `${agent.name} [${agent.tier}: ${tierModel}]`,
             availableModels,
@@ -462,6 +483,12 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       // with the user's configured tier values.
       applyAgentModelConfig(modelConfig);
     }
+
+    opencodeModelVariants = modelConfig?.variants ?? {
+      heavy: DEFAULT_MODEL_VARIANT,
+      standard: DEFAULT_MODEL_VARIANT,
+      light: DEFAULT_MODEL_VARIANT,
+    };
   }
 
   // ── Claude Code support ───────────────────────────────────────────────────
@@ -479,9 +506,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     if (shouldDeployClaude) {
       // ── Reuse fast path ───────────────────────────────────────────────────
       // Only offered when a previous deploy left a readable bundle manifest that
-      // recorded all three tiers. A missing/corrupt manifest — or a valid one
-      // whose tierModels is absent or incomplete — falls through to the tier
-      // prompt sequence below.
+      // recorded the required three tiers. A missing/corrupt manifest — or a valid one
+      // whose required tierModels are absent or incomplete — falls through to the
+      // tier prompt sequence below.
       const claudeBundleDiagnosis = await diagnoseClaudeCodeBundle();
       const reusableClaudeModels =
         claudeBundleDiagnosis.status === "ok" && claudeBundleDiagnosis.tierModels
@@ -492,11 +519,12 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
       if (reusableClaudeModels) {
         const reuseExistingClaude = await p.confirm({
-          message:
-            "Reuse the existing Claude Code model config?\n" +
-            `  heavy: ${reusableClaudeModels.heavy}\n` +
-            `  standard: ${reusableClaudeModels.standard}\n` +
+          message: [
+            "Reuse the existing Claude Code model config?",
+            `  heavy: ${reusableClaudeModels.heavy}`,
+            `  standard: ${reusableClaudeModels.standard}`,
             `  light: ${reusableClaudeModels.light}`,
+          ].join("\n"),
           initialValue: true,
         });
 
@@ -579,9 +607,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           env: {
             ...process.env,
             DEPLOY_DRY_RUN: "false",
-            DEPLOY_MODEL_HEAVY: claudeModelConfig.heavy,
-            DEPLOY_MODEL_STANDARD: claudeModelConfig.standard,
-            DEPLOY_MODEL_LIGHT: claudeModelConfig.light,
+            DEPLOY_MODEL_HEAVY: claudeModelConfig!.heavy,
+            DEPLOY_MODEL_STANDARD: claudeModelConfig!.standard,
+            DEPLOY_MODEL_LIGHT: claudeModelConfig!.light,
             DEPLOY_PRIMARY_AGENT: claudePrimaryAgentId,
           },
           encoding: "utf-8",
@@ -638,8 +666,10 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   }
 
   const config: ArcsConfig = {
+    ...arcsConfig,
     version: "1",
     ides,
+    ...(opencodeModelVariants ? { opencodeModelVariants } : {}),
   };
 
   // ── Write ARCS config ───────────────────────────────────────────────────
@@ -677,6 +707,35 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
 const CUSTOM_MODEL_SENTINEL = "__custom__";
 const KEEP_DEFAULT_SENTINEL = "__keep_default__";
+const VARIANT_OPTIONS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function formatVariants(config: ModelTierConfig): string {
+  const variants = config.variants;
+  return `heavy=${variants?.heavy || DEFAULT_MODEL_VARIANT}, standard=${variants?.standard || DEFAULT_MODEL_VARIANT}, light=${variants?.light || DEFAULT_MODEL_VARIANT}`;
+}
+
+async function selectVariant(
+  message: string,
+  currentValue = DEFAULT_MODEL_VARIANT,
+): Promise<string | symbol> {
+  const selected = await p.select({
+    message,
+    options: [
+      ...VARIANT_OPTIONS.map((value) => ({ value, label: value })),
+      { value: CUSTOM_MODEL_SENTINEL, label: "Enter custom variant" },
+    ],
+    initialValue: currentValue || DEFAULT_MODEL_VARIANT,
+  });
+  if (p.isCancel(selected)) return selected;
+  if (selected === CUSTOM_MODEL_SENTINEL) {
+    const custom = await p.text({ message: `${message} (custom)`, initialValue: currentValue });
+    if (p.isCancel(custom)) return custom;
+    return (custom as string).trim() || DEFAULT_MODEL_VARIANT;
+  }
+  return VARIANT_OPTIONS.includes(selected as string)
+    ? (selected as string)
+    : DEFAULT_MODEL_VARIANT;
+}
 
 /**
  * Hints for list entries that are not real model identifiers and would

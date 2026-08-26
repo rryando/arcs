@@ -6,7 +6,7 @@ import { type AgentTier, getActiveAgent, getAgentTierMap } from "./agent-registr
 import { FLASH_PROMPT_TEXT } from "./arcs-flash.js";
 import { ORCHESTRATE_PROMPT_TEXT } from "./arcs-orchestrate.js";
 import { ORCHESTRATE_CAVEMAN_PROMPT_TEXT } from "./arcs-orchestrate-caveman.js";
-import type { ModelTierConfig } from "./config.js";
+import { DEFAULT_MODEL_VARIANT, type ModelTierConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,6 +82,10 @@ function resolveAgentModel(
   modelConfig: ModelTierConfig,
 ): string {
   return modelConfig.perAgent?.[agentName] ?? modelConfig[tier];
+}
+
+function resolveAgentVariant(tier: AgentTier, modelConfig?: ModelTierConfig): string {
+  return modelConfig?.variants?.[tier] || DEFAULT_MODEL_VARIANT;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +278,10 @@ export function writeOpencodeAgent(
   // Primary agents get a model field resolved from tier map (standard) unless
   // the user provided a perAgent override, which always wins.
   const orchestratorEntry: Record<string, unknown> = { ...ARCS_AGENT_ENTRY };
+  orchestratorEntry.variant = resolveAgentVariant(
+    AGENT_TIER_MAP[ARCS_AGENT_KEY] ?? "standard",
+    modelConfig,
+  );
   if (modelConfig) {
     orchestratorEntry.model = resolveAgentModel(
       ARCS_AGENT_KEY,
@@ -283,6 +291,10 @@ export function writeOpencodeAgent(
   }
 
   const flashEntry: Record<string, unknown> = { ...ARCS_FLASH_AGENT_ENTRY };
+  flashEntry.variant = resolveAgentVariant(
+    AGENT_TIER_MAP[ARCS_FLASH_AGENT_KEY] ?? "standard",
+    modelConfig,
+  );
   if (modelConfig) {
     flashEntry.model = resolveAgentModel(
       ARCS_FLASH_AGENT_KEY,
@@ -292,6 +304,10 @@ export function writeOpencodeAgent(
   }
 
   const cavemanEntry: Record<string, unknown> = { ...ARCS_CAVEMAN_AGENT_ENTRY };
+  cavemanEntry.variant = resolveAgentVariant(
+    AGENT_TIER_MAP[ARCS_CAVEMAN_AGENT_KEY] ?? "standard",
+    modelConfig,
+  );
   if (modelConfig) {
     cavemanEntry.model = resolveAgentModel(
       ARCS_CAVEMAN_AGENT_KEY,
@@ -339,8 +355,8 @@ export function writeOpencodeAgent(
 
 /**
  * Applies ModelTierConfig to all known agent entries in opencode.json.
- * Each agent (primary or sub-agent) listed in AGENT_TIER_MAP gets a `model`
- * field resolved from its tier. perAgent overrides always win.
+ * Each agent (primary or sub-agent) listed in AGENT_TIER_MAP gets `model` and
+ * `variant` fields resolved from its tier. perAgent model overrides win.
  * Call this AFTER bundle install so it overwrites hardcoded manifest models.
  */
 export function applyAgentModelConfig(modelConfig: ModelTierConfig): void {
@@ -361,6 +377,7 @@ export function applyAgentModelConfig(modelConfig: ModelTierConfig): void {
       const tier = AGENT_TIER_MAP[name];
       if (tier) {
         entry.model = resolveAgentModel(name, tier, modelConfig);
+        entry.variant = resolveAgentVariant(tier, modelConfig);
       }
     }
 
