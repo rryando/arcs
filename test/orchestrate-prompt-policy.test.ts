@@ -1,6 +1,7 @@
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FLASH_PROMPT_TEXT } from "../src/cli/arcs-flash.js";
 import { ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
 import {
   CAVEMAN_PREAMBLE,
@@ -95,6 +96,36 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
     );
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/git (?:add|commit|push).*explicit user request/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never claim.*verification.*did not run/is);
+  });
+});
+
+describe("orchestrate prompt policy — plan worktree discipline", () => {
+  it("ensures a plan worktree before dispatching implementation", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/arcs worktree ensure <slug> <planId>/);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /worktree path verbatim in the dispatch contract SCOPE field/is,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/confine edits and test runs to it/i);
+  });
+
+  it("never dispatches implementation against the main checkout when a tree exists", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /never dispatch implementation against the main checkout/i,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/parallel plans get parallel trees/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never share one/i);
+  });
+
+  it("gates task completion on worktree validation and skips non-git repos", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/arcs worktree validate <slug>/);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/non-zero exit blocks `arcs done`/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/non-git repos: skip silently/i);
+  });
+
+  it("carries the ensure/validate minimum into flash", () => {
+    expect(FLASH_PROMPT_TEXT).toMatch(/arcs worktree ensure <slug> <planId>/);
+    expect(FLASH_PROMPT_TEXT).toMatch(/arcs worktree validate <slug>/);
+    expect(FLASH_PROMPT_TEXT).toMatch(/never dispatch implementation against the main checkout/i);
   });
 });
 

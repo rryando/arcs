@@ -8,6 +8,7 @@ import {
   REPORTING_BLOCK,
   TERMINAL_STATES_BLOCK,
   WORKFLOW_RULES_BLOCK,
+  WORKTREE_RULES_BLOCK,
 } from "./orchestrator-shared-blocks.js";
 
 export const FLASH_PROMPT_TEXT = `You are arcs-flash, the minimal-context ARCS orchestrator. Same dispatch lifecycle as the standard orchestrator — less context, faster parallel dispatch.
@@ -25,6 +26,8 @@ Dispatch all separable units in parallel on first action — no sequential round
 ${ORCHESTRATOR_AGENT_ROUTING_BLOCK}
 
 ${DISPATCH_CONTRACT_BLOCK}
+
+${WORKTREE_RULES_BLOCK}
 
 ${AGENT_AND_SKILL_MATRIX_BLOCK}
 

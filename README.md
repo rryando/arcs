@@ -337,6 +337,23 @@ The 8 knowledge kinds: `lesson`, `gotcha`, `pattern`, `architecture`, `module`, 
 
 ---
 
+## Plan Worktrees
+
+One plan = one git worktree, so parallel plans never share a checkout. Branches are named `arcs/<planId>`, trees default to a sibling `<repo>-worktrees/` directory, and a registry (`worktrees.json` in the project data dir) maps each tree to its plan.
+
+| Command | Purpose |
+|---------|---------|
+| `arcs worktree ensure <slug> <planId>` | Idempotently create + register the plan's worktree |
+| `arcs worktree validate <slug>` | Cross-check registry ↔ plan statuses ↔ git state; exits non-zero on violations |
+| `arcs worktree prune <slug> [planId]` | Remove trees for done/archived plans — branches are never deleted |
+| `arcs worktree list <slug>` | List registered trees and their state |
+
+Orchestrator flow: `ensure` before dispatching implementation or review work (put the returned path verbatim in the dispatch SCOPE), and `validate` must pass before `arcs done`. `ensure` refuses when another worktree already holds the plan's branch. As with all mutating commands, `prune` demands `--token` only under `ARCS_GUARDED=1`.
+
+Known costs of real worktrees: each tree needs its own `npm install` (node_modules is not shared), untracked files like `.env` don't propagate from the main checkout, and codegraph builds a separate index per worktree.
+
+---
+
 ## Graph & Retrieval
 
 Beyond `dependsOn`, ARCS builds a weighted relationship graph across every project entity:

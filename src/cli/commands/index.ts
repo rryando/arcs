@@ -22,3 +22,4 @@ import "./status.js";
 import "./proposal.js";
 import "./proposal-doc.js";
 import "./web.js";
+import "./worktree.js";

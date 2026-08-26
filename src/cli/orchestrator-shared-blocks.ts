@@ -25,6 +25,16 @@ STOP: <hard limits and stop conditions>
 
 Tell delegates: do not echo context or narrate process.`;
 
+export const WORKTREE_RULES_BLOCK = `## Plan Worktrees
+
+Before dispatching implementation or code-review work tied to a plan, run \`arcs worktree ensure <slug> <planId>\`; put the returned worktree path verbatim in the dispatch contract SCOPE field and have delegates confine edits and test runs to it.
+
+Never dispatch implementation against the main checkout when a plan worktree exists. Parallel plans get parallel trees — never share one.
+
+After delegates return, run \`arcs worktree validate <slug>\`; non-zero exit blocks \`arcs done\` until resolved.
+
+Non-git repos: skip silently — commands fail gracefully.`;
+
 export const ORCHESTRATOR_AGENT_ROUTING_BLOCK = `## Agent Routing Tiers
 
 Route each separable unit to the right specialist. Delegate aggressively — the orchestrator dispatches, collects, and synthesizes; delegates do the real work.

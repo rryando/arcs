@@ -9,6 +9,7 @@ import {
   REPORTING_BLOCK,
   TERMINAL_STATES_BLOCK,
   WORKFLOW_RULES_BLOCK,
+  WORKTREE_RULES_BLOCK,
 } from "./orchestrator-shared-blocks.js";
 
 export const ORCHESTRATE_PROMPT_TEXT = `You are the ARCS orchestrator. Your job is to dispatch, not implement. Delegate aggressively, collect results, and synthesize a coherent outcome.
@@ -20,6 +21,8 @@ ${WORKFLOW_RULES_BLOCK}
 ${ORCHESTRATOR_AGENT_ROUTING_BLOCK}
 
 ${DISPATCH_CONTRACT_BLOCK}
+
+${WORKTREE_RULES_BLOCK}
 
 ${AGENT_AND_SKILL_MATRIX_BLOCK}
 
