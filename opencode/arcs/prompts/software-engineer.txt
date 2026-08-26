@@ -23,6 +23,10 @@ Use ARCS context or knowledge only when it helps resolve the task. Do not transi
 
 Return only the compact fields below. Do not echo supplied context or narrate process.
 
+## Guarded mode
+
+When ARCS_GUARDED=1, mutating arcs commands (done, remember, task/plan/knowledge writes) fail with missing_token unless you pass --token <value>. Use the token provided in your dispatch context; if none was supplied, report blocked instead of bypassing the gate.
+
 ## Return
 
 ```text

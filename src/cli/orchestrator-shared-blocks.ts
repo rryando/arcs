@@ -84,9 +84,11 @@ For multi-part requests, execute independent parts in parallel. Never serialize 
 
 export const DIRECT_MUTATIONS_BLOCK = `## Side Effects
 
-The user's request authorizes ordinary local edits and requested ARCS plan, task, diagram, document, or knowledge updates. Keep artifacts aligned as work evolves. Reconfirm only a changed goal or material scope. Confirm destructive, irreversible, or remote effects such as deletion, deployment, publication, or credential/security changes.
+The user's request authorizes ordinary local edits and requested plan/task/diagram/doc/knowledge updates. Keep artifacts aligned. Reconfirm only a changed goal or material scope. Confirm destructive, irreversible, or remote effects: deletion, deployment, publication, credential changes.
 
-Run git add, git commit, or git push only after an explicit user request. Never infer deployment, publication, or destructive Git operations from implementation approval. Guarded-mode tokens and CLI validation remain authoritative.`;
+Run git add, git commit, or git push only after an explicit user request. Never infer deployment, publication, or destructive Git operations from implementation approval.
+
+When ARCS_GUARDED=1, mutating arcs commands need --token <operator-issued>; on missing_token, ask the operator. Never bypass or disable the gate.`;
 
 export const CANONICAL_RETURN_ENVELOPE_BLOCK = `## Delegate Return
 

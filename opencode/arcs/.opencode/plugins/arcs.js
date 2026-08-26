@@ -41,8 +41,12 @@ const arcsExec = (args) =>
   });
 
 const loopStatus = () => arcsExec(["loop", "status", "--json"]);
+// Guarded-mode passthrough: operators running ARCS_GUARDED=1 can export
+// ARCS_TOKEN so the plugin's mutating loop calls satisfy the write gate.
+// Unset (default) leaves behavior unchanged — loops are simply ungated.
+const tokenArgs = () => (process.env.ARCS_TOKEN ? ["--token", process.env.ARCS_TOKEN] : []);
 const loopTick = (slug, session) =>
-  arcsExec(["loop", "tick", slug, `--session=${session}`, "--json"]);
+  arcsExec(["loop", "tick", slug, `--session=${session}`, ...tokenArgs(), "--json"]);
 const loopCancel = (slug, session) =>
   arcsExec(["loop", "cancel", slug, `--session=${session}`, "--json"]);
 

@@ -211,7 +211,10 @@ describe("Caveman narration overlay behavior", () => {
   });
 
   it("preserves guarded mode and explicit Git safeguards", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/guarded-mode tokens.*authoritative/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /when ARCS_GUARDED=1, mutating arcs commands need --token/i,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never bypass or disable the gate/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
       /git add.*git commit.*git push.*explicit user request/is,
     );
