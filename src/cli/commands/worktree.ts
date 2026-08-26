@@ -39,7 +39,6 @@ import {
   type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
-import { requireWriteGate } from "../write-gate.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -437,7 +436,6 @@ const worktreePruneParams = {
     description: "Plan ID (omit to prune all done/archived worktrees)",
   },
   force: { type: "boolean", description: "Remove even when unmerged commits exist" },
-  token: { type: "string", description: "Write-gate token (required when ARCS_GUARDED=1)" },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -475,8 +473,7 @@ async function handleWorktreePrune(
     });
   }
 
-  const gate = requireWriteGate(params.token);
-  if (gate) return gate;
+  // Guarded-mode enforcement happens centrally in invokeCommand (mutation: true).
 
   if (params.planId) {
     return pruneSinglePlan(projectDir, repoRoot, params.slug, params.planId, params.force ?? false);

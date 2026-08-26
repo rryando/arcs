@@ -4,6 +4,7 @@
 
 import { parseArgs } from "../../src/cli/arg-parser.js";
 import { type CLIResult, getCommand } from "../../src/cli/command-registry.js";
+import { invokeCommand } from "../../src/cli/write-gate.js";
 
 // Import command registrations (side-effect imports)
 import "../../src/cli/commands/index.js";
@@ -24,5 +25,7 @@ export async function runCommand(path: string, args: string[] = []): Promise<CLI
     return { ok: true, data: { help: true, path: cmd.path, description: cmd.description } };
   }
 
-  return cmd.handler(parsed.parsed.params, parsed.parsed.flags);
+  // Route through the shared choke point so tests exercise guarded-mode
+  // enforcement exactly like the production dispatchers do.
+  return invokeCommand(cmd, parsed.parsed.params, parsed.parsed.flags);
 }

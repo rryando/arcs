@@ -55,6 +55,8 @@ export function generateCommandHelp(def: CommandDef | AnyCommandDef): string {
   for (const [, name] of positionals) usageParts.push(`<${name}>`);
   for (const [name, p] of requiredFlags) usageParts.push(`--${name}=${p.type.toUpperCase()}`);
   for (const [name, p] of optionalFlags) usageParts.push(`[--${name}=${p.type.toUpperCase()}]`);
+  // --token is a universal flag consumed by invokeCommand, not a declared param
+  if (def.mutation) usageParts.push("[--token=TOKEN]");
 
   lines.push(`Usage: ${usageParts.join(" ")}`);
   lines.push("");

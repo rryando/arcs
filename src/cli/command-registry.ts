@@ -21,6 +21,8 @@ export interface CommandFlags {
   json: boolean;
   lean: boolean;
   dryRun: boolean;
+  /** Write-gate token — consumed by mutating commands when ARCS_GUARDED=1. */
+  token?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import { type AnyCommandDef, getCommand } from "./command-registry.js";
 import { isLeanMode } from "./lean-output.js";
 import { render, stripTimestamps } from "./output-envelope.js";
 import "./commands/index.js";
+import { invokeCommand } from "./write-gate.js";
 
 function cliError(msg: string): void {
   console.error(msg);
@@ -145,7 +146,7 @@ export async function handleDagCommand(command: string, args: string[]): Promise
     return false;
   }
 
-  const cmdResult = await registeredCmd.handler(result.parsed.params, result.parsed.flags);
+  const cmdResult = await invokeCommand(registeredCmd, result.parsed.params, result.parsed.flags);
   if (cmdResult.ok) {
     const flags = result.parsed.flags;
     if (flags.json) {

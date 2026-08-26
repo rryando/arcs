@@ -11,26 +11,33 @@ import {
 
 export interface ParsedArgs {
   params: Record<string, unknown>;
-  flags: { json: boolean; lean: boolean; dryRun: boolean; help: boolean };
+  flags: { json: boolean; lean: boolean; dryRun: boolean; help: boolean; token?: string };
 }
 
 export type ParseResult = { ok: true; parsed: ParsedArgs } | { ok: false; error: CLIResult };
 
-const _GLOBAL_FLAGS = new Set(["--json", "--lean", "--dry-run", "--help"]);
+const _GLOBAL_FLAGS = new Set(["--json", "--lean", "--dry-run", "--help", "--token"]);
 
 export function parseArgs(def: CommandDef | AnyCommandDef, rawArgs: string[]): ParseResult {
-  const flags = { json: false, lean: false, dryRun: false, help: false };
+  const flags: ParsedArgs["flags"] = { json: false, lean: false, dryRun: false, help: false };
   const params: Record<string, unknown> = {};
   const positionals: string[] = [];
 
   // First pass: extract global flags, collect remaining args
   const remaining: string[] = [];
-  for (const arg of rawArgs) {
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
     if (arg === "--json") flags.json = true;
     else if (arg === "--lean") flags.lean = true;
     else if (arg === "--dry-run") flags.dryRun = true;
     else if (arg === "--help") flags.help = true;
-    else remaining.push(arg);
+    else if (arg.startsWith("--token=")) flags.token = arg.slice("--token=".length);
+    else if (arg === "--token" && i + 1 < rawArgs.length && !rawArgs[i + 1].startsWith("--")) {
+      flags.token = rawArgs[i + 1];
+      i++;
+    } else if (arg === "--token") {
+      flags.token = "true";
+    } else remaining.push(arg);
   }
 
   if (flags.help) return { ok: true, parsed: { params, flags } };

@@ -37,6 +37,7 @@ const rememberParams = {
 defineCommand({
   path: "remember",
   description: "Capture a knowledge insight with zero ceremony",
+  mutation: true,
   params: rememberParams,
   handler: handleRemember,
 });

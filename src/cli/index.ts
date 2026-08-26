@@ -9,6 +9,7 @@ import {
 } from "./help-generator.js";
 import { render } from "./output-envelope.js";
 import { runSetup } from "./setup.js";
+import { invokeCommand } from "./write-gate.js";
 
 // ---------------------------------------------------------------------------
 // CLI Subcommand Router
@@ -69,7 +70,7 @@ export async function handleCli(args: string[]): Promise<boolean> {
       console.log(generateCommandHelp(registeredCmd));
       return true;
     }
-    const cmdResult = await registeredCmd.handler(result.parsed.params, result.parsed.flags);
+    const cmdResult = await invokeCommand(registeredCmd, result.parsed.params, result.parsed.flags);
     render(cmdResult, result.parsed.flags, match.path);
     if (!cmdResult.ok) process.exitCode = 1;
     return true;

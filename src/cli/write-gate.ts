@@ -2,7 +2,7 @@
 // Write gate — opt-in guarded mode for mutating commands (ARCS_GUARDED=1)
 // ---------------------------------------------------------------------------
 
-import type { CLIResult } from "./command-registry.js";
+import type { AnyCommandDef, CLIResult, CommandFlags } from "./command-registry.js";
 import { failure } from "./output-envelope.js";
 
 /**
@@ -25,4 +25,24 @@ export function requireWriteGate(token: string | undefined): CLIResult | null {
     );
   }
   return null;
+}
+
+/**
+ * Single invocation choke point for registry commands. Mutating commands
+ * (declared via `mutation: true`) are gated through requireWriteGate before
+ * their handler runs, so guarded mode is enforced uniformly regardless of
+ * which dispatcher (index router, DAG shell, test runner) drives the command.
+ *
+ * All entry points MUST route handler calls through this function.
+ */
+export async function invokeCommand(
+  cmd: AnyCommandDef,
+  params: Record<string, unknown>,
+  flags: CommandFlags,
+): Promise<CLIResult> {
+  if (cmd.mutation) {
+    const gate = requireWriteGate(flags.token);
+    if (gate) return gate;
+  }
+  return cmd.handler(params, flags);
 }
