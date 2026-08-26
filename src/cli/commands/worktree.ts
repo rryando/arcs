@@ -39,6 +39,7 @@ import {
   type ParsedParams,
 } from "../command-registry.js";
 import { failure, success } from "../output-envelope.js";
+import { requireWriteGate } from "../write-gate.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,25 +76,6 @@ async function resolveRepoRoot(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * Guarded-mode ceremony (opt-in via ARCS_GUARDED=1): mutating commands demand
- * an explicit --token from the orchestrator. By default (no ARCS_GUARDED)
- * writes proceed without a token. Returns null when the write may proceed.
- */
-function requireWriteGate(token: string | undefined): CLIResult | null {
-  if (process.env.ARCS_GUARDED !== "1") return null;
-  if (!token || token.trim().length === 0) {
-    return failure(
-      "missing_token",
-      "Guarded mode is active (ARCS_GUARDED=1): --token is required",
-      {
-        hint: "Pass the orchestrator-issued token via --token <value>, or unset ARCS_GUARDED.",
-      },
-    );
-  }
-  return null;
 }
 
 /** Normalize a path for registry-vs-git comparisons (absolute, forward slashes). */

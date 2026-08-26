@@ -67,11 +67,11 @@ Tell delegates: do not echo context or narrate process.
 
 ## Plan Worktrees
 
-Before dispatching implementation or code-review work tied to a plan, run `arcs worktree ensure <slug> <planId>`; put the returned worktree path verbatim in the dispatch contract SCOPE field and have delegates confine edits and test runs to it.
+Before dispatching implementation or review work on a plan, run `arcs worktree ensure <slug> <planId>`; put the returned path verbatim in SCOPE and confine delegate edits/tests to it.
 
-Never dispatch implementation against the main checkout when a plan worktree exists. Parallel plans get parallel trees — never share one.
+Never dispatch implementation against the main checkout when a plan tree exists. Parallel plans get parallel trees — never share one.
 
-After delegates return, run `arcs worktree validate <slug>`; non-zero exit blocks `arcs done` until resolved.
+After delegates return, `arcs worktree validate <slug>` must pass; non-zero exit blocks `arcs done`.
 
 Non-git repos: skip silently — commands fail gracefully.
 

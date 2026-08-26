@@ -103,9 +103,9 @@ describe("orchestrate prompt policy — plan worktree discipline", () => {
   it("ensures a plan worktree before dispatching implementation", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/arcs worktree ensure <slug> <planId>/);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /worktree path verbatim in the dispatch contract SCOPE field/is,
+      /returned path verbatim in SCOPE/is,
     );
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/confine edits and test runs to it/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/confine delegate edits\/tests to it/i);
   });
 
   it("never dispatches implementation against the main checkout when a tree exists", () => {
