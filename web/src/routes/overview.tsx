@@ -9,15 +9,7 @@
 
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import {
-  ApiError,
-  type KnowledgeMeta,
-  type PlanMeta,
-  type ProposalDoc,
-  type ProjectSummary,
-  type SessionMeta,
-  type TaskMeta,
-} from "../api/client";
+import { ApiError, type KnowledgeMeta, type ProjectSummary, type TaskMeta } from "../api/client";
 import {
   useDoc,
   useKnowledge,
@@ -37,8 +29,8 @@ import { MarkdownEditor } from "../components/MarkdownEditor.lazy";
 import { MarkdownViewer } from "../components/MarkdownViewer";
 import { Panel } from "../components/Panel";
 import { SessionStatusBadge } from "../components/SessionStatusBadge";
-import { sessionLabel } from "../hooks/useSessionCandidates";
 import { useToaster } from "../components/Toaster";
+import { sessionLabel } from "../hooks/useSessionCandidates";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { cx, relativeTime, truncate } from "../lib/format";
 
@@ -63,8 +55,8 @@ export function Overview() {
   const location = useLocation();
   const navigate = useNavigate();
   const [docType, setDocType] = useState<DocType>(() => docFromSearch(location.searchStr));
-  const [docsOpen, setDocsOpen] = useState(
-    () => new URLSearchParams(location.searchStr).has("doc"),
+  const [docsOpen, setDocsOpen] = useState(() =>
+    new URLSearchParams(location.searchStr).has("doc"),
   );
   const { data: doc, isLoading } = useDoc(slug, docType);
   const { data: project } = useProject(slug);
@@ -89,8 +81,7 @@ export function Overview() {
 
   /** Deep-link helper — the shell's `go` pattern (root.tsx): string-built paths
    *  under the project base, cast through `as never` for the code-based tree. */
-  const go = (path: string) =>
-    navigate({ to: `/p/$slug${path}`, params: { slug } } as never);
+  const go = (path: string) => navigate({ to: `/p/$slug${path}`, params: { slug } } as never);
 
   // --- contextual state, composed client-side from the cached endpoints ---
 
@@ -305,11 +296,7 @@ export function Overview() {
         </Panel>
       )}
 
-      <Panel
-        title="proposal docs"
-        hint={`${pendingDocs.length} pending`}
-        className="shrink-0"
-      >
+      <Panel title="proposal docs" hint={`${pendingDocs.length} pending`} className="shrink-0">
         {proposalDocsLoading ? (
           <div className="px-3 py-4 text-term-dim">loading…</div>
         ) : topDocs.length === 0 ? (
@@ -349,7 +336,11 @@ export function Overview() {
         )}
       </Panel>
 
-      <Panel title="knowledge" hint={`${knowledgeData?.entries.length ?? 0} entries`} className="shrink-0">
+      <Panel
+        title="knowledge"
+        hint={`${knowledgeData?.entries.length ?? 0} entries`}
+        className="shrink-0"
+      >
         {knowledgeLoading ? (
           <div className="px-3 py-4 text-term-dim">loading…</div>
         ) : topKnowledge.length === 0 ? (
@@ -359,7 +350,11 @@ export function Overview() {
         ) : (
           <div className="divide-y divide-term-border/40">
             {topKnowledge.map((e) => (
-              <KnowledgeRow key={e.normalizedId} entry={e} onOpen={() => go(`/knowledge/${e.normalizedId}`)} />
+              <KnowledgeRow
+                key={e.normalizedId}
+                entry={e}
+                onOpen={() => go(`/knowledge/${e.normalizedId}`)}
+              />
             ))}
           </div>
         )}
