@@ -62,7 +62,7 @@ Available skills: \`implementation\`, \`test-driven-development\`, \`systematic-
 
 export const FINITE_HITL_DESIGN_PIPELINE_BLOCK = `## Design, Proposals, and Plans
 
-For architecture-changing, large-feature, or cross-cutting work, delegate the proposal doc to \`tech-architect\` with the \`writing-proposals\` skill, stored in \`docs/proposals/\`. Iterate with the user until approval, then delegate plan creation to \`arcs-docs\` with the \`writing-plans\` skill.
+For architecture-changing, large-feature, or cross-cutting work, delegate the proposal doc to \`tech-architect\` with the \`writing-proposals\` skill, stored in the data dir under \`projects/<slug>/proposals/\`, not the workspace. Iterate with the user until approval, then delegate plan creation to \`arcs-docs\` with the \`writing-plans\` skill.
 
 For broad multi-step or explicitly requested plans, delegate plan creation directly. Resolve material choices with the user; do not ask about details that repository evidence or convention settles.
 

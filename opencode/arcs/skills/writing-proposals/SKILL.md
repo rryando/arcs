@@ -28,9 +28,12 @@ the handoff to stage two, then delegates explicitly.
 
 ## CLI
 
-All proposal doc operations use the `arcs proposal-doc` command group:
+All proposal doc operations use the `arcs proposal-doc` command group. Documents
+are stored in the ARCS data dir under `projects/<slug>/proposals/` (not the
+workspace); workspace `docs/proposals/` files are ignored by tooling (no
+migration):
 
-- `arcs proposal-doc create <slug> "<title>"` — scaffold `docs/proposals/<id>.proposal.md`
+- `arcs proposal-doc create <slug> "<title>"` — scaffold `proposals/<id>.proposal.md` in the project data dir
 - `arcs proposal-doc list <slug>` — list pending proposals (both `.proposal.md` files)
 - `arcs proposal-doc get <slug> <id>` — view body text of a proposal (pending or accepted)
 - `arcs proposal-doc edit <slug> <id> --body="..."` — replace body text
@@ -43,7 +46,7 @@ All proposal doc operations use the `arcs proposal-doc` command group:
    (`arcs brief`, knowledge search). A proposal grounded only in the request
    text is a guess, not a proposal.
 2. **Draft** with `arcs proposal-doc create <slug> "<title>"`. This scaffolds
-   `docs/proposals/<kebab-id>.proposal.md` with the required sections:
+   `proposals/<kebab-id>.proposal.md` under the project's data dir with the required sections:
    - **Goal** — the outcome in one paragraph.
    - **Motivation / non-goals** — why now, what is explicitly out of scope.
    - **Current state** — how it works today, with file/symbol references.

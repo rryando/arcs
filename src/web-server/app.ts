@@ -11,6 +11,7 @@ import { collectionsRoute } from "./routes/collections.js";
 import { discoveryRoute } from "./routes/discovery.js";
 import { eventsRoute } from "./routes/events.js";
 import { projectsRoute } from "./routes/projects.js";
+import { proposalDocsRoute } from "./routes/proposal-docs.js";
 import { sessionsRoute } from "./routes/sessions.js";
 import { workspaceRoute } from "./routes/workspace.js";
 import { secureLocalRequest } from "./security.js";
@@ -72,6 +73,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   // Read-only file plane (two GETs, no writes) — see routes/workspace.ts.
   app.route("/", workspaceRoute);
   app.route("/", discoveryRoute);
+  app.route("/", proposalDocsRoute);
   app.route("/", eventsRoute);
 
   if (options.watch !== false) {

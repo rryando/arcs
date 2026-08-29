@@ -73,12 +73,16 @@ export async function resolveProject(pathOrSlug: string | undefined): Promise<Re
       const projMeta = JSON.parse(raw);
       const paths: string[] = Array.isArray(projMeta.workspacePaths) ? projMeta.workspacePaths : [];
       if (paths.length === 0) {
+        // Workspace-less project: data-dir-resolvable by slug, but nothing to
+        // match against. Return directly — workspacePath stays "" per the
+        // ResolvedProject contract, and workspace-writing callers guard on it.
         return {
-          ok: false,
-          result: failure(
-            "no_workspace_paths",
-            `Project "${pathOrSlug}" has no workspace paths configured`,
-          ),
+          ok: true,
+          slug: pathOrSlug,
+          name: typeof projMeta.name === "string" ? projMeta.name : pathOrSlug,
+          description: typeof projMeta.description === "string" ? projMeta.description : "",
+          projectDir: getProjectDir(pathOrSlug),
+          workspacePath: "",
         };
       }
       queryPath = expandWorkspacePath(paths[0]);

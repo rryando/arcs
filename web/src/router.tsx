@@ -11,7 +11,7 @@ import { Overview } from "./routes/overview";
 import { PlanDetail } from "./routes/plan-detail";
 import { PlansList } from "./routes/plans";
 import { ProjectShell } from "./routes/project";
-import { ProposalsView } from "./routes/proposals";
+import { ProposalDocDetail, ProposalDocsList } from "./routes/proposal-docs";
 import { RootLayout } from "./routes/root";
 import { SearchPage } from "./routes/search";
 import { TasksView } from "./routes/tasks";
@@ -78,10 +78,16 @@ const graphRoute = createRoute({
   component: GraphView,
 });
 
-const proposalsRoute = createRoute({
+const proposalDocsRoute = createRoute({
   getParentRoute: () => projectRoute,
-  path: "/proposals",
-  component: ProposalsView,
+  path: "/proposal-docs",
+  component: ProposalDocsList,
+});
+
+const proposalDocDetailRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/proposal-docs/$id",
+  component: ProposalDocDetail,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -89,13 +95,14 @@ const routeTree = rootRoute.addChildren([
   searchRoute,
   projectRoute.addChildren([
     overviewRoute,
+    proposalDocsRoute,
+    proposalDocDetailRoute,
     knowledgeRoute,
     knowledgeDetailRoute,
     tasksRoute,
     plansRoute,
     planDetailRoute,
     graphRoute,
-    proposalsRoute,
   ]),
 ]);
 

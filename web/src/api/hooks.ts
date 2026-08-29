@@ -32,6 +32,8 @@ export const qk = {
   workspaceTree: (slug: string, path: string) => ["workspace", slug, "tree", path] as const,
   workspaceFile: (slug: string, path: string) => ["workspace", slug, "file", path] as const,
   proposals: (slug: string) => ["proposals", slug] as const,
+  proposalDocs: (slug: string) => ["proposalDocs", slug] as const,
+  proposalDoc: (slug: string, id: string) => ["proposalDocs", slug, id] as const,
   search: (q: string, slug?: string, kind?: string) =>
     ["search", q, slug ?? "", kind ?? ""] as const,
 };
@@ -143,6 +145,10 @@ export const useWorkspaceFile = (slug: string, path: string | null) =>
   });
 export const useProposals = (slug: string) =>
   useQuery({ queryKey: qk.proposals(slug), queryFn: () => api.proposals(slug) });
+export const useProposalDocs = (slug: string) =>
+  useQuery({ queryKey: qk.proposalDocs(slug), queryFn: () => api.proposalDocs(slug) });
+export const useProposalDoc = (slug: string, id: string) =>
+  useQuery({ queryKey: qk.proposalDoc(slug, id), queryFn: () => api.proposalDoc(slug, id) });
 export const useSearch = (q: string, slug?: string, kind?: string) =>
   useQuery({
     queryKey: qk.search(q, slug, kind),
@@ -328,5 +334,24 @@ export function usePromoteProposal(slug: string) {
         qk.projects,
         qk.project(slug),
       ]),
+  });
+}
+
+export function useSaveProposalDoc(slug: string, id: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: (content: string) => api.saveProposalDoc(slug, id, content),
+    onSuccess: () => invalidate([qk.proposalDocs(slug), qk.proposalDoc(slug, id)]),
+  });
+}
+
+/** Promoting turns the doc into a plan: the queue empties, the plan index
+ *  grows, and every count that feeds the shell tabs moves with them. */
+export function usePromoteProposalDoc(slug: string) {
+  const invalidate = useInvalidator();
+  return useMutation({
+    mutationFn: (id: string) => api.promoteProposalDoc(slug, id),
+    onSuccess: () =>
+      invalidate([qk.proposalDocs(slug), qk.plans(slug), qk.projects, qk.project(slug)]),
   });
 }

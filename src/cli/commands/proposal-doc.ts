@@ -1,11 +1,13 @@
 // ---------------------------------------------------------------------------
 // proposal-doc commands — human-in-the-loop design proposal documents
-// Proposals live as repo-local markdown files under docs/proposals/
+// Proposals live as markdown files in the project data dir under proposals/
+// (cohabiting with the codegraph proposal queue; scans filter *.proposal.md).
 // ---------------------------------------------------------------------------
 
 import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { readPlanIndex } from "../../utils/plan-store.js";
 import { resolveProject } from "../../utils/project-resolver.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import { readStdin } from "../../utils/stdin.js";
@@ -23,24 +25,34 @@ import { failure, success } from "../output-envelope.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-const PROPOSALS_DIR = "docs/proposals";
+const PROPOSALS_DIR = "proposals";
 
-function proposalDocPath(workspaceRoot: string, id: string): string {
-  return resolve(workspaceRoot, PROPOSALS_DIR, `${id}.proposal.md`);
+function proposalDocsDir(projectDir: string): string {
+  return resolve(projectDir, PROPOSALS_DIR);
 }
 
-function proposalDocAcceptedPath(workspaceRoot: string, id: string): string {
-  return resolve(workspaceRoot, PROPOSALS_DIR, `${id}.accepted.md`);
+function proposalDocPath(projectDir: string, id: string): string {
+  return resolve(proposalDocsDir(projectDir), `${id}.proposal.md`);
 }
 
-/** List all `.proposal.md` files and return their base names (without extension). */
-function listProposalIds(workspaceRoot: string): string[] {
-  const dir = resolve(workspaceRoot, PROPOSALS_DIR);
+function proposalDocAcceptedPath(projectDir: string, id: string): string {
+  return resolve(proposalDocsDir(projectDir), `${id}.accepted.md`);
+}
+
+/** List all `.proposal.md` file ids (directory scan; the queue's codegraph.json is ignored). */
+function listProposalIds(projectDir: string): string[] {
+  const dir = proposalDocsDir(projectDir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".proposal.md"))
     .map((f) => basename(f, ".proposal.md"))
     .sort();
+}
+
+/** Infer the proposal title from the first `# ` heading, falling back to the id. */
+function deriveTitle(body: string, fallbackId: string): string {
+  const titleLine = body.split("\n").find((l) => l.startsWith("# "));
+  return titleLine ? titleLine.replace(/^#\s+/, "").trim() : fallbackId;
 }
 
 const PROPOSAL_TEMPLATE = (title: string): string => `# ${title}
@@ -89,7 +101,7 @@ const proposalDocCreateParams = {
 
 defineCommand({
   path: "proposal-doc create",
-  description: "Scaffold a new proposal document in docs/proposals/",
+  description: "Scaffold a new proposal document in the project data dir",
   mutation: true,
   params: proposalDocCreateParams,
   handler: handleProposalDocCreate,
@@ -107,13 +119,7 @@ async function handleProposalDocCreate(
 
   const resolved = await resolveProject(slug);
   if (!resolved.ok) return resolved.result;
-  const workspaceRoot = resolved.workspacePath;
-  if (!workspaceRoot) {
-    return failure(
-      "no_workspace_path",
-      `Project "${slug}" has no workspace path configured — cannot write proposal doc`,
-    );
-  }
+  const projectDir = resolved.projectDir;
 
   const id = normalizeIdentifier(title);
 
@@ -124,17 +130,17 @@ async function handleProposalDocCreate(
         slug,
         title,
         id,
-        path: `docs/proposals/${id}.proposal.md`,
+        path: `proposals/${id}.proposal.md`,
         hasBody: !!(bodyInline || bodyFile || bodyStdin),
       },
     });
   }
 
-  const filePath = proposalDocPath(workspaceRoot, id);
+  const filePath = proposalDocPath(projectDir, id);
   if (existsSync(filePath)) {
     return failure(
       ERROR_CODES.CREATE_ERROR,
-      `Proposal doc already exists: docs/proposals/${id}.proposal.md`,
+      `Proposal doc already exists: proposals/${id}.proposal.md`,
       {
         hint: `Use 'arcs proposal-doc edit ${slug} ${id}' to update it.`,
       },
@@ -157,7 +163,7 @@ async function handleProposalDocCreate(
   }
 
   // Ensure directory exists
-  const dir = resolve(workspaceRoot, PROPOSALS_DIR);
+  const dir = proposalDocsDir(projectDir);
   await mkdir(dir, { recursive: true });
 
   await writeFile(filePath, body, "utf-8");
@@ -165,7 +171,7 @@ async function handleProposalDocCreate(
   return success({
     slug,
     id,
-    path: `docs/proposals/${id}.proposal.md`,
+    path: `proposals/${id}.proposal.md`,
     fullPath: filePath,
   });
 }
@@ -185,7 +191,7 @@ const proposalDocListParams = {
 
 defineCommand({
   path: "proposal-doc list",
-  description: "List pending proposal documents",
+  description: "List pending proposal documents in the project data dir",
   params: proposalDocListParams,
   handler: handleProposalDocList,
 });
@@ -198,14 +204,11 @@ async function handleProposalDocList(
 
   const resolved = await resolveProject(slug);
   if (!resolved.ok) return resolved.result;
-  const workspaceRoot = resolved.workspacePath;
-  if (!workspaceRoot) {
-    return success({ slug, proposals: [] });
-  }
+  const projectDir = resolved.projectDir;
 
-  const ids = listProposalIds(workspaceRoot);
+  const ids = listProposalIds(projectDir);
   const proposals = ids.map((id) => {
-    return { id, path: `docs/proposals/${id}.proposal.md` };
+    return { id, path: `proposals/${id}.proposal.md` };
   });
 
   return success({ slug, proposals });
@@ -232,7 +235,7 @@ const proposalDocGetParams = {
 
 defineCommand({
   path: "proposal-doc get",
-  description: "View the body of a proposal document",
+  description: "View the body of a proposal document in the project data dir",
   params: proposalDocGetParams,
   handler: handleProposalDocGet,
 });
@@ -246,16 +249,13 @@ async function handleProposalDocGet(
 
   const resolved = await resolveProject(slug);
   if (!resolved.ok) return resolved.result;
-  const workspaceRoot = resolved.workspacePath;
-  if (!workspaceRoot) {
-    return failure("no_workspace_path", `Project "${slug}" has no workspace path configured`);
-  }
+  const projectDir = resolved.projectDir;
 
   // Try .proposal.md first, then .accepted.md
-  let filePath = proposalDocPath(workspaceRoot, id);
+  let filePath = proposalDocPath(projectDir, id);
   let status = "pending";
   if (!existsSync(filePath)) {
-    filePath = proposalDocAcceptedPath(workspaceRoot, id);
+    filePath = proposalDocAcceptedPath(projectDir, id);
     status = "accepted";
     if (!existsSync(filePath)) {
       return failure(
@@ -273,7 +273,7 @@ async function handleProposalDocGet(
     slug,
     id,
     status,
-    path: `docs/proposals/${id}.${status}.md`,
+    path: status === "pending" ? `proposals/${id}.proposal.md` : `proposals/${id}.accepted.md`,
     body,
   });
 }
@@ -302,7 +302,7 @@ const proposalDocEditParams = {
 
 defineCommand({
   path: "proposal-doc edit",
-  description: "Replace the body of a proposal document",
+  description: "Replace the body of a proposal document in the project data dir",
   mutation: true,
   params: proposalDocEditParams,
   handler: handleProposalDocEdit,
@@ -326,16 +326,13 @@ async function handleProposalDocEdit(
 
   const resolved = await resolveProject(slug);
   if (!resolved.ok) return resolved.result;
-  const workspaceRoot = resolved.workspacePath;
-  if (!workspaceRoot) {
-    return failure("no_workspace_path", `Project "${slug}" has no workspace path configured`);
-  }
+  const projectDir = resolved.projectDir;
 
   // Try .proposal.md first, then .accepted.md
-  let filePath = proposalDocPath(workspaceRoot, id);
+  let filePath = proposalDocPath(projectDir, id);
   let status = "pending";
   if (!existsSync(filePath)) {
-    filePath = proposalDocAcceptedPath(workspaceRoot, id);
+    filePath = proposalDocAcceptedPath(projectDir, id);
     status = "accepted";
     if (!existsSync(filePath)) {
       return failure(ERROR_CODES.ENTITY_NOT_FOUND, `Proposal doc not found: ${id}`, {
@@ -361,7 +358,10 @@ async function handleProposalDocEdit(
       dryRun: true,
       slug,
       id,
-      wouldUpdate: { path: `docs/proposals/${id}.${status}.md`, bodyLength: body.length },
+      wouldUpdate: {
+        path: status === "pending" ? `proposals/${id}.proposal.md` : `proposals/${id}.accepted.md`,
+        bodyLength: body.length,
+      },
     });
   }
 
@@ -370,7 +370,7 @@ async function handleProposalDocEdit(
     slug,
     id,
     status,
-    path: `docs/proposals/${id}.${status}.md`,
+    path: status === "pending" ? `proposals/${id}.proposal.md` : `proposals/${id}.accepted.md`,
     bodyLength: body.length,
   });
 }
@@ -411,16 +411,32 @@ async function handleProposalDocPromote(
 
   const resolved = await resolveProject(slug);
   if (!resolved.ok) return resolved.result;
-  const workspaceRoot = resolved.workspacePath;
-  if (!workspaceRoot) {
-    return failure("no_workspace_path", `Project "${slug}" has no workspace path configured`);
-  }
+  const projectDir = resolved.projectDir;
 
-  const filePath = proposalDocPath(workspaceRoot, id);
-  if (!existsSync(filePath)) {
+  const filePath = proposalDocPath(projectDir, id);
+  const acceptedPath = proposalDocAcceptedPath(projectDir, id);
+
+  let body: string | null = null;
+  let recovered = false;
+  if (existsSync(filePath)) {
+    body = await readFile(filePath, "utf-8");
+  } else if (existsSync(acceptedPath)) {
+    // Re-promote recovery: the rename may have completed but plan creation
+    // crashed before it. Re-run from the accepted body unless the plan it
+    // would produce (title → normalizeIdentifier, same rule as `plan create`)
+    // already exists.
+    const acceptedBody = await readFile(acceptedPath, "utf-8");
+    const derivedPlanId = normalizeIdentifier(deriveTitle(acceptedBody, id));
+    const { plans } = await readPlanIndex(projectDir);
+    if (!plans.some((p) => p.id === derivedPlanId)) {
+      body = acceptedBody;
+      recovered = true;
+    }
+  }
+  if (body === null) {
     return failure(
       ERROR_CODES.ENTITY_NOT_FOUND,
-      `Proposal doc not found: docs/proposals/${id}.proposal.md`,
+      `Proposal doc not found: proposals/${id}.proposal.md`,
       {
         hint: `Run 'arcs proposal-doc list ${slug}' to see available proposals.`,
       },
@@ -428,9 +444,8 @@ async function handleProposalDocPromote(
   }
 
   // Read the proposal body and infer a title from the first heading
-  const body = await readFile(filePath, "utf-8");
-  const titleLine = body.split("\n").find((l) => l.startsWith("# "));
-  const title = titleLine ? titleLine.replace(/^#\s+/, "").trim() : id;
+  const title = deriveTitle(body, id);
+  const sourcePath = recovered ? acceptedPath : filePath;
 
   if (flags.dryRun) {
     return success({
@@ -439,22 +454,24 @@ async function handleProposalDocPromote(
       wouldPromote: {
         id,
         title,
-        planAction: `arcs plan create ${slug} "${title}" --body-file="${filePath}"`,
+        planAction: `arcs plan create ${slug} "${title}" --body-file="${sourcePath}"`,
         docAction: "rename .proposal.md -> .accepted.md",
       },
     });
   }
 
-  // Rename .proposal.md → .accepted.md so the content survives for plan creation.
-  // The skill orchestrator calls `arcs plan create --body-file=<accepted-path>` next.
-  const acceptedPath = proposalDocAcceptedPath(workspaceRoot, id);
-  await rename(filePath, acceptedPath);
+  if (!recovered) {
+    // Rename .proposal.md → .accepted.md so the content survives for plan creation.
+    // The skill orchestrator calls `arcs plan create --body-file=<accepted-path>` next.
+    await rename(filePath, acceptedPath);
+  }
 
   return success({
     slug,
     id,
     title,
-    docPath: `docs/proposals/${id}.accepted.md`,
+    docPath: `proposals/${id}.accepted.md`,
     planCommand: `arcs plan create ${slug} "${title}" --body-file="${acceptedPath}"`,
+    ...(recovered && { recovered: true }),
   });
 }

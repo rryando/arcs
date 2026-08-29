@@ -1,8 +1,10 @@
 // ---------------------------------------------------------------------------
 // proposal CLI — E2E tests for `proposal list | promote | drop | backfill`
+// (codegraph proposal queue) and `proposal-doc create|list|get|edit|promote`
+// (human-in-the-loop proposal docs in the project data dir)
 // ---------------------------------------------------------------------------
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -23,6 +25,57 @@ function seedProject(): string {
   const dir = getProjectDir(SLUG);
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, "knowledge"), { recursive: true });
+  return dir;
+}
+
+/**
+ * Seed a project resolvable by `resolveProject` (root-meta registration +
+ * project meta.json with workspacePaths) so `proposal-doc` commands can run.
+ * `workspacePaths: [""]` mimics a project with no usable workspace path —
+ * proposal docs must work via the project data dir alone.
+ */
+function seedResolvableProject(dataDir: string): string {
+  const rootMeta = {
+    version: "1.0",
+    projects: [{ id: SLUG, name: "Demo Project", status: "active", dependsOn: [] }],
+  };
+  writeFileSync(resolve(dataDir, "meta.json"), JSON.stringify(rootMeta), "utf-8");
+
+  const dir = getProjectDir(SLUG);
+  mkdirSync(dir, { recursive: true });
+  const projectMeta = {
+    id: SLUG,
+    name: "Demo Project",
+    description: "A demo project",
+    createdAt: "2025-01-01T00:00:00Z",
+    workspacePaths: [process.cwd()],
+  };
+  writeFileSync(resolve(dir, "meta.json"), JSON.stringify(projectMeta), "utf-8");
+  return dir;
+}
+
+/**
+ * Seed a project with no usable workspace path (empty stored path). The
+ * resolver still matches it (registered in root meta), but `workspacePath`
+ * resolves to "" — proposal docs must succeed via the project data dir.
+ */
+function seedWorkspacelessProject(dataDir: string): string {
+  const rootMeta = {
+    version: "1.0",
+    projects: [{ id: SLUG, name: "Demo Project", status: "active", dependsOn: [] }],
+  };
+  writeFileSync(resolve(dataDir, "meta.json"), JSON.stringify(rootMeta), "utf-8");
+
+  const dir = getProjectDir(SLUG);
+  mkdirSync(dir, { recursive: true });
+  const projectMeta = {
+    id: SLUG,
+    name: "Demo Project",
+    description: "A demo project",
+    createdAt: "2025-01-01T00:00:00Z",
+    workspacePaths: [""],
+  };
+  writeFileSync(resolve(dir, "meta.json"), JSON.stringify(projectMeta), "utf-8");
   return dir;
 }
 
@@ -654,6 +707,389 @@ describe("proposal backfill", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.code).toBe("project_not_found");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposal-doc — human-in-the-loop proposal docs in the project data dir
+// ---------------------------------------------------------------------------
+
+function seedProposalDoc(id: string, body: string): string {
+  const dir = join(getProjectDir(SLUG), "proposals");
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, `${id}.proposal.md`);
+  writeFileSync(filePath, body, "utf-8");
+  return filePath;
+}
+
+describe("proposal-doc create", () => {
+  it("scaffolds a proposal doc under the project data dir without workspace paths", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+
+      const result = await runCommand("proposal-doc create", [SLUG, "Storage Move Proposal"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { id: string; path: string; fullPath: string };
+      expect(data.id).toBe("storage-move-proposal");
+      expect(data.path).toBe("proposals/storage-move-proposal.proposal.md");
+      expect(data.fullPath).toBe(
+        resolve(getProjectDir(SLUG), "proposals", "storage-move-proposal.proposal.md"),
+      );
+      expect(data.fullPath.startsWith(dataDir)).toBe(true);
+
+      // Template body written with the requested title
+      const body = await readFile(data.fullPath, "utf-8");
+      expect(body).toContain("# Storage Move Proposal");
+    });
+  });
+
+  it("scaffolds into the data dir when the project has zero registered workspace paths", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+      // The true workspace-less shape: no paths at all (not just an empty one).
+      writeFileSync(
+        resolve(getProjectDir(SLUG), "meta.json"),
+        JSON.stringify({
+          id: SLUG,
+          name: "Demo Project",
+          description: "A demo project",
+          createdAt: "2025-01-01T00:00:00Z",
+          workspacePaths: [],
+        }),
+        "utf-8",
+      );
+
+      const result = await runCommand("proposal-doc create", [SLUG, "No Paths Doc"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { path: string; fullPath: string };
+      expect(data.path).toBe("proposals/no-paths-doc.proposal.md");
+      expect(data.fullPath.startsWith(dataDir)).toBe(true);
+    });
+  });
+
+  it("dry-run reports the data-dir path shape without writing", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+
+      const result = await runCommand("proposal-doc create", [SLUG, "Dry Run Doc", "--dry-run"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as {
+        dryRun: boolean;
+        wouldCreate: { path: string; hasBody: boolean };
+      };
+      expect(data.dryRun).toBe(true);
+      expect(data.wouldCreate.path).toBe("proposals/dry-run-doc.proposal.md");
+      expect(existsSync(join(getProjectDir(SLUG), "proposals"))).toBe(false);
+    });
+  });
+
+  it("fails with create_error when the doc already exists", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      seedProposalDoc("existing-doc", "# Existing\n");
+
+      const result = await runCommand("proposal-doc create", [SLUG, "Existing Doc"]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("create_error");
+      expect(result.message).toContain("proposals/existing-doc.proposal.md");
+    });
+  });
+
+  it("returns project_not_found for unknown slugs", async () => {
+    await withTempDataDir(async () => {
+      const result = await runCommand("proposal-doc create", ["nope", "Title"]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("project_not_found");
+    });
+  });
+});
+
+describe("proposal-doc list", () => {
+  it("lists pending docs as {id, path} with data-dir-relative paths", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      seedProposalDoc("beta-doc", "# Beta\n");
+      seedProposalDoc("alpha-doc", "# Alpha\n");
+
+      const result = await runCommand("proposal-doc list", [SLUG]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { slug: string; proposals: Array<{ id: string; path: string }> };
+      expect(data.proposals).toEqual([
+        { id: "alpha-doc", path: "proposals/alpha-doc.proposal.md" },
+        { id: "beta-doc", path: "proposals/beta-doc.proposal.md" },
+      ]);
+    });
+  });
+
+  it("never lists the codegraph queue file (cohabitation)", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      const proposalsDir = join(getProjectDir(SLUG), "proposals");
+      mkdirSync(proposalsDir, { recursive: true });
+      writeFileSync(
+        join(proposalsDir, "codegraph.json"),
+        JSON.stringify({ proposals: [] }),
+        "utf-8",
+      );
+      seedProposalDoc("real-doc", "# Real\n");
+
+      const result = await runCommand("proposal-doc list", [SLUG]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { proposals: Array<{ id: string }> };
+      expect(data.proposals).toHaveLength(1);
+      expect(data.proposals[0]?.id).toBe("real-doc");
+    });
+  });
+
+  it("returns an empty list when the proposals dir is absent", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+
+      const result = await runCommand("proposal-doc list", [SLUG]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { proposals: unknown[] };
+      expect(data.proposals).toEqual([]);
+    });
+  });
+});
+
+describe("proposal-doc get", () => {
+  it("returns a pending doc body with data-dir path shape", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+      seedProposalDoc("my-doc", "# My Doc\n\nBody text.\n");
+
+      const result = await runCommand("proposal-doc get", [SLUG, "my-doc"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { status: string; path: string; body: string };
+      expect(data.status).toBe("pending");
+      expect(data.path).toBe("proposals/my-doc.proposal.md");
+      expect(data.body).toContain("Body text.");
+    });
+  });
+
+  it("falls back to the accepted doc with status accepted", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      const proposalsDir = join(getProjectDir(SLUG), "proposals");
+      mkdirSync(proposalsDir, { recursive: true });
+      writeFileSync(join(proposalsDir, "done-doc.accepted.md"), "# Done\n", "utf-8");
+
+      const result = await runCommand("proposal-doc get", [SLUG, "done-doc"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { status: string; path: string };
+      expect(data.status).toBe("accepted");
+      expect(data.path).toBe("proposals/done-doc.accepted.md");
+    });
+  });
+
+  it("fails with entity_not_found when neither file exists", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+
+      const result = await runCommand("proposal-doc get", [SLUG, "missing-doc"]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("entity_not_found");
+    });
+  });
+});
+
+describe("proposal-doc edit", () => {
+  it("replaces the body and reports the data-dir path", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+      seedProposalDoc("editable", "# Editable\n");
+
+      const result = await runCommand("proposal-doc edit", [
+        SLUG,
+        "editable",
+        "--body=Replaced content.",
+      ]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { status: string; path: string; bodyLength: number };
+      expect(data.status).toBe("pending");
+      expect(data.path).toBe("proposals/editable.proposal.md");
+      expect(data.bodyLength).toBe("Replaced content.".length);
+
+      const stored = await readFile(
+        join(getProjectDir(SLUG), "proposals", "editable.proposal.md"),
+        "utf-8",
+      );
+      expect(stored).toBe("Replaced content.");
+    });
+  });
+
+  it("dry-run reports the wouldUpdate path shape without writing", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      seedProposalDoc("dry-edit", "# Dry\n");
+
+      const result = await runCommand("proposal-doc edit", [
+        SLUG,
+        "dry-edit",
+        "--body=New body.",
+        "--dry-run",
+      ]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { dryRun: boolean; wouldUpdate: { path: string } };
+      expect(data.dryRun).toBe(true);
+      expect(data.wouldUpdate.path).toBe("proposals/dry-edit.proposal.md");
+    });
+  });
+
+  it("requires --body, --body-file, or --body-stdin", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+
+      const result = await runCommand("proposal-doc edit", [SLUG, "any-doc"]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("missing_param");
+    });
+  });
+});
+
+describe("proposal-doc promote", () => {
+  it("renames to accepted and returns the planCommand with data-dir paths", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+      seedProposalDoc("promote-me", "# Promote Me\n\nPlan body.\n");
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "promote-me"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as {
+        id: string;
+        title: string;
+        docPath: string;
+        planCommand: string;
+        recovered?: boolean;
+      };
+      expect(data.id).toBe("promote-me");
+      expect(data.title).toBe("Promote Me");
+      expect(data.docPath).toBe("proposals/promote-me.accepted.md");
+      expect(data.planCommand).toBe(
+        `arcs plan create ${SLUG} "Promote Me" --body-file="${resolve(
+          getProjectDir(SLUG),
+          "proposals",
+          "promote-me.accepted.md",
+        )}"`,
+      );
+      expect(data.recovered).toBeUndefined();
+
+      // .proposal.md renamed away, .accepted.md present
+      expect(existsSync(join(getProjectDir(SLUG), "proposals", "promote-me.proposal.md"))).toBe(
+        false,
+      );
+      expect(existsSync(join(getProjectDir(SLUG), "proposals", "promote-me.accepted.md"))).toBe(
+        true,
+      );
+    });
+  });
+
+  it("recovers from a completed rename when the derived plan does not exist yet", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      const proposalsDir = join(getProjectDir(SLUG), "proposals");
+      mkdirSync(proposalsDir, { recursive: true });
+      // Crash window state: rename done, plan never created
+      writeFileSync(
+        join(proposalsDir, "crashed-doc.accepted.md"),
+        "# Crashed Doc\n\nBody.\n",
+        "utf-8",
+      );
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "crashed-doc"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { title: string; recovered: boolean; planCommand: string };
+      expect(data.recovered).toBe(true);
+      expect(data.title).toBe("Crashed Doc");
+      expect(data.planCommand).toContain("--body-file=");
+    });
+  });
+
+  it("does not recover when the derived plan already exists", async () => {
+    await withTempDataDir(async (dataDir) => {
+      const dir = seedResolvableProject(dataDir);
+      const proposalsDir = join(getProjectDir(SLUG), "proposals");
+      mkdirSync(proposalsDir, { recursive: true });
+      writeFileSync(
+        join(proposalsDir, "planned-doc.accepted.md"),
+        "# Planned Doc\n\nBody.\n",
+        "utf-8",
+      );
+      // Plan with the id derived from the accepted doc's first H1 — both the
+      // index and the per-plan meta file must exist so readPlanIndex does not
+      // treat the index as stale and rebuild it as empty.
+      const plansDir = join(dir, "plans");
+      mkdirSync(plansDir, { recursive: true });
+      const planMeta = {
+        id: "planned-doc",
+        normalizedId: "planned-doc",
+        title: "Planned Doc",
+        status: "planned",
+        keywords: [],
+        summary: "",
+        file: "plans/planned-doc.md",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      writeFileSync(join(plansDir, "index.json"), JSON.stringify({ plans: [planMeta] }), "utf-8");
+      writeFileSync(join(plansDir, "planned-doc.meta.json"), JSON.stringify(planMeta), "utf-8");
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "planned-doc"]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("entity_not_found");
+    });
+  });
+
+  it("dry-run reports the wouldPromote shape without renaming", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+      seedProposalDoc("dry-promo", "# Dry Promo\n");
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "dry-promo", "--dry-run"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as {
+        dryRun: boolean;
+        wouldPromote: { title: string; planAction: string };
+      };
+      expect(data.dryRun).toBe(true);
+      expect(data.wouldPromote.title).toBe("Dry Promo");
+      expect(data.wouldPromote.planAction).toContain("arcs plan create");
+      // No rename happened
+      expect(existsSync(join(getProjectDir(SLUG), "proposals", "dry-promo.proposal.md"))).toBe(
+        true,
+      );
+    });
+  });
+
+  it("fails when the doc does not exist", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedResolvableProject(dataDir);
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "ghost-doc"]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("entity_not_found");
+      expect(result.message).toContain("proposals/ghost-doc.proposal.md");
     });
   });
 });

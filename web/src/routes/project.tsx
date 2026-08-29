@@ -14,12 +14,12 @@ import { cx, truncate } from "../lib/format";
 
 const TABS = [
   { path: "", label: "overview", key: "g o" },
-  { path: "/knowledge", label: "knowledge", key: "g k", count: "knowledge" as const },
-  { path: "/tasks", label: "tasks", key: "g t", count: "tasks" as const },
+  { path: "/proposal-docs", label: "proposal docs", key: "g d", count: "proposalDocs" as const },
   { path: "/plans", label: "plans", key: "g p", count: "plans" as const },
+  { path: "/tasks", label: "tasks", key: "g t", count: "tasks" as const },
+  { path: "/knowledge", label: "knowledge", key: "g k", count: "knowledge" as const },
   { path: "/sessions", label: "sessions", key: "g e" },
   { path: "/graph", label: "graph", key: "g g" },
-  { path: "/proposals", label: "proposals", key: "g r", count: "proposals" as const },
 ];
 
 export function ProjectShell() {

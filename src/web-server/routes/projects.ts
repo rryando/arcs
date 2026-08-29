@@ -24,6 +24,7 @@ import {
   writeTextAtomic,
   writeTextLocked,
 } from "../storage.js";
+import { countPendingProposalDocs } from "./proposal-docs.js";
 
 export const projectsRoute = new Hono();
 
@@ -36,11 +37,12 @@ interface ProjectCounts {
   tasks: number;
   plans: number;
   proposals: number;
+  proposalDocs: number;
 }
 
 async function projectCounts(slug: string): Promise<ProjectCounts> {
   const projectDir = getProjectDir(slug);
-  const [knowledge, tasks, plans, proposalFile] = await Promise.all([
+  const [knowledge, tasks, plans, proposalFile, proposalDocs] = await Promise.all([
     readKnowledgeIndex(projectDir)
       .then((i) => i.entries.length)
       .catch(() => 0),
@@ -51,9 +53,16 @@ async function projectCounts(slug: string): Promise<ProjectCounts> {
       .then((i) => i.plans.length)
       .catch(() => 0),
     readProposals(slug).catch(() => null),
+    countPendingProposalDocs(projectDir).catch(() => 0),
   ]);
 
-  return { knowledge, tasks, plans, proposals: proposalFile?.proposals.length ?? 0 };
+  return {
+    knowledge,
+    tasks,
+    plans,
+    proposals: proposalFile?.proposals.length ?? 0,
+    proposalDocs,
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -94,6 +94,8 @@ export interface ProjectCounts {
   tasks: number;
   plans: number;
   proposals: number;
+  /** Pending proposal docs in the data dir's proposals/ scan. */
+  proposalDocs: number;
 }
 
 export interface ProjectSummary {
@@ -474,6 +476,28 @@ export interface Proposal {
   suggestedDedupCandidates: Array<{ id: string; overlap: string[] }>;
 }
 
+/** A proposal document in the data dir's proposals/ plane. Listings carry
+ *  pending docs only — accepted ones surface via their plan — so status is
+ *  "pending" in every list row; the detail endpoint's pending → accepted
+ *  fallback is where "accepted" appears (read-only). */
+export interface ProposalDoc {
+  id: string;
+  title: string;
+  status: "pending" | "accepted";
+  /** Data-dir-relative path, e.g. proposals/<id>.proposal.md. */
+  path: string;
+  updatedAt: string | null;
+}
+
+export interface ProposalDocDetail {
+  id: string;
+  status: "pending" | "accepted";
+  path: string;
+  title: string;
+  body: string;
+  updatedAt: string;
+}
+
 export interface ChangeEvent {
   type: "changed";
   slug: string | null;
@@ -648,4 +672,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  proposalDocs: (slug: string) =>
+    request<{
+      proposalDocs: ProposalDoc[];
+      counts: { pending: number; accepted: number };
+    }>(`/api/p/${slug}/proposal-docs`),
+  proposalDoc: (slug: string, id: string) =>
+    request<ProposalDocDetail>(`/api/p/${slug}/proposal-docs/${id}`),
+  saveProposalDoc: (slug: string, id: string, content: string) =>
+    request<{ id: string; status: "pending"; path: string; updated: boolean }>(
+      `/api/p/${slug}/proposal-docs/${id}`,
+      { method: "PUT", body: JSON.stringify({ content }) },
+    ),
+  promoteProposalDoc: (slug: string, id: string) =>
+    request<{ promoted: boolean; plan: PlanMeta; docPath: string; recovered?: boolean }>(
+      `/api/p/${slug}/proposal-docs/${id}/promote`,
+      { method: "POST" },
+    ),
 };

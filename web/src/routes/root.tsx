@@ -57,11 +57,16 @@ export function RootLayout() {
         navigate({ to: `/p/$slug${path}`, params: { slug } } as never);
       list.push(
         { keys: "g o", description: "go to overview", group: "goto", run: go("") },
-        { keys: "g k", description: "go to knowledge", group: "goto", run: go("/knowledge") },
-        { keys: "g t", description: "go to tasks", group: "goto", run: go("/tasks") },
+        {
+          keys: "g d",
+          description: "go to proposal docs",
+          group: "goto",
+          run: go("/proposal-docs"),
+        },
         { keys: "g p", description: "go to plans", group: "goto", run: go("/plans") },
+        { keys: "g t", description: "go to tasks", group: "goto", run: go("/tasks") },
+        { keys: "g k", description: "go to knowledge", group: "goto", run: go("/knowledge") },
         { keys: "g g", description: "go to graph", group: "goto", run: go("/graph") },
-        { keys: "g r", description: "go to proposals", group: "goto", run: go("/proposals") },
       );
     }
     return list;
