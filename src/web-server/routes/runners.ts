@@ -6,12 +6,13 @@
  * another task soon, and this read-only surface must not ride along with it.
  * It enumerates the run-driver registry (run-driver.ts) rather than a
  * maintained list, so a driver registered later shows up automatically, and
- * probes each driver's binary with `which` at request time so the UI can show
+ * probes each driver's binary on PATH at request time so the UI can show
  * what is actually installed on this machine. Never throws: a missing binary
  * answers `available: false`.
  */
 
-import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
 import { Hono } from "hono";
 import { ok } from "../respond.js";
 import { getRunDriver, getRunDriverRuntimeTypes } from "../run-driver.js";
@@ -28,16 +29,27 @@ const RUNNER_LABELS: Record<string, string> = {
 };
 
 /**
- * Whether the binary is resolvable on PATH. `which` exits 0 when found,
- * nonzero (1 for "not found", 127 for a missing `which` itself) otherwise;
- * any spawn failure also answers false. Never throws.
+ * Whether a binary is resolvable on PATH.
+ *
+ * A PATH scan in pure Node (no `which` subprocess): each PATH entry is checked
+ * for an executable file of that name, `statSync`-guarded so a missing or
+ * unreadable entry skips silently. `stat.mode & 0o111` mirrors `which`'s
+ * executability rule on POSIX; on win32 any existing file counts (spawn would
+ * resolve it), which keeps the probe total across platforms. Never throws.
  */
 function binaryAvailable(binary: string): boolean {
-  try {
-    return spawnSync("which", [binary], { stdio: "ignore" }).status === 0;
-  } catch {
-    return false;
+  for (const entry of (process.env.PATH ?? "").split(delimiter)) {
+    if (entry.trim() === "") continue;
+    try {
+      const stat = statSync(resolve(entry, binary));
+      if (stat.isFile()) {
+        return process.platform === "win32" || (stat.mode & 0o111) !== 0;
+      }
+    } catch {
+      // Not a file here — keep scanning PATH.
+    }
   }
+  return false;
 }
 
 export const runnersRoute = new Hono();

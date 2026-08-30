@@ -2,15 +2,18 @@
  * Unit + route tests for the one-shot run driver seam (src/web-server/run-driver.ts)
  * and the runners surface (src/web-server/routes/runners.ts).
  *
- * Pure module tests — no real pi/claude/codex spawn, no filesystem. Argv shapes
+ * Pure module tests — no real pi/claude/codex spawn. Argv shapes
  * (fresh vs continued), NDJSON normalization into fold turns, session id
  * harvesting, and tolerance for unparsable lines are pinned per driver against
  * fixtures drawn from verified runs (pi 0.84.4, codex-cli 0.150.1, claude
- * 2.1.247). The runners route test exercises the composed app with `which`
- * probes only — never a real runtime.
+ * 2.1.247). The runners route test drives PATH probed without any real
+ * runtime (the probe is a pure PATH scan in routes/runners.ts).
  */
 
-import { describe, expect, it } from "vitest";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { SESSION_RUNTIME_TYPES } from "../src/utils/storage-utils.js";
 import { createApp } from "../src/web-server/app.js";
 import {
@@ -648,16 +651,35 @@ describe("run driver registry", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/runners", () => {
-  it("lists every registered driver with labels, binaries, and PATH availability", async () => {
-    // Registration order is insertion order; compare as a set for stability.
+  /** PATH override with executable shims, restored after each test. */
+  let shimDir: string | undefined;
+
+  afterEach(() => {
+    if (shimDir !== undefined) {
+      process.env.PATH = (process.env.PATH ?? "").replace(`${shimDir}:`, "");
+      shimDir = undefined;
+    }
+  });
+
+  /** Puts one executable shim per runtime binary ahead of PATH. */
+  const shimRuntimes = () => {
+    shimDir = mkdtempSync(join(tmpdir(), "arcs-runners-"));
+    for (const binary of ["pi", "opencode", "claude", "codex"]) {
+      const path = join(shimDir, binary);
+      writeFileSync(path, "#!/bin/sh\nexit 0\n");
+      chmodSync(path, 0o755);
+    }
+    process.env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
+  };
+
+  const fetchRunners = async () => {
     const response = await createApp({ watch: false }).request("/api/runners", {
       headers: { host: "127.0.0.1" },
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { ok: boolean; data: { runners: unknown[] } };
     expect(body.ok).toBe(true);
-
-    const runners = (
+    return (
       body.data.runners as Array<{
         id: string;
         label: string;
@@ -665,15 +687,35 @@ describe("GET /api/runners", () => {
         available: boolean;
       }>
     ).sort((a, b) => a.id.localeCompare(b.id));
+  };
+
+  it("lists every registered driver with labels, binaries, and PATH availability", async () => {
+    // Registration order is insertion order; compare as a set for stability.
+    const runners = await fetchRunners();
 
     expect(runners.map((r) => r.id)).toEqual(["claude-code", "codex", "opencode", "pi"]);
     expect(runners.map((r) => r.label)).toEqual(["claude code", "codex", "opencode", "pi"]);
     expect(runners.map((r) => r.binary)).toEqual(["claude", "codex", "opencode", "pi"]);
     // Every entry answers a real boolean — the UI can toggle on it.
     for (const runner of runners) expect(typeof runner.available).toBe("boolean");
+  });
 
-    // pi is on PATH in the test environment (verified by `which pi`); the probe
-    // is a spawn of `which`, never of pi itself.
-    expect(runners.find((r) => r.id === "pi")?.available).toBe(true);
+  it("reports the host PATH honestly — shims on PATH are available, missing runtimes are not", async () => {
+    // Empty PATH (plus a guaranteed-empty lead) must report nothing available:
+    // CI runners install none of pi/opencode/claude/codex, and this assertion
+    // must hold on every machine, not just dev boxes.
+    const savedPath = process.env.PATH;
+    process.env.PATH = "/nonexistent-arcs-probe-dir";
+    try {
+      const none = await fetchRunners();
+      for (const runner of none) expect(runner.available).toBe(false);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+
+    // Lead PATH with one shim per runtime: all become available.
+    shimRuntimes();
+    const all = await fetchRunners();
+    for (const runner of all) expect(runner.available).toBe(true);
   });
 });
