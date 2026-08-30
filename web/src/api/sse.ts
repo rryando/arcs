@@ -129,6 +129,13 @@ export interface RunStreamState {
   /** The log is NOT the whole stream — a hole, not an ending. Only ever known
    *  at settle, and absent (never `false`) when unknowable. */
   truncated?: boolean;
+  /** The runtime-native session id the end frame harvested — the continuation
+   *  handle the client persists as the next send's `continueSessionId`. */
+  runtimeSessionId?: string;
+  /** Typed failure code the end frame carried. `CONTINUATION_LOST` means the
+   *  stored `continueSessionId` is dead — the client clears it and re-seeds on
+   *  the next send (its full local transcript travels as `history`). */
+  errorCode?: string;
 }
 
 export const EMPTY_RUN_STREAM: RunStreamState = {
@@ -151,6 +158,10 @@ export interface RunEndFrame {
   offset: number;
   outcome?: string;
   truncated?: boolean;
+  /** Continuation handle harvested from the run log, when the settle found one. */
+  runtimeSessionId?: string;
+  /** Typed failure code, when the settled record carries one (CONTINUATION_LOST). */
+  errorCode?: string;
 }
 
 /** Everything the run has said so far: completed messages plus the deltas of
@@ -174,6 +185,10 @@ const TOOL_TARGET_KEYS = [
   "url",
   "query",
 ];
+
+/** The keys an opencode `tool_use` part may name its tool under, top-level or
+ *  nested in `part.state` — mirrors `opencodeToolName` in run-driver.ts. */
+const OPENCODE_TOOL_NAME_KEYS = ["tool", "name"];
 
 function asObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -205,6 +220,44 @@ function toolTarget(input: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/** A tool name an opencode `tool_use` may carry: `part.tool` or `part.name`,
+ *  or the same keys nested in `part.state`. First non-empty string wins; an
+ *  empty answer means no usable name and no tick. Mirrors the opencode driver's
+ *  normalizer. */
+function opencodeToolName(part: unknown): string | undefined {
+  const state = asObject(part)?.state;
+  for (const node of [asObject(part), asObject(state)]) {
+    if (node === null) continue;
+    for (const key of OPENCODE_TOOL_NAME_KEYS) {
+      const value = node[key];
+      if (typeof value === "string" && value !== "") return value;
+    }
+  }
+  return undefined;
+}
+
+/** Agent text carried by a codex item: flat `text`, or claude-like
+ *  `message.content` text blocks. Empty when the item carries neither.
+ *  Mirrors `codexItemText` in run-driver.ts. */
+function codexItemText(item: unknown): string {
+  const direct = asObject(item)?.text;
+  if (typeof direct === "string" && direct !== "") return direct;
+  const content = asObject(asObject(item)?.message)?.content;
+  if (!Array.isArray(content)) return "";
+  let text = "";
+  for (const block of content) {
+    const value = asObject(block)?.text;
+    if (typeof value === "string") text += value;
+  }
+  return text;
+}
+
+/** One tool tick for a line-shaped tool event — the line offset is unique
+ *  within a run, so `<line>:#tool` never collides with content-block ids. */
+function lineToolTick(offset: number, name: string): RunToolTick {
+  return { id: `${offset}:tool`, name };
 }
 
 /** Text and tool calls of ONE completed `assistant` message, in block order —
@@ -257,6 +310,20 @@ function foldAssistantMessage(
  * Unparsable and unknown lines fold to nothing, deliberately: the log holds
  * every byte the child wrote, wire drift included, and a view of it must not
  * fail on a line it has never seen before.
+ *
+ * The runtime-native shapes fold alongside the unified claude contract, each
+ * mirroring the server's run-driver normalizer:
+ *  - `assistant` (claude-code) — completed messages, which REPEAT the deltas
+ *    that streamed them, hence the supersede rule.
+ *  - `message_update` / `tool_execution_start` (pi) — `text_delta` deltas are
+ *    the reply; thinking/input_json deltas carry none; each named tool start
+ *    ticks.
+ *  - `text` / `tool_use` (opencode) — chunked reply text coalesces in
+ *    `partial`; a named tool call ticks.
+ *  - `item.*` / `agent_message` / `tool_execution` (codex) — agent text folds
+ *    from agent-message items (the completed echo repeats the start's payload
+ *    only for command runs, so text is folded from BOTH, the tick from the
+ *    START alone).
  */
 export function foldRunLine(state: RunStreamState, frame: RunLineFrame): RunStreamState {
   const next: RunStreamState = {
@@ -279,11 +346,75 @@ export function foldRunLine(state: RunStreamState, frame: RunLineFrame): RunStre
       tools: tools.length === 0 ? next.tools : [...next.tools, ...tools],
     };
   }
+  if (event.type === "message_update") {
+    // pi: only a text_delta carries reply text — a thinking or input_json
+    // delta carries none by contract, so those fold to nothing.
+    const assistantEvent = asObject(event.assistantMessageEvent);
+    const delta = assistantEvent?.type === "text_delta" ? assistantEvent.delta : undefined;
+    return typeof delta === "string" && delta !== ""
+      ? { ...next, partial: next.partial + delta }
+      : next;
+  }
+  if (event.type === "tool_execution_start") {
+    // pi: a named tool begins — one tick per start event.
+    const name = event.toolName;
+    return typeof name === "string" && name !== ""
+      ? { ...next, tools: [...next.tools, lineToolTick(frame.offset, name)] }
+      : next;
+  }
+  if (event.type === "text") {
+    // opencode: chunked reply text — consecutive chunks coalesce in partial.
+    const part = asObject(event.part);
+    const text = typeof part?.text === "string" ? part.text : "";
+    return text === "" ? next : { ...next, partial: next.partial + text };
+  }
+  if (event.type === "tool_use") {
+    // opencode: a named tool call.
+    const name = opencodeToolName(event.part);
+    return name === undefined
+      ? next
+      : { ...next, tools: [...next.tools, lineToolTick(frame.offset, name)] };
+  }
+  if (event.type === "item.started" || event.type === "item.completed") {
+    // codex: agent text folds from agent-message items (both echoes carry the
+    // text); a command_execution START opens the tick, the completed echo
+    // would duplicate it.
+    const item = asObject(event.item);
+    const itemType = item?.type;
+    if (itemType === "agent_message") {
+      const text = codexItemText(item);
+      return text === "" ? next : { ...next, partial: next.partial + text };
+    }
+    if (itemType === "command_execution" && event.type === "item.started") {
+      return {
+        ...next,
+        tools: [...next.tools, lineToolTick(frame.offset, "command_execution")],
+      };
+    }
+    return next;
+  }
+  if (event.type === "agent_message") {
+    // codex, documented alternative shape: text at payload, string or
+    // claude-like.
+    const payload = event.payload;
+    const text = typeof payload === "string" ? payload : codexItemText(payload);
+    return text === "" ? next : { ...next, partial: next.partial + text };
+  }
+  if (event.type === "tool_execution") {
+    // codex, documented alternative shape: payload carries the tool name.
+    const payload = asObject(event.payload);
+    const name = payload?.toolName ?? payload?.name;
+    return typeof name === "string" && name !== ""
+      ? { ...next, tools: [...next.tools, lineToolTick(frame.offset, name)] }
+      : next;
+  }
   return next;
 }
 
 /** Folds the `end` frame: the run settled and the log is drained. Its offset is
- *  the log's total line count — the `from` that would now return nothing. */
+ *  the log's total line count — the `from` that would now return nothing. The
+ *  end frame's continuation handle and typed failure code ride into the state
+ *  so the caller can persist/clear the conversation's `continueSessionId`. */
 export function foldRunEnd(state: RunStreamState, frame: RunEndFrame): RunStreamState {
   return {
     ...state,
@@ -291,6 +422,8 @@ export function foldRunEnd(state: RunStreamState, frame: RunEndFrame): RunStream
     nextOffset: Math.max(state.nextOffset, frame.offset),
     ...(frame.outcome !== undefined && { outcome: frame.outcome }),
     ...(frame.truncated !== undefined && { truncated: frame.truncated }),
+    ...(frame.runtimeSessionId !== undefined && { runtimeSessionId: frame.runtimeSessionId }),
+    ...(frame.errorCode !== undefined && { errorCode: frame.errorCode }),
   };
 }
 
@@ -316,11 +449,19 @@ function parseEndFrame(data: string): RunEndFrame | null {
     offset: frame.offset,
     ...(typeof frame.outcome === "string" && { outcome: frame.outcome }),
     ...(typeof frame.truncated === "boolean" && { truncated: frame.truncated }),
+    ...(typeof frame.runtimeSessionId === "string" && {
+      runtimeSessionId: frame.runtimeSessionId,
+    }),
+    ...(typeof frame.errorCode === "string" && { errorCode: frame.errorCode }),
   };
 }
 
 /**
  * Tails one headless run's event log for as long as `runId` names one.
+ *
+ * The run is the only unit of persistence on the stateless ask surface — there
+ * is no session record to key on, so this takes `(slug, runId)` and builds the
+ * run-keyed stream URL `/api/p/{slug}/runs/{runId}/stream?from=…`.
  *
  * A SEPARATE `EventSource` from `useServerEvents`, with no retry logic of its
  * own — and that absence is the design, not a gap. On a dropped socket the
@@ -341,16 +482,12 @@ function parseEndFrame(data: string): RunEndFrame | null {
  * `close()` on `end` is the client's half of the contract: an `EventSource`
  * reconnects on ANY stream end, the settled one included.
  */
-export function useRunStream(
-  slug: string,
-  sessionId: string | null,
-  runId: string | null,
-): RunStreamState {
+export function useRunStream(slug: string, runId: string | null): RunStreamState {
   const [state, setState] = useState<RunStreamState>(EMPTY_RUN_STREAM);
   const cursorRef = useRef<{ runId: string | null; from: number }>({ runId: null, from: 0 });
 
   useEffect(() => {
-    if (sessionId === null || runId === null) {
+    if (runId === null) {
       setState(EMPTY_RUN_STREAM);
       return;
     }
@@ -365,8 +502,7 @@ export function useRunStream(
     );
 
     const source = new EventSource(
-      `/api/p/${slug}/sessions/${encodeURIComponent(sessionId)}` +
-        `/runs/${encodeURIComponent(runId)}/stream?from=${from}`,
+      `/api/p/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/stream?from=${from}`,
     );
     // `ended` is terminal for this run — a late frame or a socket teardown must
     // never walk a settled run back to "connecting".
@@ -401,7 +537,7 @@ export function useRunStream(
       }));
 
     return () => source.close();
-  }, [slug, sessionId, runId]);
+  }, [slug, runId]);
 
   return state;
 }

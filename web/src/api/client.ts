@@ -148,90 +148,19 @@ export interface TaskMeta {
   updatedAt: string;
 }
 
-export type SessionStatus = "active" | "idle" | "completed" | "failed" | "disconnected";
-/** The runtimes a thread can carry. "opencode" is the server's creation
- *  default and what its run-driver drives one-shot; "claude-code" remains for
- *  threads created with it explicitly. */
-export type SessionRuntimeType = "opencode" | "claude-code";
-export type SessionLinkedNodeType = "task" | "plan";
+/** The runtimes the Ask-AI surface can drive one-shot. Mirrors the server's
+ *  SESSION_RUNTIME_TYPES: a POST body carrying an unknown string degrades to
+ *  "pi" server-side, and a runtime with a registered type but no one-shot
+ *  driver is refused with 400 UNKNOWN_RUNNER. */
+export type RunnerId = "pi" | "opencode" | "claude-code" | "codex";
 
-/** What a session is doing right now, derived server-side per response from the
- *  record's run claim / last checkpoint and reconciled against the live process
- *  and `claude agents`. Never stored: a persisted phase goes stale the moment a
- *  process dies without telling anyone, which is the "stuck on running forever"
- *  failure this replaces. This — not `status` — is what the status badge shows. */
-export type SessionPhase = "running" | "idle" | "failed" | "ended";
-
-/** Write-back of a headless `claude -p` run, persisted on `metadata.run` when
- *  the child exits — on every outcome path, so a failed run is readable. */
-export interface SessionRunMeta {
-  /** The run's permission intent (`ask`/`change`) since the turns route; older
-   *  records carry a targeting mode string here. */
-  mode: string;
-  /** Absent only on a record written before the write-back existed.
-   *  `interrupted` is never produced BY a run: it is written FOR one whose
-   *  process disappeared without ever settling (a server restart's orphan,
-   *  settled by the startup sweep). */
-  outcome?: "success" | "error" | "timeout" | "interrupted";
-  /** Failure detail — present on error/timeout/interrupted outcomes. */
-  error?: string;
-  /** A failure the server RECOGNIZED and already repaired the record for, so
-   *  the panel can say what happened instead of rendering raw CLI text:
-   *  - `THREAD_SEED_CONFLICT` — claude already held this thread's uuid; the
-   *    seed flag was corrected and the next turn resumes.
-   *  - `THREAD_UNKNOWN_TO_CLAUDE` — claude did not have the id ARCS resumed;
-   *    the uuid was re-minted and the next turn seeds a fresh thread. */
-  errorCode?: "THREAD_SEED_CONFLICT" | "THREAD_UNKNOWN_TO_CLAUDE";
-  /** Epoch milliseconds (the runner writes `Date.now()`), never an ISO string. */
-  startedAt?: number;
-  endedAt?: number;
-  replyChars?: number;
-}
-
-/** Session metadata, persisted verbatim by the server. Only the keys the UI
- *  reads are named; the index signature keeps everything else addressable. */
-export interface SessionMetadata {
-  /** Runtime-reported session title, when the runtime reports one. */
-  title?: string;
-  /** Workspace directory the session runs in. */
-  directory?: string;
-  run?: SessionRunMeta;
-  [key: string]: unknown;
-}
-
-export interface SessionMeta {
-  id: string;
-  normalizedId: string;
-  runtimeType: SessionRuntimeType;
-  runtimeSessionId: string;
-  /** Provenance, persisted server-side. Every session in the store is an
-   *  ARCS-origin thread, so this is always `"arcs"`. */
-  origin: "arcs";
-  status: SessionStatus;
-  /** Derived liveness, attached by the server to session READS (list + detail)
-   *  and nowhere else — a record reaching the UI from any other response (or
-   *  from a cache written before the reconciler ran) carries none, so readers
-   *  fall back to `status` (see `sessionState`). */
-  phase?: SessionPhase;
-  startedAt: string;
-  lastMessageAt?: string;
-  updatedAt: string;
-  userEmail?: string;
-  /** Always set together with `linkedNodeId` — a half-set link never persists. */
-  linkedNodeType?: SessionLinkedNodeType;
-  /** Normalized task/plan id — never a diagram node id (T001…). */
-  linkedNodeId?: string;
-  metadata?: SessionMetadata;
-}
-
-export interface SessionUpdateInput {
-  status?: SessionStatus;
-  lastMessageAt?: string | null;
-  userEmail?: string | null;
-  metadata?: Record<string, unknown> | null;
-  /** `null` on either linkage field unlinks the session entirely. */
-  linkedNodeType?: SessionLinkedNodeType | null;
-  linkedNodeId?: string | null;
+/** One entry of GET /api/runners — the drivable one-shot runtime surface,
+ *  probed for on-PATH availability at request time. */
+export interface RunnerInfo {
+  id: RunnerId;
+  label: string;
+  binary: string;
+  available: boolean;
 }
 
 /** The MarkdownSection payload a caller sent to a session, preserved verbatim
@@ -259,38 +188,6 @@ export interface SessionTurnSource {
   /** Optional doc identifier (e.g. knowledge entry id, plan id). */
   doc?: string;
   id?: string;
-}
-
-/** One normalized transcript turn (mirrored Claude Code lines plus
- *  ARCS-authored reference turns). Mirrors the server's TranscriptTurn. */
-export interface SessionTurn {
-  /** Absolute 0-based transcript line index for mirrored turns; reference
-   *  turns carry a negative id in a disjoint space. */
-  id: number;
-  type: "user" | "assistant" | "reference";
-  text: string;
-  ts?: string;
-  tool?: { name: string };
-  /** Reference turns only. */
-  section?: SessionTurnSection;
-  /** Reference turns only. */
-  source?: SessionTurnSource;
-  /** Reference turns only, POINTER kinds: the file-slice or DAG-node payload,
-   *  preserved whole. Doc references carry `section`/`source` instead. */
-  ref?: SessionFileReference | SessionNodeReference;
-  /** Run this turn was folded down from, set only on turns the settle wrote
-   *  (server-side `foldRunEventLog`, where it doubles as the fold's idempotence
-   *  marker). It is what tells the panel that a run it is STREAMING has landed
-   *  in the sidecar, so the live block can step aside in the same commit the
-   *  folded turns arrive in — see `composeTurnList`. */
-  run?: string;
-}
-
-/** Read-model for a session's transcript sidecar. */
-export interface SessionTranscript {
-  turns: SessionTurn[];
-  /** mtime of the sidecar file; `null` when nothing has been mirrored yet. */
-  mirroredAt: string | null;
 }
 
 /** The `doc` variant — a markdown document section. Its tag is optional because
@@ -373,39 +270,29 @@ export interface WorkspaceFile {
   headRev: string | null;
 }
 
-/** The permission policy a headless turn runs under — `ask` inspects the
- *  workspace, `change` may edit it. NOT a delivery mode: native delivery
- *  (`POST /:id/message`) has no intent, because ARCS authors no argv for it.
- *  Mirrors the server's `RUN_INTENTS`. */
-export type RunIntent = "ask" | "change";
-
-/** Payload for POST /sessions/:id/turns — one turn of a headless conversation.
- *  The addressed record must be an ARCS thread (anything else is refused with
- *  TURN_THREAD_NOT_OWNED); `threadRef` may name an alternative thread record to
- *  continue instead of the addressed one. `guards` is accepted by the server
- *  and not yet acted on. Mirrors the server's `turnSchema`. */
-export interface SessionTurnInput {
-  intent: RunIntent;
+/** Payload for POST /api/p/:slug/ask — one turn of a stateless headless
+ *  conversation. There is no thread record anywhere: the client owns the
+ *  transcript (localStorage) and sends a bounded `history` tail plus the
+ *  runtime-native `continueSessionId` a previous run's end frame harvested.
+ *  Mirrors the server's `askSchema` — `runner` defaults to "pi" server-side.
+ *
+ *  Optional keys are included in the body ONLY when present. */
+export interface AskTurnInput {
+  runner?: RunnerId;
   message: string;
   refs?: SessionReference[];
-  threadRef?: string;
-  guards?: Record<string, unknown>;
+  /** Bounded, oldest-first transcript tail (user/assistant only). */
+  history?: { role: "user" | "assistant"; text: string }[];
+  /** Runtime-native session id the previous run's end frame carried. */
+  continueSessionId?: string;
 }
 
-/** Acceptance of a headless turn, returned as HTTP 202 — the run itself
- *  proceeds out-of-band. Mirrors the server's `/turns` response.
- *
- *  `writeTargetId` is the record the run writes to — the addressed ARCS thread
- *  itself, save for a `threadRef` override. Both the transcript to show and
- *  the stream to tail are keyed on it. */
-export interface TurnResult {
-  /** The accepted run's id — the `:runId` of
-   *  `GET /sessions/:id/runs/:runId/stream`, and the only thing that names the
-   *  log to tail. */
+/** Acceptance of one ask turn, returned as HTTP 202 — the run proceeds
+ *  out-of-band. The stream to tail is `GET /api/p/{slug}/runs/{runId}/stream`. */
+export interface AskTurnResult {
   runId: string;
-  /** Server-built stream URL for this run, already keyed on `writeTargetId`. */
+  /** Server-built stream URL, already keyed on the run id. */
   streamUrl: string;
-  writeTargetId: string;
 }
 
 export interface PlanMeta {
@@ -574,57 +461,22 @@ export const api = {
   deleteTask: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/tasks/${id}`, { method: "DELETE" }),
 
-  sessions: (slug: string, opts: { status?: string; runtimeType?: string } = {}) => {
-    const params = new URLSearchParams();
-    if (opts.status) params.set("status", opts.status);
-    if (opts.runtimeType) params.set("runtimeType", opts.runtimeType);
-    const query = params.toString();
-    return request<{ sessions: SessionMeta[] }>(
-      `/api/p/${slug}/sessions${query ? `?${query}` : ""}`,
-    );
-  },
-  session: (slug: string, id: string) => request<SessionMeta>(`/api/p/${slug}/sessions/${id}`),
-  /** Read-model of the session's transcript sidecar (mirrored Claude Code
-   *  lines plus ARCS-authored reference turns). */
-  sessionTranscript: (slug: string, id: string) =>
-    request<SessionTranscript>(`/api/p/${slug}/sessions/${id}/transcript`),
-  /** Creates an ARCS-origin thread record — nothing is spawned. `runtimeType`
-   *  defaults to "opencode" server-side; the thread's `runtimeSessionId` stays
-   *  blank until its first settled turn mints one. */
-  createSession: (slug: string, input: Record<string, unknown>) =>
-    request<SessionMeta>(`/api/p/${slug}/sessions`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  updateSession: (slug: string, id: string, input: SessionUpdateInput) =>
-    request<SessionMeta>(`/api/p/${slug}/sessions/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-    }),
-  deleteSession: (slug: string, id: string) =>
-    request<{ deleted: boolean }>(`/api/p/${slug}/sessions/${id}`, { method: "DELETE" }),
-  /** Runs one one-shot turn against the session, driven by the record's own
-   *  runtime (opencode by default). Optional keys are included in the body ONLY
-   *  when present — absent, the body stays `{ intent, message }`. Accepted as
-   *  202; the run settles out-of-band and writes back on the WRITE TARGET's
-   *  `metadata.run`. */
-  sendSessionTurn: (slug: string, id: string, input: SessionTurnInput) =>
-    request<TurnResult>(`/api/p/${slug}/sessions/${id}/turns`, {
+  runners: () => request<{ runners: RunnerInfo[] }>("/api/runners"),
+  /** One turn of a stateless headless conversation, accepted as 202 — the run
+   *  settles out-of-band and the reply rides the event log the `streamUrl`
+   *  names. `runner` defaults to "pi" server-side; unknown strings degrade to
+   *  "pi" there too, so this client always sends the picked id explicitly. */
+  askTurn: (slug: string, input: AskTurnInput) =>
+    request<AskTurnResult>(`/api/p/${slug}/ask`, {
       method: "POST",
       body: JSON.stringify({
-        intent: input.intent,
+        ...(input.runner !== undefined && { runner: input.runner }),
         message: input.message,
         ...(input.refs?.length && { refs: input.refs }),
-        ...(input.threadRef && { threadRef: input.threadRef }),
-        ...(input.guards && { guards: input.guards }),
+        ...(input.history?.length && { history: input.history }),
+        ...(input.continueSessionId && { continueSessionId: input.continueSessionId }),
       }),
     }),
-
-  /** One Ask-AI turn — the same turn contract, addressed to the project's
-   *  implicit thread via the server's virtual `ask` id, which resolves-or-mints
-   *  it. The 202's `writeTargetId` names the real record (and its stream). */
-  sendAskTurn: (slug: string, input: SessionTurnInput) => api.sendSessionTurn(slug, "ask", input),
-
   /** Read-only workspace file plane. Both calls are GETs by contract — there is
    *  no write counterpart, and adding one here would need a route that
    *  deliberately does not exist. */

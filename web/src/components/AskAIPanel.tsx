@@ -1,37 +1,51 @@
 /**
  * Ask AI — the project's single document chat, split-panel.
  *
- * One pane over the transcript GET + headless turn POST, with NO thread
- * boundaries: every send dispatches a one-shot turn via `POST /sessions/ask/
- * turns`, and the server's virtual `ask` id resolves-or-mints the one implicit
- * ARCS-owned thread per project. There is nothing to pick or create — the
- * panel is always ready; the first message brings the thread into existence.
- * INTENT is the only control — what the turn is allowed to do (`ask` inspects,
- * `change` edits). Turns are asynchronous by contract — the panel says the
- * reply appears when the run finishes, never "sent".
+ * The stateless ask surface has NO thread record: every send is one turn of a
+ * headless run (`POST /api/p/:slug/ask`, 202), the reply arrives on that run's
+ * event-log stream, and continuation is the runtime-native session id a settled
+ * run harvests. The client owns the conversation — ONE per runner, kept in
+ * localStorage (ask-store) with the `/api/runners` picker choosing which
+ * thread to talk to. A dispatched job is WATCHED rather than merely awaited:
+ * the 202 names the run, and the panel tails its log over its own SSE channel
+ * (`useRunStream`), rendering assistant text as it arrives plus a compact tool
+ * ticker. On the `end` frame the reply lands in the local transcript and the
+ * continuation id (or a CONTINUATION_LOST re-seed) is written back to the
+ * store.
  *
- * A dispatched job is WATCHED rather than merely awaited: the 202 names the
- * run (and its real write target), and the panel tails that run's event log
- * over its own SSE channel (`useRunStream`), rendering assistant text as it
- * arrives plus a compact tool ticker. The live block and the run's folded
- * sidecar turns are the same content reaching the panel by two routes, so the
- * turn list is composed once (`composeTurnList`) and holds exactly one of them.
+ * The INTENT control is a remnant of the sessions era — the ask body schema is
+ * explicit (`{runner, message, refs, history, continueSessionId}`) and carries
+ * no intent. It stays rendered until the visual rework (next wave) replaces it
+ * with the runner picker; it is deliberately NOT sent.
  */
 
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import type { RunIntent, SessionReference, SessionTurn } from "../api/client";
-import { useSendAskTurn, useSessionTranscript } from "../api/hooks";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { RunnerId, SessionReference } from "../api/client";
+import { useRunners, useSendAskTurn } from "../api/hooks";
 import { type RunStreamState, runStreamText, useRunStream } from "../api/sse";
-import { cx, relativeTime, truncate } from "../lib/format";
+import {
+  type AskStoredTurn,
+  appendTurn,
+  newTurnId,
+  setContinueSessionId,
+  useLocalTranscript,
+  useSelectedRunner,
+} from "../lib/ask-store";
+import { cx, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
 import { useToaster } from "./Toaster";
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer";
-
-/** The server's virtual id for the implicit per-project Ask-AI thread. */
-const ASK_THREAD_ALIAS = "ask";
 
 /** Past this the message is flagged as risky to deliver, but still sendable. */
 export const WARN_LENGTH = 4000;
@@ -99,33 +113,28 @@ export function useAskAIPanel(): AskAIPanelContextValue {
 // Panel
 // ---------------------------------------------------------------------------
 
-/** The option values the intent <select> may emit — exactly `RunIntent`, which
- *  mirrors the server's `RUN_INTENTS` enum. An unknown value falls back to the
- *  read-only `ask` rather than being cast through to the API: the server's zod
- *  enum would 400 it, and failing closed is the right direction for a control
- *  whose only job is to widen what a run may touch. */
-const RUN_INTENT_VALUES: readonly RunIntent[] = ["ask", "change"];
+/** The option values the legacy intent <select> may emit. TODO(panel wave):
+ *  this select is being replaced by the runner picker — the ask body schema
+ *  carries no intent, so these values are UI-only and never sent. */
+const RUN_INTENT_VALUES = ["ask", "change"] as const;
+type RunIntent = (typeof RUN_INTENT_VALUES)[number];
 
 const isRunIntent = (value: string): value is RunIntent =>
   (RUN_INTENT_VALUES as readonly string[]).includes(value);
 
-/** A mirror older than this is called out — checkpoints are frequent, so a long
- *  gap usually means the thread moved on (or the run died) without one. */
-const MIRROR_STALE_MS = 10 * 60_000;
-
-/** The run the panel is currently tailing. `sessionId` is the run's WRITE
- *  TARGET — the record the log is keyed on and the reply lands in: the implicit
- *  Ask-AI thread's real id, resolved server-side from the `ask` alias. */
+/** The run the panel is currently tailing. `runner` is the runner that sent
+ *  it, captured at dispatch so the reply lands in the RIGHT local conversation
+ *  even if the picker moves mid-run. */
 interface WatchedRun {
-  sessionId: string;
   runId: string;
+  runner: RunnerId;
 }
 
 /**
  * Seconds since `startedAt`, re-rendered once a second — the visible answer to
- * "is it stuck or is opencode just booting". One-shot runs have a long silent
- * head (~10s CLI boot + model connect before the first NDJSON line), so the
- * clock is the only honest signal during it. `null` = no run being watched.
+ * "is it stuck or is the runtime just booting". One-shot runs have a long
+ * silent head (~10s CLI boot + model connect before the first NDJSON line), so
+ * the clock is the only honest signal during it. `null` = no run being watched.
  */
 function useElapsed(startedAt: number | null): number {
   const [now, setNow] = useState(() => Date.now());
@@ -144,7 +153,7 @@ function useElapsed(startedAt: number | null): number {
  *  label here. */
 const RUN_STREAM_LABEL: Record<RunStreamState["status"], string> = {
   idle: "",
-  connecting: "starting opencode…",
+  connecting: "starting…",
   open: "",
   ended: "done",
   failed: "stream unavailable — the reply still lands in the transcript",
@@ -152,33 +161,32 @@ const RUN_STREAM_LABEL: Record<RunStreamState["status"], string> = {
 
 export function AskAIPanel() {
   const { slug } = useParams({ strict: false }) as { slug: string };
-  const { open, pendingRef, openWithRef, clearRef, close } = useAskAIPanel();
+  const { pendingRef, openWithRef, clearRef, close } = useAskAIPanel();
   const { push } = useToaster();
-  const sendTurn = useSendAskTurn(slug);
+  // The drivable runtime surface — the picker's data (the select it feeds is
+  // the panel wave's job; the localStorage selection defaults to "pi" until
+  // then).
+  const runnersQuery = useRunners();
+  const runner = useSelectedRunner(runnersQuery.data?.runners.map((r) => r.id));
+  const runnerLabel = runnersQuery.data?.runners.find((r) => r.id === runner)?.label ?? runner;
+  const sendTurn = useSendAskTurn(slug, runner);
   const [message, setMessage] = useState("");
-  // Intent describes what a turn may do, and defaults to the read-only policy
-  // so widening is always a deliberate act.
+  // Intent describes what a turn may do, and is UI-ONLY since the ask body
+  // schema carries no intent (see the TODO on RUN_INTENT_VALUES). The state
+  // stays so the legacy <select> keeps rendering until the panel wave.
   const [intent, setIntent] = useState<RunIntent>("ask");
   /** When the watched run was dispatched — the elapsed clock's zero. */
   const [watchedRun, setWatchedRun] = useState<(WatchedRun & { startedAt: number }) | null>(null);
 
-  const transcript = useSessionTranscript(slug, ASK_THREAD_ALIAS, {
-    // Mounted only while the panel is open — a closed panel must not poll.
-    enabled: open,
-  });
+  // The conversation shown is the WATCHED run's runner while one is in flight
+  // (its user turn lives there); otherwise the currently selected one.
+  const transcriptRunner = watchedRun?.runner ?? runner;
+  const turns = useLocalTranscript(slug, transcriptRunner);
 
-  // Tails the accepted run on its real write target (resolved server-side from
-  // the alias), so the live block keys the log that is actually being written.
-  const runStream = useRunStream(slug, watchedRun?.sessionId ?? null, watchedRun?.runId ?? null);
-  const turnItems = useMemo(
-    () => composeTurnList(transcript.data?.turns ?? [], runStream),
-    [transcript.data?.turns, runStream],
-  );
-
-  const mirroredAt = transcript.data?.mirroredAt ?? null;
-  const mirrorAge = mirroredAt === null ? null : Date.now() - new Date(mirroredAt).getTime();
-  const mirrorStale =
-    mirrorAge !== null && Number.isFinite(mirrorAge) && mirrorAge > MIRROR_STALE_MS;
+  // Tails the accepted run on its run-keyed stream — there is no session to
+  // key on; the run id is the whole address.
+  const runStream = useRunStream(slug, watchedRun?.runId ?? null);
+  const turnItems = useMemo(() => composeTurnList(turns, runStream), [turns, runStream]);
 
   const text = message.trim();
   const tooLong = text.length > MAX_LENGTH;
@@ -187,28 +195,76 @@ export function AskAIPanel() {
 
   const sendLabel = runPending ? "job running…" : "run";
 
+  // Settle handling: the reply lands in the local transcript, and the end
+  // frame's continuation handle (or its CONTINUATION_LOST re-seed signal) is
+  // written back to the store. Guarded by a ref so StrictMode's double effect
+  // and subsequent re-renders never persist the same run twice.
+  const endPersistedRef = useRef<{ runId: string | null; text: string | null }>({
+    runId: null,
+    text: null,
+  });
+  const {
+    status: runStatus,
+    runId: runStreamRunId,
+    text: runText,
+    partial: runPartial,
+    runtimeSessionId,
+    errorCode,
+  } = runStream;
+  useEffect(() => {
+    if (runStatus !== "ended" || runStreamRunId === null || watchedRun === null) return;
+    const finalText = runText + runPartial;
+    if (
+      endPersistedRef.current.runId === runStreamRunId &&
+      endPersistedRef.current.text === finalText
+    ) {
+      return;
+    }
+    endPersistedRef.current = { runId: runStreamRunId, text: finalText };
+    if (finalText !== "") {
+      appendTurn(slug, watchedRun.runner, {
+        id: newTurnId(),
+        role: "assistant",
+        text: finalText,
+        ts: new Date().toISOString(),
+        run: runStreamRunId,
+      });
+    }
+    if (runtimeSessionId !== undefined) {
+      setContinueSessionId(slug, watchedRun.runner, runtimeSessionId);
+    }
+    if (errorCode === "CONTINUATION_LOST") {
+      // The stored id is dead — clear it so the next send re-seeds (its full
+      // local transcript still travels as `history`).
+      setContinueSessionId(slug, watchedRun.runner, null);
+    }
+  }, [
+    runStatus,
+    runStreamRunId,
+    runText,
+    runPartial,
+    runtimeSessionId,
+    errorCode,
+    watchedRun,
+    slug,
+  ]);
+
   const submit = () => {
     if (disabled) return;
 
     // Accepted as HTTP 202; the turn runs out-of-band and the reply lands in
-    // the WRITE TARGET's transcript when it finishes.
+    // the local conversation when the stream ends.
     sendTurn.mutate(
       {
-        intent,
         message: text,
-        // References ride the turn: the server renders them into the prompt
-        // AND records them on the write target's sidecar.
+        // References ride the turn: the server renders them into the prompt.
         ...(pendingRef && { refs: [pendingRef] }),
       },
       {
         onSuccess: (result) => {
-          // Watch the run the 202 named — same key the server built `streamUrl`
-          // from, so the live block tails the log that is actually being written.
-          setWatchedRun({
-            sessionId: result.writeTargetId,
-            runId: result.runId,
-            startedAt: Date.now(),
-          });
+          // Watch the run the 202 named — the stream the server built
+          // `streamUrl` from, and the same id the reply persists under.
+          setWatchedRun({ runId: result.runId, runner, startedAt: Date.now() });
           push("success", "turn accepted — the reply appears in the transcript when it finishes");
           setMessage("");
           if (pendingRef) clearRef(); // the reference was consumed by this turn
@@ -227,7 +283,7 @@ export function AskAIPanel() {
       <header className="flex items-center gap-2 border-b border-term-border px-2 py-1">
         <span className="text-term-green">▸</span>
         <h2 className="text-[12px] font-bold tracking-wide text-term-fg uppercase">ask ai</h2>
-        <Badge color="purple">opencode</Badge>
+        <Badge color="purple">{runnerLabel}</Badge>
         <span className="flex-1" />
         <button
           type="button"
@@ -269,8 +325,10 @@ export function AskAIPanel() {
           </div>
         )}
 
-        {/* ONE control: intent — what the turn is allowed to touch. The
-              channel is not a choice; every send is a one-shot opencode run. */}
+        {/* TODO(panel wave): this intent control is the sessions-era remnant the
+              visual rework replaces with the RUNNER picker. It renders for now
+              but its value is NOT in the send payload — the ask body schema is
+              explicit ({runner, message, refs, history, continueSessionId}). */}
         <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
           <label htmlFor="run-intent" className="text-[10px] tracking-wide text-term-dim uppercase">
             intent
@@ -332,32 +390,22 @@ export function AskAIPanel() {
         </div>
       </div>
 
-      {/* transcript — checkpoint-mirrored, never live */}
-      <section className="flex min-h-0 flex-1 flex-col" aria-label="checkpoint-mirrored transcript">
+      {/* transcript — the local per-runner conversation, never a server mirror */}
+      <section className="flex min-h-0 flex-1 flex-col" aria-label="local transcript">
         <header className="flex items-center gap-2 border-b border-term-border px-2 py-1">
           <h3 className="text-[10px] font-bold tracking-wide text-term-dim uppercase">
             transcript
           </h3>
           <span className="flex-1" />
-          {/* Mirror freshness, not a static claim: the transcript is only as
-              current as the last checkpoint, and a stale one is the usual
-              reason a reply seems missing. */}
-          <span
-            title="the transcript is a checkpoint mirror — refreshed at each checkpoint, never live"
-            className={cx("text-[10px]", mirrorStale ? "text-term-amber" : "text-term-dim")}
-          >
-            {mirroredAt === null ? "never mirrored" : `last mirror ${relativeTime(mirroredAt)}`}
-          </span>
+          <span className="text-[10px] text-term-dim">{runnerLabel}</span>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {transcript.isLoading && turnItems.length === 0 ? (
-            <div className="text-[11px] text-term-dim">loading…</div>
-          ) : turnItems.length === 0 ? (
+          {turnItems.length === 0 ? (
             <div className="text-[11px] text-term-dim">
               no turns yet — ask something and the reply appears here
             </div>
           ) : (
-            // ONE list, from ONE composition — the live block and the folded
+            // ONE list, from ONE composition — the live block and the persisted
             // turns of a run are never both in it (see `composeTurnList`).
             turnItems.map((item) =>
               item.kind === "stream" ? (
@@ -426,35 +474,38 @@ function PendingReferencePreview({ reference }: { reference: SessionReference })
 // Turn rendering
 // ---------------------------------------------------------------------------
 
-/** One entry of the panel's turn list: a folded sidecar turn, or THE live
+/** One entry of the panel's turn list: a stored local turn, or THE live
  *  streamed block. */
 export type TurnListItem =
-  | { kind: "turn"; turn: SessionTurn }
+  | { kind: "turn"; turn: AskStoredTurn }
   | { kind: "stream"; stream: RunStreamState };
 
 /**
  * The turn list the panel renders, composed once from the two sources that can
  * describe the same run.
  *
- * INVARIANT — the streamed block and the folded turns of the same run are never
+ * INVARIANT — the streamed block and the stored turns of the same run are never
  * both in the returned list. A run reaches the panel twice: live, line by line
- * off its event log, and again as sidecar turns the settle folds down. Showing
- * both is the duplicated-text flash; showing neither is text that vanishes
- * while the transcript refetches.
+ * off its event log, and again as the assistant turn the end frame's settle
+ * persists into the local conversation. Showing both is the duplicated-text
+ * flash; showing neither is text that vanishes.
  *
- * It holds by CONSTRUCTION rather than by timing. The server tags every turn it
- * folds with the run id (`SessionTurn.run`), so "this run is in the sidecar" is
- * a fact read off the same transcript array being rendered — not a timer, not
- * an `ended` flag on the stream, and not a second piece of state that could
- * disagree with the list. The block is therefore dropped in the very commit its
- * folded turns appear in, and kept in every commit before it: the two are
- * mutually exclusive branches of one expression over one input.
+ * It holds by CONSTRUCTION rather than by timing. The persisted assistant turn
+ * carries the run id (`AskStoredTurn.run`), so "this run is in the
+ * conversation" is a fact read off the same turn array being rendered — not a
+ * timer, not an `ended` flag on the stream, and not a second piece of state
+ * that could disagree with the list. The block is therefore dropped in the
+ * very commit its stored turn appears in, and kept in every commit before it:
+ * the two are mutually exclusive branches of one expression over one input.
  *
  * Deliberately NOT keyed on the stream's status: a run that settles with no
- * assistant output folds no turns at all, and the ended block is then the only
- * evidence the run happened. An `end`-driven swap would blank it.
+ * assistant output persists no turn at all, and the ended block is then the
+ * only evidence the run happened. An `end`-driven swap would blank it.
  */
-export function composeTurnList(turns: SessionTurn[], live: RunStreamState | null): TurnListItem[] {
+export function composeTurnList(
+  turns: AskStoredTurn[],
+  live: RunStreamState | null,
+): TurnListItem[] {
   const items: TurnListItem[] = turns.map((turn) => ({ kind: "turn", turn }));
   // `runId === null` is the idle stream — nothing is being tailed.
   if (live === null || live.runId === null) return items;
@@ -468,16 +519,16 @@ export function composeTurnList(turns: SessionTurn[], live: RunStreamState | nul
  * it is calling — name and target, never a transcript of their arguments.
  *
  * The header carries a phase + a live elapsed clock, because a one-shot run's
- * first ~10s are structurally silent (opencode CLI boot + model connect emit
- * nothing) and an unexplained blank reads as a hang. Phases, from the stream
- * alone:
- *   connecting            → "starting opencode…"   (SSE not open yet)
+ * first ~10s are structurally silent (CLI boot + model connect emit nothing)
+ * and an unexplained blank reads as a hang. Phases, from the stream alone:
+ *   connecting            → "starting…"        (SSE not open yet)
  *   open, no text/tools   → "waiting for the model's first token…"
- *   open, tools ticking   → "working"              (tools ARE the progress)
+ *   open, tools ticking   → "working"           (tools ARE the progress)
  *   ended                 → outcome + total time
  *
- * Transient by design. This block is what the folded sidecar turns replace, so
- * it is styled as a live edge (a rule down the side) rather than as a turn.
+ * Transient by design. This block is what the persisted assistant turn
+ * replaces, so it is styled as a live edge (a rule down the side) rather than
+ * as a turn.
  */
 function StreamedRunBlock({ stream, startedAt }: { stream: RunStreamState; startedAt: number }) {
   const text = runStreamText(stream);
@@ -503,7 +554,7 @@ function StreamedRunBlock({ stream, startedAt }: { stream: RunStreamState; start
       </div>
       {quietHead && (
         <div className="mt-0.5 text-[11px] text-term-dim">
-          opencode is booting and connecting to the model — the first token usually lands after
+          the runtime is booting and connecting to the model — the first token usually lands after
           ~10s; tool activity appears here the moment it starts
         </div>
       )}
@@ -531,78 +582,104 @@ function StreamedRunBlock({ stream, startedAt }: { stream: RunStreamState; start
   );
 }
 
-function TurnRow({ turn, slug }: { turn: SessionTurn; slug: string }) {
-  if (turn.type === "reference") return <ReferenceCard turn={turn} slug={slug} />;
-  const speaker = turn.type === "user" ? "you" : "agent";
+function TurnRow({ turn, slug }: { turn: AskStoredTurn; slug: string }) {
+  if (turn.ref) return <ReferenceCard turn={turn} slug={slug} />;
+  const speaker = turn.role === "user" ? "you" : turn.role === "assistant" ? "agent" : turn.role;
   return (
     <div className="mb-2">
       <div className="flex items-baseline gap-2">
         <span
           className={cx(
             "text-[10px] font-bold tracking-wide uppercase",
-            turn.type === "user" ? "text-term-green" : "text-term-cyan",
+            turn.role === "user" ? "text-term-green" : "text-term-cyan",
           )}
         >
           {speaker}
         </span>
-        {turn.ts && <span className="text-[10px] text-term-dim">{turn.ts}</span>}
+        <span className="text-[10px] text-term-dim">{turn.ts}</span>
       </div>
-      {turn.tool ? (
-        <div className="text-[11px] text-term-dim">[tool: {turn.tool.name}]</div>
+      {turn.role === "tool" ? (
+        <div className="text-[11px] text-term-dim">[tool: {turn.text}]</div>
       ) : (
-        <div className="break-words text-[12px] whitespace-pre-wrap text-term-fg">{turn.text}</div>
+        <div
+          className={cx(
+            "break-words text-[12px] whitespace-pre-wrap",
+            turn.role === "error" ? "text-term-amber" : "text-term-fg",
+          )}
+        >
+          {turn.text}
+        </div>
       )}
     </div>
   );
 }
 
-function ReferenceCard({ turn, slug }: { turn: SessionTurn; slug: string }) {
+/** A turn that carried a reference — rendered as a compact click-through card
+ *  for doc refs (they carry section + source), a plain preview for the pointer
+ *  variants. */
+function ReferenceCard({ turn, slug }: { turn: AskStoredTurn; slug: string }) {
+  const reference = turn.ref;
   const navigate = useNavigate();
+  if (!reference) return null;
 
   // Click-through to the quoted section's source document: resolve the
   // reference to a full navigable route, then navigate via `href` so the
   // router parses the ?doc= search and #section hash (MarkdownViewer's
   // hash-scroll effect lands on the exact heading once the target mounts).
+  // Only the doc variant carries section/source; the pointer variants render
+  // as previews with no navigation.
   const openSource = () => {
-    if (!turn.section || !turn.source) return;
-    const { kind, doc, id } = turn.source;
-    // The server's source shape is loose (optional doc/id per kind), but the
-    // resolver's discriminated union pins exactly one identifier per kind —
-    // narrow before calling so an impossible state cannot compile.
+    if (reference.type !== "doc" && reference.type !== undefined) return;
+    const { kind, doc, id } = reference.source;
     if (kind === "overview") {
       if (!doc) return;
-      const target = resolveReference({ slug, kind, doc, sectionId: turn.section.id });
+      const target = resolveReference({ slug, kind, doc, sectionId: reference.section.id });
       navigate({ href: `${target.path}${target.hash}` });
       return;
     }
     if (!id) return;
-    const target = resolveReference({ slug, kind, id, sectionId: turn.section.id });
+    const target = resolveReference({ slug, kind, id, sectionId: reference.section.id });
     navigate({ href: `${target.path}${target.hash}` });
   };
+
+  const isDoc = reference.type === "doc" || reference.type === undefined;
+  // Explicit narrowing: the doc variant's tag is optional, so only the pointer
+  // variants are matched by tag; everything else is the doc fall-through.
+  let headline: string;
+  if (reference.type === "file") {
+    headline = reference.path;
+  } else if (reference.type === "node") {
+    headline = reference.id;
+  } else {
+    headline = reference.source.label;
+  }
 
   return (
     <button
       type="button"
       onClick={openSource}
-      title="open the source document at this section"
-      className="mb-2 block w-full cursor-pointer border border-term-cyan/40 bg-term-inset text-left hover:border-term-cyan/80"
+      title={isDoc ? "open the source document at this section" : "reference attached to this turn"}
+      disabled={!isDoc}
+      className="mb-2 block w-full cursor-pointer border border-term-cyan/40 bg-term-inset text-left hover:border-term-cyan/80 disabled:cursor-default disabled:hover:border-term-cyan/40"
     >
       <div className="flex items-center gap-2 border-b border-term-border/60 px-2 py-0.5">
         <Badge color="cyan">reference</Badge>
-        <span className="truncate text-[10px] text-term-dim">
-          {turn.source?.label ?? "unknown source"}
-        </span>
+        <span className="truncate text-[10px] text-term-dim">{headline}</span>
         <span className="flex-1" />
-        <span className="text-[10px] text-term-dim">{turn.source?.kind ?? ""}</span>
+        <span className="text-[10px] text-term-dim">
+          {isDoc ? reference.source.kind : reference.type}
+        </span>
       </div>
-      <div className="px-2 py-1 text-[12px] text-term-fg">{turn.text}</div>
-      {turn.section && (
+      <div className="px-2 py-1 text-[12px] text-term-fg">
+        <PendingReferencePreview reference={reference} />
+      </div>
+      {isDoc && (
         <div className="border-t border-term-border/60 px-2 py-1">
           <div className="text-[10px] font-bold tracking-wide text-term-cyan uppercase">
-            § {turn.section.id}
+            § {reference.section.id}
           </div>
           <div className="mt-0.5 line-clamp-3 text-[11px] leading-snug whitespace-pre-wrap text-term-dim">
-            {turn.section.text}
+            {reference.section.text}
           </div>
         </div>
       )}
