@@ -1,7 +1,7 @@
 /**
  * Project overview — contextual state at a glance: a brief, the current task,
- * recent proposal docs / knowledge, active plans, items awaiting a decision,
- and recent sessions, all composed client-side from existing cached endpoints.
+ * recent proposal docs / knowledge, active plans, and items awaiting a decision,
+ * all composed client-side from existing cached endpoints.
  * The editable project documents (overview/tasks/dependencies/knowledge.md)
  * survive in a collapsed "documents" panel beneath, alongside the untouched
  * project-metadata and dependsOn panels.
@@ -18,7 +18,6 @@ import {
   useProjects,
   useProposalDocs,
   useSaveDoc,
-  useSessions,
   useTasks,
   useUpdateDependencies,
   useUpdateProject,
@@ -28,9 +27,7 @@ import { Dialog, Field, FormActions, inputClass, TextInput } from "../components
 import { MarkdownEditor } from "../components/MarkdownEditor.lazy";
 import { MarkdownViewer } from "../components/MarkdownViewer";
 import { Panel } from "../components/Panel";
-import { SessionStatusBadge } from "../components/SessionStatusBadge";
 import { useToaster } from "../components/Toaster";
-import { sessionLabel } from "../hooks/useSessionCandidates";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { cx, relativeTime, truncate } from "../lib/format";
 
@@ -65,7 +62,6 @@ export function Overview() {
   const { data: plansData } = usePlans(slug);
   const { data: knowledgeData, isLoading: knowledgeLoading } = useKnowledge(slug);
   const { data: proposalDocsData, isLoading: proposalDocsLoading } = useProposalDocs(slug);
-  const { data: sessionsData } = useSessions(slug);
   const saveDoc = useSaveDoc(slug, docType);
   const updateProject = useUpdateProject(slug);
   const updateDeps = useUpdateDependencies(slug);
@@ -148,16 +144,6 @@ export function Overview() {
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .slice(0, 5),
     [knowledgeData],
-  );
-
-  const recentSessions = useMemo(
-    () =>
-      [...(sessionsData?.sessions ?? [])]
-        .sort((a, b) =>
-          (b.lastMessageAt ?? b.updatedAt).localeCompare(a.lastMessageAt ?? a.updatedAt),
-        )
-        .slice(0, 5),
-    [sessionsData],
   );
 
   const codegraphCount = project?.counts.proposals ?? 0;
@@ -418,29 +404,6 @@ export function Overview() {
                 <span className="text-[11px] text-term-dim">knowledge →</span>
               </button>
             )}
-          </div>
-        </Panel>
-      )}
-
-      {recentSessions.length > 0 && (
-        <Panel title="recent sessions" hint={`last ${recentSessions.length}`} className="shrink-0">
-          <div className="divide-y divide-term-border/40">
-            {recentSessions.map((s) => (
-              <button
-                key={s.normalizedId}
-                type="button"
-                onClick={() => go("/sessions")}
-                className="flex w-full items-center gap-2 px-3 py-1 text-left text-[12px] hover:bg-term-fg/5"
-              >
-                <SessionStatusBadge session={s} />
-                <span className="min-w-0 flex-1 truncate font-bold text-term-fg">
-                  {sessionLabel(s)}
-                </span>
-                <span className="text-[11px] text-term-dim">
-                  {relativeTime(s.lastMessageAt ?? s.updatedAt)}
-                </span>
-              </button>
-            ))}
           </div>
         </Panel>
       )}

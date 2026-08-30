@@ -15,8 +15,8 @@ import { failure, success } from "../output-envelope.js";
 /** Loopback only: `arcs web` refuses to bind anything else. */
 const DEFAULT_WEB_HOST = "127.0.0.1";
 
-/** Default `arcs web` port. */
-const DEFAULT_WEB_PORT = 4173;
+/** Default `arcs web` port — uncommon, see src/web-server/index.ts. */
+const DEFAULT_WEB_PORT = 8745;
 
 const webParams = {
   port: {

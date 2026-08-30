@@ -20,7 +20,6 @@ import {
   TextInput,
 } from "../components/Dialog";
 import { Panel } from "../components/Panel";
-import { LinkedSessions } from "../components/SessionLinkModal";
 import { useToaster } from "../components/Toaster";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { formatFileRefs, parseFileRefs } from "../lib/file-refs";
@@ -250,7 +249,6 @@ export function TasksView() {
       {createOpen && (
         <TaskFormDialog
           title="new task"
-          slug={slug}
           existingTasks={data?.tasks ?? []}
           planOptions={(plansData?.plans ?? []).map((p) => ({
             value: p.normalizedId,
@@ -273,7 +271,6 @@ export function TasksView() {
       {editTarget && (
         <TaskFormDialog
           title={`edit — ${truncate(editTarget.title, 40)}`}
-          slug={slug}
           existingTasks={(data?.tasks ?? []).filter(
             (t) => t.normalizedId !== editTarget.normalizedId,
           )}
@@ -353,7 +350,6 @@ function StatusChip({
 
 function TaskFormDialog({
   title,
-  slug,
   existingTasks,
   planOptions,
   initial,
@@ -362,7 +358,6 @@ function TaskFormDialog({
   onSubmit,
 }: {
   title: string;
-  slug: string;
   existingTasks: TaskMeta[];
   planOptions: Array<{ value: string; label: string }>;
   initial?: TaskMeta;
@@ -507,7 +502,6 @@ function TaskFormDialog({
           </Field>
         </div>
       </div>
-      {initial && <LinkedSessions slug={slug} nodeType="task" nodeId={initial.normalizedId} />}
       <FormActions
         submitLabel={initial ? "save" : "create"}
         onSubmit={submit}

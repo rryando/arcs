@@ -27,12 +27,16 @@ import { cx, relativeTime, truncate } from "../lib/format";
 import { resolveReference } from "../lib/reference-resolver.js";
 import { Badge } from "./Badge";
 import { inputClass } from "./Dialog";
-import { MAX_LENGTH, WARN_LENGTH } from "./SessionMessageForm";
 import { useToaster } from "./Toaster";
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer";
 
 /** The server's virtual id for the implicit per-project Ask-AI thread. */
 const ASK_THREAD_ALIAS = "ask";
+
+/** Past this the message is flagged as risky to deliver, but still sendable. */
+export const WARN_LENGTH = 4000;
+/** Past this sending is blocked — no runtime takes a prompt this big usefully. */
+export const MAX_LENGTH = 20000;
 
 // ---------------------------------------------------------------------------
 // Provider
