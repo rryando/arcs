@@ -13,6 +13,7 @@ import {
   DEFAULT_MODEL_VARIANT,
   diagnoseClaudeCodeBundle,
   diagnoseOpenCodeConfig,
+  diagnosePiBundle,
   extractModelPreFills,
   getAvailableModels,
   getClaudeCodeModels,
@@ -135,6 +136,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   // ── Environment detection gates ─────────────────────────────────────────────
   let hasOpenCode = false;
   let hasClaudeCode = false;
+  let hasPi = false;
 
   try {
     execSync("which opencode", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
@@ -150,9 +152,16 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     // ignore
   }
 
-  if (!hasOpenCode && !hasClaudeCode) {
+  try {
+    execSync("which pi", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+    hasPi = true;
+  } catch {
+    // ignore
+  }
+
+  if (!hasOpenCode && !hasClaudeCode && !hasPi) {
     p.cancel(
-      "Neither OpenCode nor Claude Code is installed or on PATH. ARCS requires at least one of them.",
+      "Neither OpenCode, Claude Code, nor pi is installed or on PATH. ARCS requires at least one of them.",
     );
     process.exit(1);
   }
@@ -170,13 +179,25 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
 
   let selectedPlatforms: string[] = [];
 
-  if (hasOpenCode && hasClaudeCode) {
+  const PLATFORM_LABELS: Record<string, string> = {
+    opencode: "OpenCode",
+    claudecode: "Claude Code",
+    pi: "pi",
+  };
+
+  const installedPlatforms = [
+    hasOpenCode && "opencode",
+    hasClaudeCode && "claudecode",
+    hasPi && "pi",
+  ].filter(Boolean) as string[];
+
+  if (installedPlatforms.length > 1) {
     const selected = await p.multiselect({
       message: "Which IDE platforms would you like to configure ARCS with?",
-      options: [
-        { value: "opencode", label: "OpenCode" },
-        { value: "claudecode", label: "Claude Code" },
-      ],
+      options: installedPlatforms.map((value) => ({
+        value,
+        label: PLATFORM_LABELS[value],
+      })),
     });
 
     if (p.isCancel(selected)) {
@@ -184,38 +205,29 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
       process.exit(0);
     }
     selectedPlatforms = selected as string[];
-  } else if (hasOpenCode) {
-    const confirmOpenCode = await p.confirm({
-      message: "Configure ARCS with OpenCode?",
+  } else if (installedPlatforms.length === 1) {
+    const only = installedPlatforms[0];
+    const confirmOpen = await p.confirm({
+      message: `Configure ARCS with ${PLATFORM_LABELS[only]}?`,
       initialValue: true,
     });
 
-    if (p.isCancel(confirmOpenCode)) {
+    if (p.isCancel(confirmOpen)) {
       p.cancel("Setup cancelled.");
       process.exit(0);
     }
-    if (confirmOpenCode) {
-      selectedPlatforms.push("opencode");
-    }
-  } else if (hasClaudeCode) {
-    const confirmClaude = await p.confirm({
-      message: "Configure ARCS with Claude Code?",
-      initialValue: true,
-    });
-    if (p.isCancel(confirmClaude)) {
-      p.cancel("Setup cancelled.");
-      process.exit(0);
-    }
-    if (confirmClaude) {
-      selectedPlatforms.push("claudecode");
+    if (confirmOpen) {
+      selectedPlatforms.push(only);
     }
   }
 
   const selectedOpenCode = selectedPlatforms.includes("opencode");
   const selectedClaudeCode = selectedPlatforms.includes("claudecode");
+  const selectedPi = selectedPlatforms.includes("pi");
 
   let opencodeAgentActive = false;
   let claudecodeDeployed = false;
+  let piDeployed = false;
   let opencodeModelVariants: ModelVariants | undefined;
   const arcsConfig = readConfigOrDefault();
 
@@ -656,6 +668,147 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
     }
   }
 
+  // ── pi support ────────────────────────────────────────────────────────────
+  if (selectedPi) {
+    const shouldDeployPi = await p.confirm({
+      message: "Deploy ARCS sub-agents to pi?",
+      initialValue: true,
+    });
+
+    if (p.isCancel(shouldDeployPi)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+
+    if (shouldDeployPi) {
+      // ── Reuse fast path ───────────────────────────────────────────────────
+      // Only offered when a previous deploy left a readable bundle manifest
+      // that recorded the required three tiers. Falls through to the tier
+      // prompt sequence below otherwise — same shape as the Claude Code flow.
+      const piBundleDiagnosis = await diagnosePiBundle();
+      const reusablePiModels =
+        piBundleDiagnosis.status === "ok" && piBundleDiagnosis.tierModels
+          ? piBundleDiagnosis.tierModels
+          : null;
+
+      let piModelConfig: ModelTierConfig | null = null;
+
+      if (reusablePiModels) {
+        const reuseExistingPi = await p.confirm({
+          message: [
+            "Reuse the existing pi model config?",
+            `  heavy: ${reusablePiModels.heavy}`,
+            `  standard: ${reusablePiModels.standard}`,
+            `  light: ${reusablePiModels.light}`,
+          ].join("\n"),
+          initialValue: true,
+        });
+
+        // Deliberate exception to this file's convention: cancelling means
+        // "let me pick models again", not "abort the wizard".
+        if (!p.isCancel(reuseExistingPi) && reuseExistingPi) {
+          piModelConfig = { ...reusablePiModels };
+        }
+      }
+
+      if (!piModelConfig) {
+        // ── Model selection for pi ─────────────────────────────────────────
+        // pi has no curated model list: sub-agents inherit the parent pi
+        // session's model by default ("inherit" — the extension default) or
+        // get an explicit provider/model id. Falls back to the pi session's
+        // currently configured model when present.
+        p.note(
+          [
+            "ARCS agents are grouped into three tiers.",
+            `  Heavy  — reasoning & synthesis (${registryTierAgentNames("heavy")})`,
+            `  Standard — orchestration (${registryTierAgentNames("standard")})`,
+            `  Light  — read-only exploration (${registryTierAgentNames("light")})`,
+            "",
+            '"inherit" (default) delegates each agent model to the parent pi',
+            "session. A custom id must be provider/modelId (e.g. opencode/deepseek-v4).",
+          ].join("\n"),
+          "pi Model Tiers",
+        );
+
+        const piHeavyModel = await selectPiTierModel("Heavy model (reasoning, synthesis)");
+        if (p.isCancel(piHeavyModel)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        const piStandardModel = await selectPiTierModel("Standard model (orchestration)");
+        if (p.isCancel(piStandardModel)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        const piLightModel = await selectPiTierModel("Light/fast model (read-only, exploration)");
+        if (p.isCancel(piLightModel)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+
+        piModelConfig = {
+          heavy: piHeavyModel as string,
+          standard: piStandardModel as string,
+          light: piLightModel as string,
+        };
+      }
+
+      const sPi = p.spinner();
+      sPi.start("Deploying ARCS sub-agents to pi…");
+
+      try {
+        const repoRoot = resolve(import.meta.dirname, "../..");
+        const scriptPath = resolve(repoRoot, "scripts/deploy-pi-bundle.mjs");
+
+        const proc = spawnSync("node", [scriptPath], {
+          env: {
+            ...process.env,
+            DEPLOY_DRY_RUN: "false",
+            DEPLOY_MODEL_HEAVY: piModelConfig!.heavy,
+            DEPLOY_MODEL_STANDARD: piModelConfig!.standard,
+            DEPLOY_MODEL_LIGHT: piModelConfig!.light,
+          },
+          encoding: "utf-8",
+        });
+
+        if (proc.status === 0) {
+          piDeployed = true;
+          sPi.stop("pi deployment complete.");
+
+          if (proc.stdout) {
+            try {
+              const res = JSON.parse(proc.stdout);
+              const summaryLines = [
+                `${color.green("✔")} Source: ${res.source}`,
+                `${color.green("✔")} Destination: ${res.destination}`,
+                `${color.green("✔")} Heavy: ${color.cyan(res.modelConfig?.heavy || "inherit")}  |  Standard: ${color.cyan(res.modelConfig?.standard || "inherit")}  |  Light: ${color.cyan(res.modelConfig?.light || "inherit")}`,
+                `${color.green("✔")} Files added: ${res.filesAdded?.length || 0}`,
+                `${color.green("✔")} Files changed: ${res.filesChanged?.length || 0}`,
+                `${color.green("✔")} Files removed: ${res.filesRemoved?.length || 0}`,
+                `${color.dim("Requires @tintinweb/pi-subagents extension in pi.")}`,
+              ];
+              p.note(summaryLines.join("\n"), "pi Deployment Summary");
+            } catch {
+              p.note("Successfully deployed but summary output was unparseable.", "pi Deployment");
+            }
+          } else {
+            p.note("Successfully deployed to pi.", "pi Deployment");
+          }
+        } else {
+          sPi.stop("pi deployment failed.");
+          p.note(proc.stderr || "deploy-pi-bundle.mjs failed with non-zero exit code.", "Error");
+        }
+      } catch (err) {
+        sPi.stop("pi deployment failed.");
+        p.note(err instanceof Error ? err.message : String(err), "Error");
+      }
+    } else {
+      p.note(`${color.yellow("⊘")} Skipped pi deployment`, "pi Agent");
+    }
+  }
+
   // ── Build config ──────────────────────────────────────────────────────────
   const ides: string[] = [];
   if (selectedOpenCode && opencodeAgentActive) {
@@ -663,6 +816,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   }
   if (claudecodeDeployed) {
     ides.push("claudecode");
+  }
+  if (piDeployed) {
+    ides.push("pi");
   }
 
   const config: ArcsConfig = {
@@ -679,20 +835,29 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
   sWrite.stop("Configuration saved.");
 
   // ── Optional codegraph installation ─────────────────────────────────────────
-  // Derive codegraph install targets from the platforms the user selected.
+  // Derive codegraph install targets from the selected hosts.
   // platform "claudecode" maps to codegraph's "claude" target. Never use
   // "auto" — that would wire unselected hosts (Cursor/Codex/Hermes).
-  const codegraphTargets =
-    [selectedOpenCode && "opencode", selectedClaudeCode && "claude"].filter(Boolean).join(",") ||
-    "opencode";
-  await promptCodegraphInstall(codegraphTargets);
+  // codegraph has no pi target, so a pi-only selection skips it entirely
+  // (the old "|| opencode" fallback would have wired an unselected host).
+  const codegraphTargets = [selectedOpenCode && "opencode", selectedClaudeCode && "claude"]
+    .filter(Boolean)
+    .join(",");
+  if (codegraphTargets) {
+    await promptCodegraphInstall(codegraphTargets);
+  } else {
+    p.log.info(color.dim("Skipped codegraph wiring — pi has no codegraph target."));
+  }
 
   // ── Optional RTK installation ───────────────────────────────────────────────
   // `rtk init -g` always covers Claude Code; `--opencode` additionally installs
-  // the OpenCode plugin — so only the opencode selection changes the wiring.
-  // The Claude Code selection is passed along so the prompt can ask before
-  // touching an unselected host.
-  await promptRtkInstall(selectedOpenCode, selectedClaudeCode);
+  // the OpenCode plugin — so only opencode/claude selections change the wiring.
+  // pi-only selections skip RTK entirely: rtk has no pi target.
+  if (selectedOpenCode || selectedClaudeCode) {
+    await promptRtkInstall(selectedOpenCode, selectedClaudeCode);
+  } else {
+    p.log.info(color.dim("Skipped RTK wiring — pi has no RTK target."));
+  }
 
   p.outro(
     color.green("Done!") +
@@ -735,6 +900,39 @@ async function selectVariant(
   return VARIANT_OPTIONS.includes(selected as string)
     ? (selected as string)
     : DEFAULT_MODEL_VARIANT;
+}
+
+/**
+ * pi tier model selection: "inherit" (defer to the parent pi session's
+ * model — the extension default, and what the deploy script omits) or an
+ * explicit provider/modelId entered as text. No curated model list: pi
+ * serves any configured provider. Returns a symbol on cancel.
+ */
+async function selectPiTierModel(message: string): Promise<string | symbol> {
+  const selected = await p.select({
+    message,
+    options: [
+      {
+        value: "inherit",
+        label: "inherit",
+        hint: "defer to the parent pi session's model (default)",
+      },
+      { value: CUSTOM_MODEL_SENTINEL, label: "Enter custom model ID" },
+    ],
+    initialValue: "inherit",
+  });
+  if (p.isCancel(selected)) return selected;
+  if (selected === CUSTOM_MODEL_SENTINEL) {
+    const custom = await p.text({
+      message: `${message} (custom)`,
+      placeholder: "provider/model-id e.g. opencode/deepseek-v4",
+      initialValue: "",
+    });
+    if (p.isCancel(custom)) return custom;
+    const trimmed = (custom as string).trim();
+    return trimmed === "" ? "inherit" : trimmed;
+  }
+  return selected as string;
 }
 
 /**
