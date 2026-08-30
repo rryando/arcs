@@ -220,6 +220,26 @@ export function clearConversation(slug: string, runner: RunnerId): void {
   bump();
 }
 
+/** The review state a settled run's changes are in on its assistant turn:
+ *  pending → the user has not acted; approved/reverted end the review. No-op
+ *  when the turn is unknown (the conversation was cleared mid-flight). */
+export function setTurnReviewState(
+  slug: string,
+  runner: RunnerId,
+  turnId: string,
+  reviewState: "pending" | "approved" | "reverted",
+): void {
+  const conversation = getConversation(slug, runner);
+  let changed = false;
+  const turns = conversation.turns.map((turn) => {
+    if (turn.id !== turnId) return turn;
+    changed = true;
+    return { ...turn, reviewState };
+  });
+  if (!changed) return;
+  persistConversation(slug, runner, { ...conversation, turns });
+}
+
 /** Whole conversation rendered as markdown — a portable, human-readable copy. */
 export function exportConversation(slug: string, runner: RunnerId): string {
   const { turns, continueSessionId } = getConversation(slug, runner);

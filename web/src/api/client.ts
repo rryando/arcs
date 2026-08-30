@@ -295,6 +295,43 @@ export interface AskTurnResult {
   streamUrl: string;
 }
 
+/** One file a settled run changed, per the run's settle-time diff. Mirrors
+ *  the server's `WorkspaceChange` (run-diff.ts). */
+export type RunChangeStatus = "modified" | "added" | "deleted";
+
+export interface RunChange {
+  /** Posix path relative to the workspace root. */
+  path: string;
+  status: RunChangeStatus;
+  /** `+` lines in the FULL diff (before capping). */
+  linesAdded: number;
+  /** `-` lines in the FULL diff (before capping). */
+  linesRemoved: number;
+  /** Capped diff text, or `null` when the bytes to render it were never
+   *  captured (blob cap) or a git call failed. */
+  diff: string | null;
+  /** True when `diff` is null because the file's baseline bytes were beyond
+   *  the snapshot's blob cap. */
+  capped?: boolean;
+}
+
+/** `GET /api/p/{slug}/runs/{runId}/changes` — the run's settle-time diff
+ *  against its spawn snapshot. `settled: false` means the run is still live;
+ *  an empty `changes` list is also the "nothing changed" answer. */
+export interface RunChangesResult {
+  runId: string;
+  settled: boolean;
+  changes: RunChange[];
+}
+
+/** `POST /api/p/{slug}/runs/{runId}/revert` — the workspace restored to the
+ *  snapshot baseline for this run's changes. `restored` lists the paths
+ *  actually put back. */
+export interface RevertRunResult {
+  reverted: boolean;
+  restored: string[];
+}
+
 export interface PlanMeta {
   id: string;
   normalizedId: string;
@@ -462,6 +499,19 @@ export const api = {
     request<{ deleted: boolean }>(`/api/p/${slug}/tasks/${id}`, { method: "DELETE" }),
 
   runners: () => request<{ runners: RunnerInfo[] }>("/api/runners"),
+  /** The settled run's changes against its spawn snapshot. Poll rather than
+   *  read once: the settle stamps the run settled a beat before the diff
+   *  sidecar lands, so a single read right after `end` can be empty. */
+  runChanges: (slug: string, runId: string) =>
+    request<RunChangesResult>(`/api/p/${slug}/runs/${runId}/changes`),
+  /** Restore the workspace to this run's snapshot baseline and stamp the run
+   *  reverted (a second revert answers 409 RUN_ALREADY_REVERTED). */
+  revertRun: (slug: string, runId: string) =>
+    request<RevertRunResult>(`/api/p/${slug}/runs/${runId}/revert`, { method: "POST" }),
+  /** Cancel a live run — SIGTERM its child and settle it `interrupted`. An
+   *  already-settled/unknown run answers 404; there is nothing left to cancel. */
+  cancelRun: (slug: string, runId: string) =>
+    request<{ cancelled: string }>(`/api/p/${slug}/runs/${runId}`, { method: "DELETE" }),
   /** One turn of a stateless headless conversation, accepted as 202 — the run
    *  settles out-of-band and the reply rides the event log the `streamUrl`
    *  names. `runner` defaults to "pi" server-side; unknown strings degrade to
