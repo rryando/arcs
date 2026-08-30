@@ -226,7 +226,10 @@ describe("web token gate", () => {
       // Guard against a vacuous pass if `routes` ever stops exposing handlers.
       expect(mutating.length).toBeGreaterThan(0);
       const signatures = mutating.map((route) => `${route.method} ${route.path}`);
-      expect(signatures).toContain("POST /api/p/:slug/sessions/:id/turns");
+      // The stateless turn surface: one ask-accept, one cancel, and the old
+      // stream GET stays a read (asserted below against the workspace plane).
+      expect(signatures).toContain("POST /api/p/:slug/ask");
+      expect(signatures).toContain("DELETE /api/p/:slug/runs/:runId");
 
       // The workspace file plane is read-only: both routes exist, both are GET,
       // and NEITHER may appear in the mutating set. A write route added there

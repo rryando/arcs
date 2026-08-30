@@ -30,7 +30,7 @@ import type { SessionRuntimeType } from "../utils/storage-utils.js";
 
 /**
  * One turn a run folds into the transcript sidecar — the assistant variant of
- * `SessionTurnInput` (claude-transcript.ts), minus the `run` tag the fold adds.
+ * `SessionTurnInput` (run-transcript.ts), minus the `run` tag the fold adds.
  * A tool call rides as its own turn with empty text, exactly as
  * `foldAssistantEvent` emits them.
  */

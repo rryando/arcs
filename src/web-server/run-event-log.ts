@@ -28,14 +28,15 @@
  * log and a capped one look identical to every consumer downstream.
  *
  * At settle the log folds down into the transcript sidecar (assistant text plus
- * one turn per `tool_use`) through `appendSessionTurn`, and older logs for the
- * same session are pruned so the sessions dir cannot grow without limit.
+ * one turn per `tool_use`) through `appendSessionTurn` (run-transcript.ts), and
+ * older logs for the same segment are pruned so the sessions dir cannot grow
+ * without limit.
  */
 
 import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { readdir, readFile, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { appendSessionTurn, readSessionTurns } from "../utils/claude-transcript.js";
+import { appendSessionTurn, readSessionTurns } from "../utils/run-transcript.js";
 import { normalizeIdentifier } from "../utils/slug.js";
 import type { SessionRuntimeType } from "../utils/storage-utils.js";
 import { getRunDriver } from "./run-driver.js";
@@ -446,7 +447,7 @@ export interface FoldRunEventLogOptions {
 }
 
 /**
- * Folds a run's event log down into the session's transcript sidecar: assistant
+ * Folds a run's event log down into the segment's transcript sidecar: assistant
  * text plus one turn per `tool_use`, appended through `appendSessionTurn` in
  * stream order, each tagged with the run id.
  *

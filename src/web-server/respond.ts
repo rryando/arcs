@@ -30,11 +30,7 @@ type Status = 200 | 201 | 202 | 400 | 404 | 409 | 500;
  * dispatch-mandated guard codes, and there is no shared substring convention to
  * key on (unlike NOT_FOUND).
  */
-const CONFLICT_CODES = new Set([
-  "CLAUDE_SESSION_ACTIVE",
-  "CLAUDE_RUN_IN_PROGRESS",
-  "PLAN_CONFLICT",
-]);
+const CONFLICT_CODES = new Set(["CLAUDE_SESSION_ACTIVE", "RUN_IN_PROGRESS", "PLAN_CONFLICT"]);
 
 /**
  * Runs a handler and maps the result to the envelope + HTTP status.

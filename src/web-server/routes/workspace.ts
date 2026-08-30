@@ -4,8 +4,8 @@
  * Two GETs and nothing else: `tree` lists a directory under the project's
  * registered workspace roots, `file` returns one file's text plus the head
  * revision it was read at, so the browser can build the `file` variant of
- * `sessionReferenceSchema` (path + line range + headRev) and hand it to a
- * session. There is deliberately NO write route here: an edit is something the
+ * the ask reference schema (path + line range + headRev) and hand it to a
+ * turn. There is deliberately NO write route here: an edit is something the
  * agent does in the workspace, never something this plane does on its behalf.
  *
  * Every path the caller supplies goes through `resolveInsideWorkspace` — the
@@ -95,8 +95,8 @@ function toPosix(path: string): string {
 /**
  * The project's workspace roots, resolved and deduplicated.
  *
- * Read from `meta.workspacePaths` exactly as `primaryWorkspacePath` in
- * routes/sessions.ts reads it, including its rule: an unset workspace is an
+ * Read from `meta.workspacePaths` exactly as the ask route's
+ * `primaryWorkspacePath` reads it, including its rule: an unset workspace is an
  * ERROR, never a default. `resolveProject().workspacePath` returns `""` rather
  * than `process.cwd()` for the same reason — an empty root here would otherwise
  * quietly mean "contain everything", i.e. the whole filesystem.
