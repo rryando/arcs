@@ -60,7 +60,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, default: actual, writeSync };
 });
 
-import { appendSessionTurn, readSessionTurns } from "../src/utils/claude-transcript.js";
+import { appendSessionTurn, readSessionTurns } from "../src/utils/run-transcript.js";
 import {
   foldRunEventLog,
   openRunEventLog,

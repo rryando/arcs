@@ -1,14 +1,11 @@
 /**
  * Unit tests for the web client's pure shortcut-matching core, its API request
- * builder, its session-state vocabulary (the sessions filter, the live counter,
- * the composer's resume gate and the badge they must all agree with about every
- * row) and the zero-import leaf that vocabulary lives in, the run-stream fold
- * and the turn-list composition that consume the run event stream, the server's
- * SSE change classifier, and the dev-only vite plugin that supplies the token in
- * `vite dev`.
+ * builder, the run-stream fold and the turn-list composition that consume the
+ * run event stream, the server's SSE change classifier, and the dev-only vite
+ * plugin that supplies the token in `vite dev`.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Plugin, resolveConfig } from "vite";
@@ -23,14 +20,6 @@ import {
   runStreamText,
 } from "../web/src/api/sse.js";
 import { composeTurnList } from "../web/src/components/AskAIPanel.js";
-import {
-  filterSessionsByState,
-  isSessionAttached,
-  isSessionLive,
-  type SessionStateSource,
-  SessionStatusBadge,
-  sessionStateChips,
-} from "../web/src/components/SessionStatusBadge.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { resolveReference } from "../web/src/lib/reference-resolver.js";
@@ -144,6 +133,12 @@ describe("classifyChange", () => {
       area: "proposals",
     });
     expect(classifyChange("projects/arcs/sessions/b993ef10.transcript.jsonl")).toEqual({
+      slug: "arcs",
+      area: "sessions",
+    });
+    // The run store is the ask surface's persistence — its writes keep the
+    // client's `sessions`-area invalidation path working.
+    expect(classifyChange("projects/arcs/runs/index.json")).toEqual({
       slug: "arcs",
       area: "sessions",
     });
@@ -268,175 +263,6 @@ describe("resolveReference", () => {
     expect(
       resolveReference({ slug: "arcs", kind: "plan", id: "my-plan", sectionId: "tasks" }),
     ).toEqual({ path: "/p/arcs/plans/my-plan", hash: "#tasks" });
-  });
-});
-
-describe("session state filter vs badge", () => {
-  /**
-   * The label `SessionStatusBadge` actually renders for a record, read off the
-   * element it returns rather than recomputed — so these assertions are about
-   * the badge itself, not about a second copy of its logic.
-   */
-  function badgeLabel(session: SessionStateSource): string {
-    const text: string[] = [];
-    const walk = (node: unknown): void => {
-      if (typeof node === "string") {
-        text.push(node);
-      } else if (Array.isArray(node)) {
-        for (const child of node) walk(child);
-      } else if (node && typeof node === "object" && "props" in node) {
-        walk((node as { props: { children?: unknown } }).props.children);
-      }
-    };
-    walk(SessionStatusBadge({ session }));
-    // [glyph, label] — the badge's own text is the last leaf.
-    return text.at(-1) ?? "";
-  }
-
-  // The record the two axes disagree about: stored `active` (its heartbeat
-  // lapsed, nothing ever closed it) while the server derives `idle`.
-  const lapsed: SessionStateSource = { status: "active", phase: "idle" };
-  const live: SessionStateSource = { status: "idle", phase: "running" };
-  const over: SessionStateSource = { status: "completed", phase: "ended" };
-  // Reached the UI without a phase (the record echoed by `POST /run`).
-  const phaseless: SessionStateSource = { status: "disconnected" };
-  const sessions = [lapsed, live, over, phaseless];
-
-  it("badges a session by its derived phase, falling back to the stored status", () => {
-    expect(badgeLabel(lapsed)).toBe("idle");
-    expect(badgeLabel(live)).toBe("running");
-    expect(badgeLabel(over)).toBe("ended");
-    expect(badgeLabel(phaseless)).toBe("disconnected");
-  });
-
-  it("never shows a row under a chip its own badge contradicts", () => {
-    for (const chip of sessionStateChips(sessions, null)) {
-      for (const session of filterSessionsByState(sessions, chip)) {
-        expect(badgeLabel(session)).toBe(chip);
-      }
-    }
-  });
-
-  it("filters the disagreeing record on its phase, never on its stored status", () => {
-    expect(filterSessionsByState(sessions, "idle")).toContain(lapsed);
-    expect(filterSessionsByState(sessions, "active")).toEqual([]);
-    expect(sessionStateChips(sessions, null)).not.toContain("active");
-  });
-
-  it("offers a chip for every visible row and no chip that matches nothing", () => {
-    const chips = sessionStateChips(sessions, null);
-    expect(chips).toEqual(["running", "idle", "ended", "disconnected"]);
-    for (const session of sessions) expect(chips).toContain(badgeLabel(session));
-    for (const chip of chips)
-      expect(filterSessionsByState(sessions, chip).length).toBeGreaterThan(0);
-  });
-
-  it("keeps the active chip clickable after its last row leaves the list", () => {
-    expect(sessionStateChips([over], "running")).toEqual(["running", "ended"]);
-  });
-
-  it("filters nothing out under `all`", () => {
-    expect(filterSessionsByState(sessions, null)).toEqual(sessions);
-  });
-
-  // The two non-badge controls. Neither takes a badge prop, so giving the badge
-  // the record did nothing for them — they are only safe because they take the
-  // record themselves, and only proven safe because of these three tests.
-
-  // Stored `active`, but nothing is running it any more: the server derives
-  // `ended`. The record the header used to advertise as live.
-  const gone: SessionStateSource = { status: "active", phase: "ended" };
-  // Stored `idle` while a run is actually in flight — the opposite disagreement.
-  const busy: SessionStateSource = { status: "idle", phase: "running" };
-
-  it("counts a session as live off its badge, never off its stored status", () => {
-    expect(badgeLabel(gone)).toBe("ended");
-    expect(isSessionLive(gone)).toBe(false);
-
-    expect(badgeLabel(busy)).toBe("running");
-    expect(isSessionLive(busy)).toBe(true);
-  });
-
-  it("offers a headless resume exactly when nothing is driving the session", () => {
-    // Hidden by the old `status !== "active"` gate — the session the affordance
-    // exists for.
-    expect(isSessionAttached(gone)).toBe(false);
-    // Offered by it, against a session a terminal is actively driving.
-    expect(isSessionAttached(busy)).toBe(true);
-  });
-
-  it("keeps `idle` live but unattached — the two sets are not one set", () => {
-    // `idle` is the whole reason the counter and the resume gate cannot share a
-    // predicate: the record is not over (it belongs in "N live") but nothing
-    // holds its runtime thread (a headless resume is exactly what it wants).
-    const dormant: SessionStateSource = { status: "active", phase: "idle" };
-    expect(badgeLabel(dormant)).toBe("idle");
-    expect(isSessionLive(dormant)).toBe(true);
-    expect(isSessionAttached(dormant)).toBe(false);
-
-    // Phaseless fallback, both directions: the raw status is still classified,
-    // so a record echoed by `POST /run` is neither dropped from the count nor
-    // handed a resume it cannot use.
-    expect(isSessionLive(phaseless)).toBe(false);
-    expect(isSessionAttached(phaseless)).toBe(false);
-    expect(isSessionLive({ status: "active" })).toBe(true);
-    expect(isSessionAttached({ status: "active" })).toBe(true);
-  });
-});
-
-/**
- * The block above drives `web/src/components/SessionStatusBadge.tsx`, which
- * imports `src/shared/session-vocabulary.ts` directly by relative path across
- * the workspace boundary. There is no alias and no third package, so that
- * module's being a LEAF — not the directory it sits in — is the entire reason
- * `vite build` does not pull the CLI's transitive graph into the browser
- * bundle. Today only an in-file comment says so.
- *
- * No CI step would notice it stop being one. A stray value import of, say,
- * `src/utils/session-store.js` is a legal src/ import under the root tsconfig,
- * resolves under web's `moduleResolution: "bundler"` with no alias, and runs
- * fine under vitest's Node environment — typecheck, lint and test all stay
- * green. `build:web` runs only from `prepack`, so the break surfaces at release
- * time, or as a silently broken shell nobody loads until a user does. This test
- * is the only guard.
- */
-describe("session vocabulary leaf", () => {
-  it("keeps src/shared/session-vocabulary.ts a zero-import leaf", () => {
-    const source = readFileSync(
-      new URL("../src/shared/session-vocabulary.ts", import.meta.url),
-      "utf-8",
-    );
-    // Match against code only. The leaf's own prose argues about imports at
-    // length — it contains the literal text "an import (forbidden above)",
-    // which the dynamic-import shape below matches verbatim.
-    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-
-    // Non-vacuity first, and on the STRIPPED text as well as the raw read: a
-    // regex that matches nothing passes forever, so prove the file was read, is
-    // still this module, and survived stripping before trusting its silence.
-    expect(source.length).toBeGreaterThan(0);
-    for (const declaration of [
-      "export interface SessionStateSource",
-      "export function sessionState",
-      "export function isSessionLive",
-      "export function isSessionAttached",
-    ]) {
-      expect(source).toContain(declaration);
-      expect(code).toContain(declaration);
-    }
-
-    // Four shapes, because the obvious one misses two: any line OPENING an
-    // import (covers `import x from`, `import type {`, a bare `import "./x.js"`
-    // and the first line of a wrapped one), a single-line re-export, the
-    // closing line of a wrapped re-export, and a dynamic `import(`.
-    //
-    // `import type` is caught deliberately. A type-only import cannot reach the
-    // bundle by itself, but the file's own contract forbids every import
-    // outright, and one permitted type import is one `verbatimModuleSyntax`
-    // slip away from a value import — the distinction is not worth encoding.
-    expect(
-      code.match(/^\s*import\b|^\s*export\b.*\bfrom\b|^\s*\}\s*from\b|\bimport\s*\(/m),
-    ).toBeNull();
   });
 });
 

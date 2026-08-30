@@ -10,7 +10,6 @@ import { Field, inputClass, SelectInput, TextInput } from "../components/Dialog"
 import { MarkdownEditor } from "../components/MarkdownEditor.lazy";
 import { MarkdownViewer } from "../components/MarkdownViewer";
 import { MermaidDiagram } from "../components/MermaidDiagram";
-import { LinkedSessions } from "../components/SessionLinkModal";
 import { useToaster } from "../components/Toaster";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { formatFileRefs, parseFileRefs } from "../lib/file-refs";
@@ -264,7 +263,6 @@ export function PlanDetail() {
                 ))}
               </div>
             )}
-            <LinkedSessions slug={slug} nodeType="plan" nodeId={meta.normalizedId} />
             <MarkdownViewer
               content={data.body}
               slug={slug}

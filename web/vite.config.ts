@@ -16,6 +16,24 @@ function arcsDataDir(): string {
 }
 
 /**
+ * The port `arcs web` last resolved to, or the uncommon default. Mirrors the
+ * server's persisted-web-config read (src/web-server/index.ts): the dev proxy
+ * must target the same server the user's saved URL points at, so it honors the
+ * same persisted `web-config.json` the server writes. Vite bundles this config
+ * standalone, so the read is duplicated — never imported — like arcsDataDir.
+ */
+function arcsWebServerPort(): number {
+  try {
+    const raw = JSON.parse(readFileSync(join(arcsDataDir(), "web-config.json"), "utf-8")) as {
+      port?: unknown;
+    };
+    return typeof raw.port === "number" && raw.port > 0 && raw.port <= 65535 ? raw.port : 8745;
+  } catch {
+    return 8745;
+  }
+}
+
+/**
  * Dev-only injection of the server's mutation token.
  *
  * In a build the shell is served by ARCS itself, which injects
@@ -75,7 +93,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:4173",
+      "/api": `http://127.0.0.1:${arcsWebServerPort()}`,
     },
   },
   build: {

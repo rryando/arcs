@@ -67,6 +67,9 @@ export function classifyChange(
   if (rest === "plans" || rest.startsWith("plans/")) return { slug, area: "plans" };
   if (rest === "proposals" || rest.startsWith("proposals/")) return { slug, area: "proposals" };
   if (rest === "sessions" || rest.startsWith("sessions/")) return { slug, area: "sessions" };
+  // The run store is the ask surface's persistence — the client's invalidation
+  // path keys on the `sessions` area, so run claims/settles keep triggering it.
+  if (rest === "runs" || rest.startsWith("runs/")) return { slug, area: "sessions" };
   if (rest === "meta.json") return { slug, area: "meta" };
   if (rest.endsWith(".md")) return { slug, area: "docs" };
   return { slug, area: "other" };

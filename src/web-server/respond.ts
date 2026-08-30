@@ -32,8 +32,9 @@ type Status = 200 | 201 | 202 | 400 | 404 | 409 | 500;
  */
 const CONFLICT_CODES = new Set([
   "CLAUDE_SESSION_ACTIVE",
-  "CLAUDE_RUN_IN_PROGRESS",
+  "RUN_IN_PROGRESS",
   "PLAN_CONFLICT",
+  "RUN_ALREADY_REVERTED",
 ]);
 
 /**

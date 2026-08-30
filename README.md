@@ -371,22 +371,35 @@ Beyond `dependsOn`, ARCS builds a weighted relationship graph across every proje
 
 ---
 
-## Session Panel — Headless Claude Runs
+## Ask-AI — web-side agent chats
 
-The web UI's session panel delivers a prompt through one of four modes (the "deliver via" selector):
+The web UI's Ask-AI sidebar drives one-shot agent turns from the browser against
+four runtimes, selectable per user and remembered in localStorage:
 
-| Mode | Runtime target | Memory |
-|------|----------------|--------|
-| **fork via turns** | A new ARCS-owned thread forked from the referenced Claude Code session (`POST /sessions/:id/turns` + `--fork-session`) — ARCS never injects into the live session itself | The fork inherits the session's context; later turns accumulate on the fork's own sidecar |
-| **headless resume** | The referenced Claude Code session's runtime thread, resumed headlessly (`--resume`) | The session's thread; **idle sessions only** |
-| **headless one-shot** | A fresh `claude -p` against an ARCS-owned `arcs-oneshot-<slug>` record | None — a fresh Claude every call |
-| **headless thread** | A persistent ARCS-owned thread (`arcs-thread-<slug>-<uuid4>`), minted once then reused | Accumulates in one sidecar |
+| Runner | Headless shape | Continuation |
+|--------|----------------|--------------|
+| **pi** (default) | `pi -p --mode json` | `--session-id <id>` (+ `--session-dir` under the project data dir) |
+| opencode | `opencode run --format json` | `-s <id>` |
+| claude-code | `claude -p --output-format json` | `--resume <id>` |
+| codex | `codex exec --json --sandbox workspace-write` | `codex exec resume <id>` |
 
-Headless runs are **asynchronous by contract**: `POST /sessions/:id/run` answers `202 { accepted: true }` immediately and the job runs out-of-band on the server. The reply is not streamed — it appears in the write-target session's transcript (`GET /sessions/:id/transcript`) when the job finishes, alongside `metadata.run` finalization (outcome, `endedAt`, `replyChars`). Resume additionally mirrors the resumed session's runtime transcript back into the sidecar after the child exits.
+Sessions are **browser-owned**: each project+runner pair has one conversation
+stored in localStorage (`arcs:askai:<slug>:<runner>`), including the runtime's
+continuation id — hybrid continuation sends the capped local history every
+turn AND resumes the runtime thread when a `continueSessionId` exists (a
+`CONTINUATION_LOST` end-frame signal clears it and re-seeds).
 
-Resume targets are **idle-only**: an active Claude Code session is refused with `409 CLAUDE_SESSION_ACTIVE` — ARCS never pushes into a live terminal session.
+Turns are **asynchronous by contract**: `POST /api/p/:slug/ask` (any runtimes),
+body `{ runner, message, refs?, history?, continueSessionId? }`, answers
+`202 { runId, streamUrl }`; the reply streams over the run's SSE tail
+(`GET /api/p/:slug/runs/:runId/stream`), and the panel renders it live with a
+tool ticker. Runs are **allow-all** — Runners spawn with their full tool
+surface, and the safety gate is a post-run **diff review**: the server snapshots
+the workspace before spawning (git baseline, or a file-hash manifest outside
+git), diffs on settle, and the panel shows a per-file diff card with
+**approve (keep) / reject (revert)** (`GET/POST /runs/:runId/changes|revert`).
 
-The real-child end-to-end test is env-gated so CI never shells out to Claude: `test/claude-run-e2e.test.ts` self-skips via `it.skipIf` unless `ARCS_CLAUDE_E2E=1` is set, in which case it runs a real `claude` binary in a temp workspace (spawn → exit → write-back → transcript GET). Run it deliberately — it requires an authenticated `claude` on PATH and spends real tokens.
+`GET /api/runners` lists the registered runtimes with PATH availability; `DELETE /runs/:runId` cancels a live run. The web server binds an uncommon local port (default 8745, persisted to `web-config.json` in the data dir so the URL is stable; `arcs web --port` overrides). A pi extension (`web/extensions/arcs-web-status.ts`, `pi -e`) shows the server's up/down state in pi's footer.
 
 ---
 

@@ -7,15 +7,17 @@ import { resolve } from "node:path";
 import { Hono } from "hono";
 import { getDataDir, PACKAGE_ROOT } from "../utils/paths.js";
 import { ok } from "./respond.js";
+import { askRoute } from "./routes/ask.js";
+import { changesRoute } from "./routes/changes.js";
 import { collectionsRoute } from "./routes/collections.js";
 import { discoveryRoute } from "./routes/discovery.js";
 import { eventsRoute } from "./routes/events.js";
 import { projectsRoute } from "./routes/projects.js";
 import { proposalDocsRoute } from "./routes/proposal-docs.js";
-import { sessionsRoute } from "./routes/sessions.js";
+import { runnersRoute } from "./routes/runners.js";
 import { workspaceRoute } from "./routes/workspace.js";
+import { settleOrphanedRunsOnStartup } from "./run-store.js";
 import { secureLocalRequest } from "./security.js";
-import { settleOrphanedRunsOnStartup } from "./session-reconciler.js";
 import { registerStaticServing } from "./static.js";
 import { startWatcher } from "./watcher.js";
 import { requireWebToken } from "./web-auth.js";
@@ -69,21 +71,23 @@ export function createApp(options: CreateAppOptions = {}): Hono {
 
   app.route("/", projectsRoute);
   app.route("/", collectionsRoute);
-  app.route("/", sessionsRoute);
+  app.route("/", askRoute);
+  app.route("/", changesRoute);
   // Read-only file plane (two GETs, no writes) — see routes/workspace.ts.
   app.route("/", workspaceRoute);
   app.route("/", discoveryRoute);
   app.route("/", proposalDocsRoute);
   app.route("/", eventsRoute);
+  app.route("/", runnersRoute);
 
   if (options.watch !== false) {
     startWatcher(getDataDir());
     // A run claim persisted by an earlier server process cannot be live in this
     // one unless its child outlived the restart, so any claim whose process is
-    // gone settles here as `interrupted` — otherwise the session renders
-    // "running" forever with nothing left that could ever settle it. One pass at
-    // boot, never a poller; the sweep resolves rather than rejects, and the
-    // server must not wait on it.
+    // gone — and whose own deadline has passed — settles here as `interrupted`,
+    // otherwise the project renders "a run is in progress" forever with nothing
+    // left that could ever settle it. One pass at boot, never a poller; the
+    // sweep resolves rather than rejects, and the server must not wait on it.
     void settleOrphanedRunsOnStartup(getDataDir());
   }
 
