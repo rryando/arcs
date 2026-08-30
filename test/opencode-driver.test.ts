@@ -258,8 +258,12 @@ describe("run driver registry", () => {
     expect(driver?.foldOutput(ndjson(textEvent("wired"))).replyText).toBe("wired");
   });
 
-  it("has no claude-code one-shot driver yet (later, against this same seam)", () => {
-    expect(getRunDriver("claude-code")).toBeUndefined();
+  it("serves the claude-code one-shot driver under its runtime type", () => {
+    const driver = getRunDriver("claude-code");
+    expect(driver?.runtimeType).toBe("claude-code");
+    expect(driver?.binary).toBe("claude");
+    expect(driver?.buildArgv({ message: "hi" })).toContain("--dangerously-skip-permissions");
+    expect(driver?.foldOutput("")).toEqual({ turns: [], replyText: "", skippedLines: 0 });
   });
 
   it("registers adapters keyed by runtime type", () => {

@@ -12,6 +12,7 @@ import { discoveryRoute } from "./routes/discovery.js";
 import { eventsRoute } from "./routes/events.js";
 import { projectsRoute } from "./routes/projects.js";
 import { proposalDocsRoute } from "./routes/proposal-docs.js";
+import { runnersRoute } from "./routes/runners.js";
 import { sessionsRoute } from "./routes/sessions.js";
 import { workspaceRoute } from "./routes/workspace.js";
 import { secureLocalRequest } from "./security.js";
@@ -75,6 +76,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route("/", discoveryRoute);
   app.route("/", proposalDocsRoute);
   app.route("/", eventsRoute);
+  app.route("/", runnersRoute);
 
   if (options.watch !== false) {
     startWatcher(getDataDir());
