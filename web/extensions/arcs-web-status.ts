@@ -28,10 +28,6 @@ const POLL_INTERVAL_MS = 5_000;
 /** Give a hung server a timeout so the status never goes stale. */
 const FETCH_TIMEOUT_MS = 3_000;
 
-interface WebConfig {
-  port: number;
-}
-
 /** ARCS data dir: ARCS_DATA_DIR env var wins, else ~/.arcs (mirrors getDataDir()). */
 function arcsDataDir(): string {
   const envDir = process.env.ARCS_DATA_DIR;
@@ -45,14 +41,11 @@ function arcsDataDir(): string {
  */
 function resolveWebPort(): number {
   try {
-    const raw = JSON.parse(
-      readFileSync(join(arcsDataDir(), WEB_CONFIG_FILE), "utf-8"),
-    ) as { port?: unknown };
+    const raw = JSON.parse(readFileSync(join(arcsDataDir(), WEB_CONFIG_FILE), "utf-8")) as {
+      port?: unknown;
+    };
     const port = raw.port;
-    return typeof port === "number" &&
-      Number.isInteger(port) &&
-      port > 0 &&
-      port <= 65535
+    return typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535
       ? port
       : DEFAULT_WEB_PORT;
   } catch {

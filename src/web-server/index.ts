@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { serve } from "@hono/node-server";
-import { createApp } from "./app.js";
 import { getDataDir } from "../utils/paths.js";
+import { createApp } from "./app.js";
 import { isLoopbackHost } from "./security.js";
 
 /** Loopback only: `arcs web` refuses to bind anything else. */
@@ -105,8 +105,7 @@ export async function startWebServer(
   // Explicit flag > persisted choice > uncommon default: a stable URL across
   // restarts is the point of persisting, and a caller's `--port` (or 0) always
   // outranks both.
-  const requestedPort =
-    options.port ?? persistedWebPort() ?? DEFAULT_WEB_PORT;
+  const requestedPort = options.port ?? persistedWebPort() ?? DEFAULT_WEB_PORT;
   if (!isLoopbackHost(host)) {
     throw new Error(
       `ARCS web only binds to loopback addresses; refusing non-loopback host "${host}".`,
