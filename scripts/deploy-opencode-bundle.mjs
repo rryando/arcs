@@ -137,7 +137,7 @@ function validateAgentRegistry(agents) {
     if (
       !Array.isArray(agent.modes) ||
       agent.modes.length === 0 ||
-      agent.modes.some((mode) => mode !== "opencode" && mode !== "claudecode")
+      agent.modes.some((mode) => mode !== "opencode" && mode !== "claudecode" && mode !== "pi")
     ) {
       throw new Error(`Invalid agent registry modes for ${agent.id}`);
     }

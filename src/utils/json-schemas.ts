@@ -186,7 +186,7 @@ const configMergeSchema = z.object({
 export const agentTierSchema = z.enum(["heavy", "standard", "light"]);
 export const agentStatusSchema = z.enum(["active", "retired"]);
 export const agentKindSchema = z.enum(["primary", "subagent"]);
-export const agentModeSchema = z.enum(["opencode", "claudecode"]);
+export const agentModeSchema = z.enum(["opencode", "claudecode", "pi"]);
 const agentPermissionSchema = z.enum(["allow", "deny"]);
 
 function isPromptPath(value: string): boolean {

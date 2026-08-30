@@ -77,7 +77,7 @@ function isAgentRegistryRecord(agent) {
     ["heavy", "standard", "light"].includes(agent.tier) &&
     Array.isArray(agent.modes) &&
     agent.modes.length > 0 &&
-    agent.modes.every((mode) => ["opencode", "claudecode"].includes(mode)) &&
+    agent.modes.every((mode) => ["opencode", "claudecode", "pi"].includes(mode)) &&
     isPromptPath(agent.source) &&
     isPromptPath(agent.destination) &&
     typeof agent.description === "string" &&

@@ -172,3 +172,48 @@ async function handleDeployClaudecodeSuperpowers(
 
   return runDeployScript("deploy-claudecode-bundle.mjs", envOverrides);
 }
+
+// ---------------------------------------------------------------------------
+// deploy-pi-superpowers
+// ---------------------------------------------------------------------------
+
+const deployPiSuperpowersParams = {
+  "bundle-root": { type: "string", description: "Override bundle root directory" },
+  "config-root": { type: "string", description: "Override config root directory (~/.pi)" },
+  "project-root": { type: "string", description: "Override project root directory" },
+  scope: {
+    type: "string",
+    description: "Deployment scope (global or project)",
+    enum: ["global", "project"],
+  },
+} as const satisfies Record<string, ParamDef>;
+
+defineCommand({
+  path: "deploy-pi-superpowers",
+  description: "Deploy ARCS sub-agents to pi subagent types (~/.pi/agent/agents or .pi/agents)",
+  mutation: true,
+  params: deployPiSuperpowersParams,
+  handler: handleDeployPiSuperpowers,
+});
+
+async function handleDeployPiSuperpowers(
+  params: ParsedParams<typeof deployPiSuperpowersParams>,
+  flags: CommandFlags,
+): Promise<CLIResult> {
+  const bundleRoot = params["bundle-root"];
+  const configRoot = params["config-root"];
+  const projectRoot = params["project-root"];
+  const scope = params.scope;
+
+  if (flags.dryRun) {
+    return success({ dryRun: true, wouldDeploy: true });
+  }
+
+  const envOverrides: Record<string, string> = {};
+  if (bundleRoot) envOverrides.DEPLOY_BUNDLE_ROOT = bundleRoot;
+  if (configRoot) envOverrides.DEPLOY_CONFIG_ROOT = configRoot;
+  if (projectRoot) envOverrides.DEPLOY_PROJECT_ROOT = projectRoot;
+  if (scope) envOverrides.DEPLOY_SCOPE = scope;
+
+  return runDeployScript("deploy-pi-bundle.mjs", envOverrides);
+}

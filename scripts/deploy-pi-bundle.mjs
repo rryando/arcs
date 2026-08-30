@@ -1,29 +1,42 @@
 #!/usr/bin/env node
 
-// Deploy claudecode ARCS bundle from repo to Claude Code config.
+// Deploy pi ARCS bundle from repo to pi config.
 //
 // Direction: repo → config ONLY. Never writes config → repo.
 //
 // What gets deployed:
-//   1. Sub-agent prompts → <destination>/agents/<stem>.md
-//   2. Skills tree       → <destination>/skills/arcs-<name>/...
-//      (Claude Code skills must be flat under skills/; we use the `arcs-`
-//       prefix as a namespace so orphan pruning never touches user skills.)
-//   3. Default agent     → settings.json `agent` field, resolved from an
-//      explicit DEPLOY_PRIMARY_AGENT selection, else through the
-//      DEFAULT_AGENT_PRECEDENCE list (default: "arcs-orchestrate")
+//   1. Sub-agent prompts → <destination>/agent/agents/<stem>.md   (global)
+//                          <destination>/.pi/agents/<stem>.md     (project)
+//   2. Skills tree       → <destination>/agent/skills/arcs-<name>/...  (global)
+//                          <destination>/.pi/skills/arcs-<name>/...    (project)
+//
+// The compiled agent format targets the pi subagents extension
+// (@tintinweb/pi-subagents) custom agent types: a Claude Code-shaped
+// .md with YAML frontmatter in pi's agent directory. pi's main session is
+// the orchestrator, so there is no settings.json default-agent merge —
+// every agent (including the arcs-* primary prompts) deploys as a spawnable
+// subagent type via the `Agent` tool / `@type` mentions.
+//
+// Frontmatter mapping (ARCS manifest → pi agent type):
+//   - `model: inherit` is OMITTED — "inherit parent" is the extension default.
+//     A pinned DEPLOY_MODEL_* value emits `model: <value>` instead.
+//   - permissions → `tools:` allowlist: edit→write/edit, bash→bash,
+//     mcp→ext:mcp, base read-only set read/grep/find/ls. Read-only
+//     specialists (code-reviewer, tech-architect, graph-explorer) get no
+//     mutation tools.
+//   - `task: allow` (primaries only) → `allowed_subagents: all`, mirroring
+//     the Task tool those prompts were written against.
 //
 // Env vars:
-//   DEPLOY_BUNDLE_ROOT   — override bundle root (default: opencode/arcs)
-//   DEPLOY_CONFIG_ROOT   — override config root (default: ~/.claude)
-//   DEPLOY_PROJECT_ROOT  — override project root (default: repository root)
-//   DEPLOY_SCOPE         — `global` or `project` (default: `global`)
-//   DEPLOY_DRY_RUN       — "false" to actually write; anything else = dry-run (default: dry-run)
-//   DEPLOY_PRIMARY_AGENT — user-selected default primary agent id; empty/unset falls
-//                          back to DEFAULT_AGENT_PRECEDENCE
+//   DEPLOY_BUNDLE_ROOT  — override bundle root (default: opencode/arcs)
+//   DEPLOY_CONFIG_ROOT  — override config root (default: ~/.pi)
+//   DEPLOY_PROJECT_ROOT — override project root (default: repository root)
+//   DEPLOY_SCOPE        — `global` or `project` (default: `global`)
+//   DEPLOY_DRY_RUN      — "false" to actually write; anything else = dry-run (default: dry-run)
+//   DEPLOY_MODEL_HEAVY/STANDARD/LIGHT — 3-tier model overrides (default: "inherit")
 //
-// Outputs JSON to stdout: DeployResult
-// Exit code: 0 on success, 1 on error.
+// Outputs JSON to stdout: DeployResult. Exit code 0 on success, 1 on error.
+// codegraph/rtk are never wired: neither tool supports a pi install target.
 
 import { createHash } from "node:crypto";
 import {
@@ -42,14 +55,12 @@ import {
   isActiveAgentForMode,
   isRetiredAgentForMode,
   validateRetirementReplacements,
-  wireCodegraphMcp,
-  wireRtk,
 } from "./lib/bundle-helpers.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const defaultBundleRoot = resolve(repoRoot, "opencode/arcs");
-const defaultConfigRoot = resolve(homedir(), ".claude");
+const defaultConfigRoot = resolve(homedir(), ".pi");
 const defaultProjectRoot = repoRoot;
 
 const bundleRoot = process.env.DEPLOY_BUNDLE_ROOT
@@ -77,7 +88,9 @@ const projectRoot = process.env.DEPLOY_PROJECT_ROOT
 const scope = process.env.DEPLOY_SCOPE === "project" ? "project" : "global";
 const dryRun = process.env.DEPLOY_DRY_RUN !== "false";
 
-const destination = scope === "project" ? projectRoot : configRoot;
+// Project deploys write into the project's own pi config dir; global deploys
+// write into ~/.pi (agents/skills land under agent/, the pi agent dir).
+const destination = scope === "project" ? resolve(projectRoot, ".pi") : configRoot;
 
 const SKILL_PREFIX = "arcs-";
 
@@ -107,7 +120,8 @@ function resolveBundlePromptPath(value) {
 // Model tier configuration
 // ---------------------------------------------------------------------------
 // Env vars: DEPLOY_MODEL_HEAVY, DEPLOY_MODEL_STANDARD, DEPLOY_MODEL_LIGHT.
-// Each defaults to "inherit" if unset.
+// "inherit" (the default) means the agent inherits the parent pi session's
+// model — the extension default — so no `model:` frontmatter is emitted.
 const tierModels = {
   heavy: process.env.DEPLOY_MODEL_HEAVY || "inherit",
   standard: process.env.DEPLOY_MODEL_STANDARD || "inherit",
@@ -159,55 +173,34 @@ function readAgentRegistry() {
   return manifest.agents;
 }
 
-function claudeTools(agent) {
-  const tools = [];
-  if (agent.permissions.task === "allow") tools.push("Task");
-  tools.push("Read");
-  if (agent.permissions.edit === "allow") tools.push("Write", "Edit");
-  tools.push("Glob", "Grep");
-  if (agent.permissions.bash === "allow") tools.push("Bash");
-  return tools.join(", ");
+// ---------------------------------------------------------------------------
+// pi destination layout
+// ---------------------------------------------------------------------------
+
+function agentConfigRelative(stem) {
+  return scope === "project" ? `agents/${stem}.md` : `agent/agents/${stem}.md`;
 }
 
-function ensureParentDir(filePath) {
-  mkdirSync(dirname(filePath), { recursive: true });
+function skillConfigRelative(skillName, rel) {
+  const skillsRoot = scope === "project" ? "skills" : "agent/skills";
+  return `${skillsRoot}/${SKILL_PREFIX}${skillName}/${rel}`;
 }
 
-function sha256(content) {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-function readInstalledManifest() {
-  const manifestPath = resolve(destination, configRelativePath(".arcs-bundle.json"));
-  if (!existsSync(manifestPath)) return null;
-  try {
-    const value = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    return value?.bundleId === "arcs-claudecode-bundle" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function configRelativePath(suffix) {
-  return scope === "project" ? `.claude/${suffix}` : suffix;
-}
-
-function walkFiles(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = resolve(dir, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...walkFiles(full));
-    } else if (entry.isFile()) {
-      out.push(full);
-    }
-  }
-  return out;
+function manifestConfigRelative() {
+  return ".arcs-bundle.json";
 }
 
 // ---------------------------------------------------------------------------
 // 1. Compile sub-agent prompts
 // ---------------------------------------------------------------------------
+
+function piTools(agent) {
+  const tools = ["read", "grep", "find", "ls"];
+  if (agent.permissions.edit === "allow") tools.push("write", "edit");
+  if (agent.permissions.bash === "allow") tools.push("bash");
+  if (agent.permissions.mcp === "allow") tools.push("ext:mcp");
+  return tools.join(", ");
+}
 
 function buildAgentSources() {
   const promptsDir = resolve(bundleRoot, "prompts");
@@ -225,7 +218,7 @@ function buildAgentSources() {
 
   const sources = [];
 
-  for (const agent of registry.filter((record) => isActiveAgentForMode(record, "claudecode"))) {
+  for (const agent of registry.filter((record) => isActiveAgentForMode(record, "pi"))) {
     const stem = agent.id;
     const sourcePath = resolveBundlePromptPath(agent.source);
     if (!existsSync(sourcePath))
@@ -233,27 +226,28 @@ function buildAgentSources() {
     const promptContent = readFileSync(sourcePath, "utf-8");
     const model = tierModels[agent.tier];
 
-    // Claude Code requires `name` to be a kebab-case identifier (lowercase
-    // letters + hyphens). The filename stem already satisfies this and is
-    // unique, so it IS the agent name — the human-readable label lives in
-    // `description`. The default-agent setting (DEFAULT_AGENT) references this
-    // same stem, so it resolves. Display names with spaces/parens/apostrophes
-    // (meta.name) are invalid here and caused intermittent init failures.
-    const compiledContent = [
-      "---",
-      `name: ${stem}`,
-      `description: ${agent.description}`,
-      `model: ${model}`,
-      `tools: ${claudeTools(agent)}`,
-      "---",
-      "",
-      promptContent,
-    ].join("\n");
+    const frontmatter = ["---", `name: ${stem}`, `description: ${agent.description}`];
+
+    // "inherit" is the extension default — omit it so the agent inherits the
+    // parent session's model (matches Claude Code `model: inherit`).
+    if (model !== "inherit") {
+      frontmatter.push(`model: ${model}`);
+    }
+
+    frontmatter.push(`tools: ${piTools(agent)}`);
+
+    // primaries were authored with a Task tool (task: allow); on pi that is
+    // ownership-scoped nested delegation.
+    if (agent.permissions.task === "allow") {
+      frontmatter.push("allowed_subagents: all");
+    }
+
+    const compiledContent = [...frontmatter, "---", "", promptContent].join("\n");
 
     sources.push({
       stem,
       compiledContent,
-      configRelative: configRelativePath(`agents/${stem}.md`),
+      configRelative: agentConfigRelative(stem),
     });
   }
 
@@ -280,7 +274,7 @@ function buildSkillSources() {
       files.push({
         skillName,
         absSource: absPath,
-        configRelative: configRelativePath(`skills/${SKILL_PREFIX}${skillName}/${rel}`),
+        configRelative: skillConfigRelative(skillName, rel),
       });
     }
   }
@@ -288,82 +282,36 @@ function buildSkillSources() {
   return { skillNames, files };
 }
 
-// ---------------------------------------------------------------------------
-// 3. settings.json merge — set default agent
-// ---------------------------------------------------------------------------
-
-// Which primary becomes the deployed default is an explicit, ordered policy —
-// never "whichever active primary happens to come first in manifest.json".
-// Registry array order must not be able to promote an agent: a new primary
-// (e.g. the speed-optimized arcs-flash) becomes eligible only by being listed
-// here, and only at the rank it is listed at. Earlier entries always win, so a
-// lower-ranked primary is a fallback, never a silent replacement.
-const DEFAULT_AGENT_PRECEDENCE = ["arcs-orchestrate", "arcs-orchestrate-caveman", "arcs-flash"];
-
-function isSelectablePrimary(agent) {
-  return Boolean(agent) && agent.kind === "primary" && isActiveAgentForMode(agent, "claudecode");
-}
-
-function selectDefaultAgent(registry) {
-  // An explicit user selection outranks the pinned precedence — but only when it
-  // names a real Claude-Code-active primary. A user who asked for X must never
-  // silently get Y, so an unusable selection hard-fails instead of degrading
-  // into the precedence walk.
-  const requestedId = (process.env.DEPLOY_PRIMARY_AGENT ?? "").trim();
-  if (requestedId !== "") {
-    const requested = registry.find((record) => record.id === requestedId);
-    if (isSelectablePrimary(requested)) return requested;
-    const selectable = registry.filter(isSelectablePrimary).map((record) => record.id);
-    throw new Error(
-      `DEPLOY_PRIMARY_AGENT "${requestedId}" is not an active Claude Code primary agent. Selectable: ${selectable.join(", ") || "(none)"}`,
-    );
-  }
-
-  for (const id of DEFAULT_AGENT_PRECEDENCE) {
-    const agent = registry.find((record) => record.id === id);
-    if (isSelectablePrimary(agent)) {
-      return agent;
+function walkFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...walkFiles(full));
+    } else if (entry.isFile()) {
+      out.push(full);
     }
   }
-  throw new Error(
-    `No active Claude Code primary agent in default precedence: ${DEFAULT_AGENT_PRECEDENCE.join(", ")}`,
-  );
+  return out;
 }
 
-function planSettingsUpdate() {
-  const defaultAgent = selectDefaultAgent(readAgentRegistry());
+function sha256(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
 
-  const settingsConfigRelative = configRelativePath("settings.json");
-  const settingsAbsolute = resolve(destination, settingsConfigRelative);
-
-  let existing = null;
-  let parsed = {};
-  if (existsSync(settingsAbsolute)) {
-    existing = readFileSync(settingsAbsolute, "utf-8");
-    try {
-      parsed = JSON.parse(existing);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        parsed = {};
-      }
-    } catch {
-      // Malformed JSON — preserve as-is by skipping the merge.
-      return { settingsConfigRelative, settingsAbsolute, status: "skipped-malformed" };
-    }
+function readInstalledManifest() {
+  const manifestPath = resolve(destination, manifestConfigRelative());
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const value = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    return value?.bundleId === "arcs-pi-bundle" ? value : null;
+  } catch {
+    return null;
   }
+}
 
-  const merged = { ...parsed, agent: defaultAgent.id };
-  const serialized = `${JSON.stringify(merged, null, 2)}\n`;
-
-  let status;
-  if (existing === null) {
-    status = "added";
-  } else if (existing === serialized) {
-    status = "unchanged";
-  } else {
-    status = "changed";
-  }
-
-  return { settingsConfigRelative, settingsAbsolute, status, serialized };
+function ensureParentDir(filePath) {
+  mkdirSync(dirname(filePath), { recursive: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +323,6 @@ function main() {
   const previousManifest = readInstalledManifest();
   const agentSources = buildAgentSources();
   const skillSources = buildSkillSources();
-  const settingsPlan = planSettingsUpdate();
 
   // Pass 1: Classify add/change/unchanged for every planned write
   const filesAdded = [];
@@ -408,21 +355,12 @@ function main() {
     }
   }
 
-  if (settingsPlan.status === "added") {
-    filesAdded.push(settingsPlan.settingsConfigRelative);
-  } else if (settingsPlan.status === "changed") {
-    filesChanged.push(settingsPlan.settingsConfigRelative);
-  } else if (settingsPlan.status === "unchanged") {
-    filesUnchanged.push(settingsPlan.settingsConfigRelative);
-  }
-  // status "skipped-malformed" intentionally omitted from all lists
-
   // Orphans
   const filesRemoved = [];
 
   // Skill orphans — only `arcs-*/` directories that aren't in current source.
   // The prefix gives us a safe namespace; foreign user skills are never touched.
-  const skillsTargetDir = resolve(destination, configRelativePath("skills"));
+  const skillsTargetDir = resolve(destination, scope === "project" ? "skills" : "agent/skills");
   const activeSkillDirs = new Set(skillSources.skillNames.map((n) => `${SKILL_PREFIX}${n}`));
   const orphanSkillDirs = [];
   if (existsSync(skillsTargetDir)) {
@@ -430,7 +368,7 @@ function main() {
       if (entry.isDirectory() && entry.name.startsWith(SKILL_PREFIX)) {
         if (!activeSkillDirs.has(entry.name)) {
           orphanSkillDirs.push(entry.name);
-          filesRemoved.push(configRelativePath(`skills/${entry.name}`));
+          filesRemoved.push(`${scope === "project" ? "skills" : "agent/skills"}/${entry.name}`);
         }
       }
     }
@@ -438,13 +376,13 @@ function main() {
 
   const retiredById = new Map(
     registry
-      .filter((agent) => isRetiredAgentForMode(agent, "claudecode"))
+      .filter((agent) => isRetiredAgentForMode(agent, "pi"))
       .map((agent) => [agent.id, agent]),
   );
   for (const ownership of previousManifest?.agents ?? []) {
     const retired = retiredById.get(ownership.id);
     if (!retired) continue;
-    const expectedDestination = configRelativePath(`agents/${retired.id}.md`);
+    const expectedDestination = agentConfigRelative(retired.id);
     if (ownership.promptDestination !== expectedDestination) continue;
     const installedPath = resolve(destination, ownership.promptDestination);
     if (existsSync(installedPath) && sha256(readFileSync(installedPath)) === ownership.sourceHash) {
@@ -466,11 +404,6 @@ function main() {
       writeFileSync(abs, readFileSync(absSource));
     }
 
-    if (settingsPlan.serialized) {
-      ensureParentDir(settingsPlan.settingsAbsolute);
-      writeFileSync(settingsPlan.settingsAbsolute, settingsPlan.serialized, "utf-8");
-    }
-
     for (const fileToRemove of filesRemoved) {
       const abs = resolve(destination, fileToRemove);
       if (existsSync(abs)) {
@@ -480,19 +413,17 @@ function main() {
       }
     }
 
-    const installedManifestPath = resolve(destination, configRelativePath(".arcs-bundle.json"));
+    const installedManifestPath = resolve(destination, manifestConfigRelative());
     ensureParentDir(installedManifestPath);
     writeFileSync(
       installedManifestPath,
       `${JSON.stringify(
         {
-          bundleId: "arcs-claudecode-bundle",
-          installMode: `claudecode-${scope}`,
+          bundleId: "arcs-pi-bundle",
+          installMode: `pi-${scope}`,
           sourceBundleVersion: "deploy-script",
           sourceBundleHash: sha256(readFileSync(resolve(bundleRoot, "manifest.json"))),
           installedAt: new Date().toISOString(),
-          // Persisted so a later `arcs init` can reuse the previous tier
-          // selection instead of re-prompting for it.
           tierModels,
           ownedPaths: [],
           agents: agentSources.map((agent) => ({
@@ -508,16 +439,11 @@ function main() {
     );
   }
 
-  // Best-effort: wire the codegraph MCP server. Skipped on dry-run; never fatal.
-  const codegraphWired = dryRun ? false : wireCodegraphMcp("claude");
-
-  // Best-effort: wire RTK instructions + hook. `rtk init -g` only writes the
-  // user-global config, so project-scoped deploys skip it. Skipped on dry-run;
-  // never fatal.
-  const rtkWired = dryRun || scope === "project" ? false : wireRtk("claude");
-
+  // codegraph/rtk: neither exposes a pi install target, so nothing to wire.
   const result = {
     dryRun,
+    platform: "pi",
+    scope,
     source: bundleRoot,
     destination,
     modelConfig: tierModels,
@@ -525,8 +451,9 @@ function main() {
     filesChanged,
     filesRemoved,
     filesUnchanged,
-    codegraphWired,
-    rtkWired,
+    orphanSkillDirs,
+    codegraphWired: false,
+    rtkWired: false,
   };
 
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
