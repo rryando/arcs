@@ -43,6 +43,11 @@ import {
   runClaudeJob,
 } from "../claude-runner.js";
 import { fail, parseBody, requireProjectDir, respond } from "../respond.js";
+import {
+  captureWorkspaceSnapshot,
+  persistRunSnapshot,
+  writeSettledRunChanges,
+} from "../run-diff.js";
 import { getRunDriver } from "../run-driver.js";
 import {
   foldRunEventLog,
@@ -319,6 +324,16 @@ async function writeBackRun(
     ...(record.eventLogTruncated === true && { eventLogTruncated: true }),
   });
   await pruneRunEventLogs(projectDir, ctx.slug);
+
+  // Workspace diff against the spawn-time snapshot — the approve/revert
+  // review surface. Guarded exactly like the rest of this write-back's
+  // best-effort contract: a failed diff (or an absent/errored snapshot)
+  // degrades GET /changes to an empty list, never the settled claim.
+  try {
+    await writeSettledRunChanges(projectDir, ctx.slug, ctx.runId);
+  } catch {
+    // Swallowed — see the write-back doc comment above.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -328,12 +343,8 @@ async function writeBackRun(
 /**
  * One turn of a stateless headless conversation. Answers 202 with the run's id
  * and the stream to tail it on — the acceptance, not the result: the run
- * proceeds out-of-band in the runner, whose exit-time write-back settles it.
- *
- * TODO(snapshot): workspace diffing lands in a later wave. The snapshot hook
- * belongs HERE — after the workspace is resolved and before the claim is
- * taken — so a later diff can be rendered against the state the run actually
- * saw.
+ * proceeds out-of-band in the runner, whose exit-time write-back settles it
+ * and diffs the workspace against the baseline snapshot captured here.
  *
  * Concurrency: one live run per PROJECT. The run store's beginRun is the
  * atomic claim (under the same lock the settle releases it under); the
@@ -364,11 +375,19 @@ askRoute.post("/api/p/:slug/ask", async (c) =>
         throw new DagError("RUN_IN_PROGRESS", `a run for project "${slug}" is already in progress`);
       }
 
-      // TODO(snapshot): see the route doc comment — the workspace snapshot
-      // hook goes here (it must capture state BEFORE the claim is taken).
-
       const dir = await primaryWorkspacePath(projectDir, slug);
       const runId = randomUUID();
+
+      // The workspace baseline the settle-time diff renders against — captured
+      // HERE, after the workspace is resolved and before the claim is taken,
+      // so the state the run actually saw is what a later diff or revert
+      // compares to. Best-effort: capture is total by contract (a failure
+      // records `error` on the snapshot) and a persist failure degrades GET
+      // /changes to an empty list — neither can fail the accepted 202.
+      const snapshot = await captureWorkspaceSnapshot(dir);
+      await persistRunSnapshot(projectDir, slug, runId, snapshot).catch(() => {
+        // Snapshot unpersistable — the review surface simply never materialises.
+      });
       // The run's own ceiling, resolved HERE so the deadline persisted with
       // the claim is the same number the runner arms its kill timer with (it
       // prefers this over its own env/default lookup).

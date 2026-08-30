@@ -67,6 +67,11 @@ export const RUN_EVENT_LOG_MAX_BYTES = 32 * 1024 * 1024;
 export const RUN_EVENT_LOG_RETENTION = 5;
 
 const LOG_SUFFIX = ".events.jsonl";
+/** Sidecars a run keeps beside its log — the diff snapshot and the settle-time
+ *  changes manifest (run-diff.ts). Pruned with the log, never independently:
+ *  a pruned changes file would strand a revertable diff forever, and a stale
+ *  snapshot is exactly the baseline a later run must never inherit. */
+const RUN_SIDECAR_SUFFIXES = [".snapshot.json", ".changes.json"] as const;
 const NEWLINE = 0x0a;
 /** The only byte the log ever adds of its own: a line terminator. */
 const TERMINATOR = Buffer.from("\n", "utf-8");
@@ -541,15 +546,21 @@ export async function foldRunEventLog(
 // ---------------------------------------------------------------------------
 
 /**
- * Keeps the newest `keep` event logs for one session and deletes the rest.
+ * Keeps the newest `keep` RUNS for one session and deletes all their files —
+ * event log AND the snapshot/changes sidecars that live beside it.
  *
- * Called at EVERY settle (after the fold), so the log that just settled is
- * always among the survivors and the sessions dir is bounded at `keep` logs per
+ * Called at EVERY settle (after the fold), so the run that just settled is
+ * always among the survivors and the sessions dir is bounded at `keep` runs per
  * session no matter how many runs a session accumulates. "Every settle" means
  * the startup orphan sweep too (`settleOrphanedRuns`): a server that dies
  * mid-run never reaches the route's write-back, so without that call site a
  * session whose runs are always interrupted grows one capped log per run
  * forever. `keep: 0` drops them all — what session deletion uses.
+ *
+ * Preservation unit is the RUN, not the file: one run's log + snapshot +
+ * changes manifest are born, age and die together (grouped by the run segment
+ * in the filename), so the review surface for a retained run always has its
+ * baseline and its diff, and a pruned run takes all three with it.
  *
  * Never throws; returns how many files it removed.
  */
@@ -561,39 +572,69 @@ export async function pruneRunEventLogs(
   try {
     const sessionsDir = join(projectDir, "sessions");
     const prefix = `${normalizeIdentifier(sessionId)}.run-`;
+    const suffixes = [LOG_SUFFIX, ...RUN_SIDECAR_SUFFIXES];
     const names = (await readdir(sessionsDir)).filter(
       (name) =>
         name.startsWith(prefix) &&
-        name.endsWith(LOG_SUFFIX) &&
-        name.length > prefix.length + LOG_SUFFIX.length,
+        suffixes.some((suffix) => name.endsWith(suffix)) &&
+        name.length > prefix.length + suffixLen(name),
     );
-    if (names.length <= keep) return 0;
+    if (names.length === 0) return 0;
 
-    const dated = await Promise.all(
-      names.map(async (name) => {
-        try {
-          return { name, mtimeMs: (await stat(join(sessionsDir, name))).mtimeMs };
-        } catch {
-          // Vanished under us — sort it to the front so it is dropped first.
-          return { name, mtimeMs: 0 };
-        }
-      }),
-    );
-    // Newest first; the name breaks mtime ties (same-millisecond runs) so the
-    // ordering is total and the prune is deterministic.
-    dated.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? 1 : -1));
+    // Group by run segment (the filename between the prefix and the first
+    // suffix dot — segments never contain dots, they are sanitized run ids).
+    const segmentOf = (name: string): string => {
+      const rest = name.slice(prefix.length);
+      const dot = rest.indexOf(".");
+      return dot === -1 ? rest : rest.slice(0, dot);
+    };
+    const bySegment = new Map<string, { name: string; mtimeMs: number }[]>();
+    for (const name of names) {
+      const segment = segmentOf(name);
+      if (segment === "") continue;
+      let info: Awaited<ReturnType<typeof stat>>;
+      try {
+        info = await stat(join(sessionsDir, name));
+      } catch {
+        continue; // vanished under us
+      }
+      const files = bySegment.get(segment) ?? [];
+      files.push({ name, mtimeMs: info.mtimeMs });
+      bySegment.set(segment, files);
+    }
+    if (bySegment.size <= keep) return 0;
+
+    // A run ages by its NEWEST file's mtime; the name breaks mtime ties
+    // (same-millisecond runs) so the ordering is total and the prune is
+    // deterministic.
+    const aged = [...bySegment.entries()]
+      .map(([segment, files]) => ({
+        segment,
+        files,
+        newest: Math.max(...files.map((file) => file.mtimeMs)),
+      }))
+      .sort((a, b) => b.newest - a.newest || (a.segment < b.segment ? 1 : -1));
 
     let pruned = 0;
-    for (const entry of dated.slice(Math.max(keep, 0))) {
-      try {
-        await unlink(join(sessionsDir, entry.name));
-        pruned += 1;
-      } catch {
-        // Already gone or locked — retention is best-effort.
+    for (const entry of aged.slice(Math.max(keep, 0))) {
+      for (const file of entry.files) {
+        try {
+          await unlink(join(sessionsDir, file.name));
+          pruned += 1;
+        } catch {
+          // Already gone or locked — retention is best-effort.
+        }
       }
     }
     return pruned;
   } catch {
     return 0;
   }
+}
+
+function suffixLen(name: string): number {
+  for (const suffix of [LOG_SUFFIX, ...RUN_SIDECAR_SUFFIXES]) {
+    if (name.endsWith(suffix)) return suffix.length;
+  }
+  return 0;
 }

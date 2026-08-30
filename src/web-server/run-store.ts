@@ -84,6 +84,11 @@ export interface RunRecord {
   /** The run's event log hit its cap or lost bytes — the end frame reports it
    *  so a consumer knows it reached a hole, never a silent end. */
   eventLogTruncated?: boolean;
+  /** Epoch ms the run's workspace changes were reverted (POST /revert). Once
+   *  stamped, a second revert is refused — one revert per run, whatever it
+   *  found to revert. Lives on the record (not the sidecars) so it survives
+   *  their retention pruning. */
+  revertedAt?: number;
 }
 
 export interface RunIndex {
@@ -261,6 +266,46 @@ export async function settleRun(
 export async function getRun(projectDir: string, runId: string): Promise<RunRecord | undefined> {
   const runs = await readRunsIndex(projectDir);
   return runs.find((run) => run.runId === runId);
+}
+
+// ---------------------------------------------------------------------------
+// Revert state
+// ---------------------------------------------------------------------------
+
+/**
+ * Stamps the run's workspace changes as reverted (POST /revert), once.
+ *
+ * Refuses with `RUN_ALREADY_REVERTED` (409 on the wire) when the run has
+ * already been reverted, `RUN_NOT_FOUND` when the run is not in the index, and
+ * `RUN_NOT_SETTLED` while the run is still live — a claim in flight may still
+ * be writing, so its changes are not final and must not be reverted.
+ * Under the same lock every other mutation uses, so a second revert racing
+ * the first can never both win.
+ */
+export async function markRunReverted(projectDir: string, runId: string): Promise<RunRecord> {
+  await ensureDir(join(projectDir, "runs"));
+  return withLock(runStoreLockPath(projectDir), async () => {
+    const runs = await readRunsIndex(projectDir);
+    const claim = runs.find((run) => run.runId === runId);
+    if (claim === undefined) {
+      throw new DagError("RUN_NOT_FOUND", `no run "${runId}" on this project`);
+    }
+    if (claim.outcome === undefined) {
+      throw new DagError(
+        "RUN_NOT_SETTLED",
+        `run "${runId}" is still live — only a settled run's changes can be reverted`,
+      );
+    }
+    if (claim.revertedAt !== undefined) {
+      throw new DagError(
+        "RUN_ALREADY_REVERTED",
+        `the changes of run "${runId}" were already reverted`,
+      );
+    }
+    claim.revertedAt = Date.now();
+    await writeRunsIndex(projectDir, runs);
+    return claim;
+  });
 }
 
 /** The project's current in-flight run claim, or `undefined`. */

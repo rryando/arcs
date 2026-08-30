@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { getDataDir, PACKAGE_ROOT } from "../utils/paths.js";
 import { ok } from "./respond.js";
 import { askRoute } from "./routes/ask.js";
+import { changesRoute } from "./routes/changes.js";
 import { collectionsRoute } from "./routes/collections.js";
 import { discoveryRoute } from "./routes/discovery.js";
 import { eventsRoute } from "./routes/events.js";
@@ -71,6 +72,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route("/", projectsRoute);
   app.route("/", collectionsRoute);
   app.route("/", askRoute);
+  app.route("/", changesRoute);
   // Read-only file plane (two GETs, no writes) — see routes/workspace.ts.
   app.route("/", workspaceRoute);
   app.route("/", discoveryRoute);
