@@ -17,6 +17,7 @@ import {
   extractModelPreFills,
   getAvailableModels,
   getClaudeCodeModels,
+  getPiAvailableModels,
   type ModelTierConfig,
   type ModelVariants,
   type ProviderModels,
@@ -717,6 +718,7 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         // session's model by default ("inherit" — the extension default) or
         // get an explicit provider/model id. Falls back to the pi session's
         // currently configured model when present.
+        const piAvailableModels = getPiAvailableModels();
         p.note(
           [
             "ARCS agents are grouped into three tiers.",
@@ -730,19 +732,28 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           "pi Model Tiers",
         );
 
-        const piHeavyModel = await selectPiTierModel("Heavy model (reasoning, synthesis)");
+        const piHeavyModel = await selectPiTierModel(
+          "Heavy model (reasoning, synthesis)",
+          piAvailableModels,
+        );
         if (p.isCancel(piHeavyModel)) {
           p.cancel("Setup cancelled.");
           process.exit(0);
         }
 
-        const piStandardModel = await selectPiTierModel("Standard model (orchestration)");
+        const piStandardModel = await selectPiTierModel(
+          "Standard model (orchestration)",
+          piAvailableModels,
+        );
         if (p.isCancel(piStandardModel)) {
           p.cancel("Setup cancelled.");
           process.exit(0);
         }
 
-        const piLightModel = await selectPiTierModel("Light/fast model (read-only, exploration)");
+        const piLightModel = await selectPiTierModel(
+          "Light/fast model (read-only, exploration)",
+          piAvailableModels,
+        );
         if (p.isCancel(piLightModel)) {
           p.cancel("Setup cancelled.");
           process.exit(0);
@@ -904,24 +915,38 @@ async function selectVariant(
 
 /**
  * pi tier model selection: "inherit" (defer to the parent pi session's
- * model — the extension default, and what the deploy script omits) or an
- * explicit provider/modelId entered as text. No curated model list: pi
- * serves any configured provider. Returns a symbol on cancel.
+ * model — the extension default) or an explicit provider/model ID. Returns a
+ * symbol on cancel.
  */
-async function selectPiTierModel(message: string): Promise<string | symbol> {
-  const selected = await p.select({
-    message,
-    options: [
-      {
-        value: "inherit",
-        label: "inherit",
-        hint: "defer to the parent pi session's model (default)",
-      },
-      { value: CUSTOM_MODEL_SENTINEL, label: "Enter custom model ID" },
-    ],
-    initialValue: "inherit",
-  });
+async function selectPiTierModel(
+  message: string,
+  availableModels: ProviderModels[],
+): Promise<string | symbol> {
+  const options: Array<{ value: string; label: string; hint?: string }> = [
+    {
+      value: "inherit",
+      label: "inherit",
+      hint: "defer to the parent pi session's model (default)",
+    },
+  ];
+
+  for (const group of availableModels) {
+    options.push({
+      value: `__sep_${group.provider}__`,
+      label: `── ${group.provider} ──`,
+      hint: "separator",
+    });
+    for (const model of group.models) {
+      options.push({ value: model, label: model });
+    }
+  }
+  options.push({ value: CUSTOM_MODEL_SENTINEL, label: "Enter custom model ID" });
+
+  const selected = await p.select({ message, options, initialValue: "inherit" });
   if (p.isCancel(selected)) return selected;
+  if (typeof selected === "string" && selected.startsWith("__sep_")) {
+    return selectPiTierModel(message, availableModels);
+  }
   if (selected === CUSTOM_MODEL_SENTINEL) {
     const custom = await p.text({
       message: `${message} (custom)`,

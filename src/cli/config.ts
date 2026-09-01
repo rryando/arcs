@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { accessSync, constants, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -284,6 +285,52 @@ export function extractModelPreFills(config: unknown): ModelTierConfig {
 export interface ProviderModels {
   provider: string;
   models: string[];
+}
+
+/**
+ * Reads the model table printed by pi and returns selectable provider/model IDs.
+ * The command is best-effort: pi may be installed without any configured
+ * providers, or its output may change between versions.
+ */
+export function getPiAvailableModels(): ProviderModels[] {
+  let output: string;
+  try {
+    output = execSync("pi --list-models", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 15_000,
+    });
+  } catch {
+    return [];
+  }
+
+  const lines = output.split("\n");
+  const headerIndex = lines.findIndex(
+    (line) =>
+      line.trim().split(/\s+/).slice(0, 7).join(" ") ===
+      "provider model context max-out thinking images",
+  );
+  if (headerIndex < 0) return [];
+
+  const groups: ProviderModels[] = [];
+  const seen = new Set<string>();
+  for (const line of lines.slice(headerIndex + 1)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length < 2) continue;
+    const [provider, model] = columns;
+    if (!provider || !model) continue;
+    const id = `${provider}/${model}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    let group = groups.find((candidate) => candidate.provider === provider);
+    if (!group) {
+      group = { provider, models: [] };
+      groups.push(group);
+    }
+    group.models.push(id);
+  }
+
+  return groups.filter((group) => group.models.length > 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -199,6 +199,43 @@ describe("pi setup flow", () => {
     });
   });
 
+  it("offers discovered pi provider/model IDs as tier choices", async () => {
+    await withTempHomeDir(async () => {
+      const prompts = await import("@clack/prompts");
+      const actualChildProcess =
+        await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      vi.mocked((prompts as any).__confirm).mockResolvedValue(true);
+      vi.mocked(childProcess.execSync).mockImplementation(((cmd: any, ...rest: any[]) => {
+        if (cmd === "pi --list-models") {
+          return `provider model context max-out thinking images
+openai-codex  gpt-5.4  1  1  yes  yes
+opencode  claude-sonnet-4-6  1  1  no  yes
+` as any;
+        }
+        return (actualChildProcess.execSync as any)(cmd, ...rest);
+      }) as any);
+      vi.mocked((prompts as any).__select).mockImplementation(async (input: any) => {
+        const values = input.options.map((option: any) => option.value);
+        return values.includes("openai-codex/gpt-5.4") ? "openai-codex/gpt-5.4" : "inherit";
+      });
+
+      await runSetup("init");
+
+      const deployCall = vi
+        .mocked(childProcess.spawnSync)
+        .mock.calls.find(
+          (call) =>
+            call[0] === "node" &&
+            Array.isArray(call[1]) &&
+            (call[1] as string[]).some((arg) => arg.endsWith("deploy-pi-bundle.mjs")),
+        );
+      const deployEnv = (deployCall?.[2] as { env?: Record<string, string> }).env ?? {};
+      expect(deployEnv.DEPLOY_MODEL_HEAVY).toBe("openai-codex/gpt-5.4");
+      expect(deployEnv.DEPLOY_MODEL_STANDARD).toBe("openai-codex/gpt-5.4");
+      expect(deployEnv.DEPLOY_MODEL_LIGHT).toBe("openai-codex/gpt-5.4");
+    });
+  });
+
   it("accepts a custom model id through the pi tier select", async () => {
     await withTempHomeDir(async () => {
       const prompts = await import("@clack/prompts");
