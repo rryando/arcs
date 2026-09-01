@@ -56,6 +56,7 @@ const DEPLOY_RESULT = JSON.stringify({
   source: "/bundle",
   destination: "/tmp/pi-home",
   modelConfig: { heavy: "inherit", standard: "inherit", light: "inherit" },
+  thinkingConfig: { heavy: "high", standard: "medium", light: "low" },
   filesAdded: ["agent/agents/software-engineer.md"],
   filesChanged: [],
   filesRemoved: [],
@@ -154,6 +155,9 @@ describe("pi setup flow", () => {
       expect(deployEnv.DEPLOY_MODEL_HEAVY).toBe("inherit");
       expect(deployEnv.DEPLOY_MODEL_STANDARD).toBe("inherit");
       expect(deployEnv.DEPLOY_MODEL_LIGHT).toBe("inherit");
+      expect(deployEnv.DEPLOY_THINKING_HEAVY).toBe("high");
+      expect(deployEnv.DEPLOY_THINKING_STANDARD).toBe("medium");
+      expect(deployEnv.DEPLOY_THINKING_LIGHT).toBe("low");
 
       // Config records the pi platform
       const config = JSON.parse(readFileSync(configPath(), "utf-8")) as { ides: string[] };

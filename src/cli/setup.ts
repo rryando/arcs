@@ -20,6 +20,8 @@ import {
   getPiAvailableModels,
   type ModelTierConfig,
   type ModelVariants,
+  PI_THINKING_LEVELS,
+  type PiThinkingConfig,
   type ProviderModels,
   readClaudeCodeCurrentModel,
   readClaudeCodeCurrentPrimaryAgent,
@@ -693,6 +695,9 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           : null;
 
       let piModelConfig: ModelTierConfig | null = null;
+      let piThinkingConfig: PiThinkingConfig | undefined;
+      const reusablePiThinking =
+        piBundleDiagnosis.status === "ok" ? piBundleDiagnosis.tierThinking : undefined;
 
       if (reusablePiModels) {
         const reuseExistingPi = await p.confirm({
@@ -701,6 +706,11 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
             `  heavy: ${reusablePiModels.heavy}`,
             `  standard: ${reusablePiModels.standard}`,
             `  light: ${reusablePiModels.light}`,
+            ...(reusablePiThinking
+              ? [
+                  `  thinking: heavy=${reusablePiThinking.heavy}, standard=${reusablePiThinking.standard}, light=${reusablePiThinking.light}`,
+                ]
+              : []),
           ].join("\n"),
           initialValue: true,
         });
@@ -709,15 +719,15 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
         // "let me pick models again", not "abort the wizard".
         if (!p.isCancel(reuseExistingPi) && reuseExistingPi) {
           piModelConfig = { ...reusablePiModels };
+          piThinkingConfig = reusablePiThinking;
         }
       }
 
       if (!piModelConfig) {
         // ── Model selection for pi ─────────────────────────────────────────
-        // pi has no curated model list: sub-agents inherit the parent pi
-        // session's model by default ("inherit" — the extension default) or
-        // get an explicit provider/model id. Falls back to the pi session's
-        // currently configured model when present.
+        // pi sub-agents inherit the parent pi session's model by default
+        // ("inherit" — the extension default) or get an explicit provider/model
+        // id. The thinking levels below are pinned per ARCS tier in frontmatter.
         const piAvailableModels = getPiAvailableModels();
         p.note(
           [
@@ -764,6 +774,26 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           standard: piStandardModel as string,
           light: piLightModel as string,
         };
+        const piThinkingHeavy = await selectPiThinking("Heavy thinking level", "high");
+        if (p.isCancel(piThinkingHeavy)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+        const piThinkingStandard = await selectPiThinking("Standard thinking level", "medium");
+        if (p.isCancel(piThinkingStandard)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+        const piThinkingLight = await selectPiThinking("Light thinking level", "low");
+        if (p.isCancel(piThinkingLight)) {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        }
+        piThinkingConfig = {
+          heavy: piThinkingHeavy as PiThinkingConfig["heavy"],
+          standard: piThinkingStandard as PiThinkingConfig["standard"],
+          light: piThinkingLight as PiThinkingConfig["light"],
+        };
       }
 
       const sPi = p.spinner();
@@ -780,6 +810,13 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
             DEPLOY_MODEL_HEAVY: piModelConfig!.heavy,
             DEPLOY_MODEL_STANDARD: piModelConfig!.standard,
             DEPLOY_MODEL_LIGHT: piModelConfig!.light,
+            ...(piThinkingConfig
+              ? {
+                  DEPLOY_THINKING_HEAVY: piThinkingConfig.heavy,
+                  DEPLOY_THINKING_STANDARD: piThinkingConfig.standard,
+                  DEPLOY_THINKING_LIGHT: piThinkingConfig.light,
+                }
+              : {}),
           },
           encoding: "utf-8",
         });
@@ -795,6 +832,11 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
                 `${color.green("✔")} Source: ${res.source}`,
                 `${color.green("✔")} Destination: ${res.destination}`,
                 `${color.green("✔")} Heavy: ${color.cyan(res.modelConfig?.heavy || "inherit")}  |  Standard: ${color.cyan(res.modelConfig?.standard || "inherit")}  |  Light: ${color.cyan(res.modelConfig?.light || "inherit")}`,
+                ...(res.thinkingConfig
+                  ? [
+                      `${color.green("✔")} Thinking: heavy=${res.thinkingConfig.heavy}  |  standard=${res.thinkingConfig.standard}  |  light=${res.thinkingConfig.light}`,
+                    ]
+                  : []),
                 `${color.green("✔")} Files added: ${res.filesAdded?.length || 0}`,
                 `${color.green("✔")} Files changed: ${res.filesChanged?.length || 0}`,
                 `${color.green("✔")} Files removed: ${res.filesRemoved?.length || 0}`,
@@ -911,6 +953,23 @@ async function selectVariant(
   return VARIANT_OPTIONS.includes(selected as string)
     ? (selected as string)
     : DEFAULT_MODEL_VARIANT;
+}
+
+/** Presents pi's supported per-tier thinking levels. */
+async function selectPiThinking(
+  message: string,
+  initialValue: PiThinkingConfig["heavy"],
+): Promise<PiThinkingConfig["heavy"] | symbol> {
+  const selected = await p.select({
+    message,
+    options: PI_THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+    initialValue,
+  });
+  return p.isCancel(selected)
+    ? selected
+    : PI_THINKING_LEVELS.includes(selected as PiThinkingConfig["heavy"])
+      ? (selected as PiThinkingConfig["heavy"])
+      : initialValue;
 }
 
 /**

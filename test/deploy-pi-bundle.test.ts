@@ -221,14 +221,19 @@ describe("deploy-pi-bundle", () => {
         DEPLOY_CONFIG_ROOT: configRoot,
         DEPLOY_DRY_RUN: "false",
         DEPLOY_MODEL_HEAVY: "deepseek/deepseek-v4",
+        DEPLOY_THINKING_HEAVY: "high",
+        DEPLOY_THINKING_STANDARD: "medium",
+        DEPLOY_THINKING_LIGHT: "low",
       });
 
       expect(proc.status).toBe(0);
       const se = readFileSync(resolve(configRoot, "agent/agents/software-engineer.md"), "utf-8");
       expect(se).toContain("model: deepseek/deepseek-v4");
+      expect(se).toContain("thinking: high");
       // standard tier agents keep inherit → no model field
       const da = readFileSync(resolve(configRoot, "agent/agents/devil-advocate.md"), "utf-8");
       expect(da).not.toContain("model:");
+      expect(da).toContain("thinking: medium");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

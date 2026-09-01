@@ -20,6 +20,8 @@
 // Frontmatter mapping (ARCS manifest → pi agent type):
 //   - `model: inherit` is OMITTED — "inherit parent" is the extension default.
 //     A pinned DEPLOY_MODEL_* value emits `model: <value>` instead.
+//   - DEPLOY_THINKING_* values emit the pi-subagents `thinking:` frontmatter
+//     field for the corresponding ARCS tier.
 //   - permissions → `tools:` allowlist: edit→write/edit, bash→bash,
 //     mcp→ext:mcp, base read-only set read/grep/find/ls. Read-only
 //     specialists (code-reviewer, tech-architect, graph-explorer) get no
@@ -34,6 +36,7 @@
 //   DEPLOY_SCOPE        — `global` or `project` (default: `global`)
 //   DEPLOY_DRY_RUN      — "false" to actually write; anything else = dry-run (default: dry-run)
 //   DEPLOY_MODEL_HEAVY/STANDARD/LIGHT — 3-tier model overrides (default: "inherit")
+//   DEPLOY_THINKING_HEAVY/STANDARD/LIGHT — optional pi thinking levels
 //
 // Outputs JSON to stdout: DeployResult. Exit code 0 on success, 1 on error.
 // codegraph/rtk are never wired: neither tool supports a pi install target.
@@ -127,6 +130,15 @@ const tierModels = {
   standard: process.env.DEPLOY_MODEL_STANDARD || "inherit",
   light: process.env.DEPLOY_MODEL_LIGHT || "inherit",
 };
+const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const thinkingValues = {
+  heavy: process.env.DEPLOY_THINKING_HEAVY,
+  standard: process.env.DEPLOY_THINKING_STANDARD,
+  light: process.env.DEPLOY_THINKING_LIGHT,
+};
+const tierThinking = Object.values(thinkingValues).every((value) => thinkingLevels.includes(value))
+  ? thinkingValues
+  : undefined;
 
 function readAgentRegistry() {
   const manifestPath = resolve(bundleRoot, "manifest.json");
@@ -233,6 +245,7 @@ function buildAgentSources() {
     if (model !== "inherit") {
       frontmatter.push(`model: ${model}`);
     }
+    if (tierThinking) frontmatter.push(`thinking: ${tierThinking[agent.tier]}`);
 
     frontmatter.push(`tools: ${piTools(agent)}`);
 
@@ -425,6 +438,7 @@ function main() {
           sourceBundleHash: sha256(readFileSync(resolve(bundleRoot, "manifest.json"))),
           installedAt: new Date().toISOString(),
           tierModels,
+          ...(tierThinking ? { tierThinking } : {}),
           ownedPaths: [],
           agents: agentSources.map((agent) => ({
             id: agent.stem,
@@ -447,6 +461,7 @@ function main() {
     source: bundleRoot,
     destination,
     modelConfig: tierModels,
+    ...(tierThinking ? { thinkingConfig: tierThinking } : {}),
     filesAdded,
     filesChanged,
     filesRemoved,

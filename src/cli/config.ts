@@ -97,6 +97,19 @@ export type ModelTierConfig = {
   perAgent?: Record<string, string>;
 };
 
+export const PI_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type PiThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
+export type PiThinkingConfig = Record<AgentTierName, PiThinkingLevel>;
+type AgentTierName = "heavy" | "standard" | "light";
+
 export type ModelVariants = {
   heavy: string;
   standard: string;
@@ -215,7 +228,7 @@ export async function diagnoseClaudeCodeBundle(): Promise<
  */
 export async function diagnosePiBundle(): Promise<
   | { status: "missing"; path: string }
-  | { status: "ok"; path: string; tierModels?: ModelTierConfig }
+  | { status: "ok"; path: string; tierModels?: ModelTierConfig; tierThinking?: PiThinkingConfig }
   | { status: "corrupt"; path: string; error: string }
 > {
   const path = join(homedir(), ".pi", ".arcs-bundle.json");
@@ -257,7 +270,27 @@ export async function diagnosePiBundle(): Promise<
   ) {
     return { status: "ok", path };
   }
-  return { status: "ok", path, tierModels: { heavy, standard, light } };
+  const thinking = manifest.tierThinking;
+  const levels = ["heavy", "standard", "light"] as const;
+  const tierThinking =
+    thinking &&
+    typeof thinking === "object" &&
+    !Array.isArray(thinking) &&
+    levels.every((tier) =>
+      PI_THINKING_LEVELS.includes((thinking as Record<string, unknown>)[tier] as PiThinkingLevel),
+    )
+      ? {
+          heavy: (thinking as Record<string, PiThinkingLevel>).heavy,
+          standard: (thinking as Record<string, PiThinkingLevel>).standard,
+          light: (thinking as Record<string, PiThinkingLevel>).light,
+        }
+      : undefined;
+  return {
+    status: "ok",
+    path,
+    tierModels: { heavy, standard, light },
+    ...(tierThinking ? { tierThinking } : {}),
+  };
 }
 
 /**
