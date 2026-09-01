@@ -35,70 +35,90 @@ function runDeploy(env: Record<string, string>) {
   });
 }
 
-function setupBundleRoot(tempRoot: string, opts: { withSkills?: boolean } = {}) {
+function setupBundleRoot(
+  tempRoot: string,
+  opts: { withSkills?: boolean; withPrimaries?: boolean } = {},
+) {
   const bundleRoot = resolve(tempRoot, "bundle");
   writeFile(bundleRoot, "prompts/software-engineer.txt", "software engineer prompt body");
   writeFile(bundleRoot, "prompts/devil-advocate.txt", "devil's advocate prompt body");
   writeFile(bundleRoot, "prompts/arcs-orchestrate.txt", "orchestrator prompt body");
-  writeFile(
-    bundleRoot,
-    "manifest.json",
-    JSON.stringify({
-      agents: [
-        {
-          id: "software-engineer",
-          status: "active",
-          kind: "subagent",
-          tier: "heavy",
-          modes: ["opencode", "claudecode", "pi"],
-          source: "prompts/software-engineer.txt",
-          destination: "prompts/software-engineer.txt",
-          description: "Implementation specialist. Writes code, runs tests, ships features.",
-          permissions: {
-            edit: "allow",
-            bash: "allow",
-            webfetch: "allow",
-            mcp: "allow",
-            task: "deny",
-          },
+  const agents = [
+    {
+      id: "software-engineer",
+      status: "active",
+      kind: "subagent",
+      tier: "heavy",
+      modes: ["opencode", "claudecode", "pi"],
+      source: "prompts/software-engineer.txt",
+      destination: "prompts/software-engineer.txt",
+      description: "Implementation specialist. Writes code, runs tests, ships features.",
+      permissions: {
+        edit: "allow",
+        bash: "allow",
+        webfetch: "allow",
+        mcp: "allow",
+        task: "deny",
+      },
+    },
+    {
+      id: "devil-advocate",
+      status: "active",
+      kind: "subagent",
+      tier: "standard",
+      modes: ["opencode", "claudecode", "pi"],
+      source: "prompts/devil-advocate.txt",
+      destination: "prompts/devil-advocate.txt",
+      description: "Adversarial phase-gate agent. Cannot edit code.",
+      permissions: {
+        edit: "deny",
+        bash: "allow",
+        webfetch: "allow",
+        mcp: "allow",
+        task: "deny",
+      },
+    },
+    {
+      id: "arcs-orchestrate",
+      status: "active",
+      kind: "primary",
+      tier: "standard",
+      modes: ["opencode", "claudecode", "pi"],
+      source: "prompts/arcs-orchestrate.txt",
+      destination: "prompts/arcs-orchestrate.txt",
+      description: "The central coordinator for executing plans.",
+      permissions: {
+        edit: "allow",
+        bash: "allow",
+        webfetch: "allow",
+        mcp: "allow",
+        task: "allow",
+      },
+    },
+  ];
+  if (opts.withPrimaries) {
+    for (const id of ["arcs-flash", "arcs-orchestrate-caveman"]) {
+      writeFile(bundleRoot, `prompts/${id}.txt`, `${id} prompt body`);
+      agents.push({
+        id,
+        status: "active",
+        kind: "primary",
+        tier: "standard",
+        modes: ["opencode", "claudecode", "pi"],
+        source: `prompts/${id}.txt`,
+        destination: `prompts/${id}.txt`,
+        description: `${id} primary agent.`,
+        permissions: {
+          edit: "allow",
+          bash: "allow",
+          webfetch: "allow",
+          mcp: "allow",
+          task: "allow",
         },
-        {
-          id: "devil-advocate",
-          status: "active",
-          kind: "subagent",
-          tier: "standard",
-          modes: ["opencode", "claudecode", "pi"],
-          source: "prompts/devil-advocate.txt",
-          destination: "prompts/devil-advocate.txt",
-          description: "Adversarial phase-gate agent. Cannot edit code.",
-          permissions: {
-            edit: "deny",
-            bash: "allow",
-            webfetch: "allow",
-            mcp: "allow",
-            task: "deny",
-          },
-        },
-        {
-          id: "arcs-orchestrate",
-          status: "active",
-          kind: "primary",
-          tier: "standard",
-          modes: ["opencode", "claudecode", "pi"],
-          source: "prompts/arcs-orchestrate.txt",
-          destination: "prompts/arcs-orchestrate.txt",
-          description: "The central coordinator for executing plans.",
-          permissions: {
-            edit: "allow",
-            bash: "allow",
-            webfetch: "allow",
-            mcp: "allow",
-            task: "allow",
-          },
-        },
-      ],
-    }),
-  );
+      });
+    }
+  }
+  writeFile(bundleRoot, "manifest.json", JSON.stringify({ agents }));
   if (opts.withSkills) {
     writeFile(bundleRoot, "skills/brainstorming/SKILL.md", "# brainstorming skill\n");
     writeFile(
@@ -204,6 +224,134 @@ describe("deploy-pi-bundle", () => {
         "devil-advocate",
         "software-engineer",
       ]);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("updates all ARCS primary model overrides while preserving other settings", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-settings-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot, { withPrimaries: true });
+      writeFile(
+        configRoot,
+        "agent/settings.json",
+        JSON.stringify({
+          theme: "user-theme",
+          agent: {
+            "arcs-orchestrate": { mode: "primary", model: "stale/old", icon: "🎯" },
+            "arcs-flash": { mode: "primary", model: "stale/old", color: "#FFC44D" },
+            "arcs-orchestrate-caveman": { mode: "primary", model: "stale/old" },
+            "user-primary": { mode: "primary", model: "user/model" },
+          },
+        }),
+      );
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_MODEL_STANDARD: "openai-codex/gpt-5.6-luna",
+      });
+
+      expect(proc.status).toBe(0);
+      const settings = JSON.parse(
+        readFileSync(resolve(configRoot, "agent/settings.json"), "utf-8"),
+      ) as { theme: string; agent: Record<string, Record<string, string>> };
+      expect(settings.theme).toBe("user-theme");
+      expect(settings.agent["arcs-orchestrate"]).toMatchObject({
+        mode: "primary",
+        model: "openai-codex/gpt-5.6-luna",
+        icon: "🎯",
+      });
+      expect(settings.agent["arcs-flash"]).toMatchObject({
+        model: "openai-codex/gpt-5.6-luna",
+        color: "#FFC44D",
+      });
+      expect(settings.agent["arcs-orchestrate-caveman"].model).toBe("openai-codex/gpt-5.6-luna");
+      expect(settings.agent["user-primary"]).toEqual({ mode: "primary", model: "user/model" });
+      expect(proc.stdout).toContain('"agent/settings.json"');
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("removes ARCS primary model overrides when the selected tier inherits", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-settings-inherit-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot, { withPrimaries: true });
+      writeFile(
+        configRoot,
+        "agent/settings.json",
+        JSON.stringify({
+          agent: {
+            "arcs-orchestrate": { mode: "primary", model: "stale/old", icon: "🎯" },
+            "arcs-flash": { mode: "primary", model: "stale/old" },
+            "arcs-orchestrate-caveman": { mode: "primary", model: "stale/old" },
+          },
+        }),
+      );
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_MODEL_STANDARD: "inherit",
+      });
+
+      expect(proc.status).toBe(0);
+      const settings = JSON.parse(
+        readFileSync(resolve(configRoot, "agent/settings.json"), "utf-8"),
+      ) as { agent: Record<string, Record<string, string>> };
+      for (const id of ["arcs-orchestrate", "arcs-flash", "arcs-orchestrate-caveman"]) {
+        expect(settings.agent[id]).not.toHaveProperty("model");
+      }
+      expect(settings.agent["arcs-orchestrate"].icon).toBe("🎯");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("writes primary model settings at project scope", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-project-settings-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+    const projectRoot = resolve(tempRoot, "project");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot, { withPrimaries: true });
+      writeFile(
+        projectRoot,
+        ".pi/settings.json",
+        JSON.stringify({
+          theme: "project-theme",
+          agent: { "arcs-flash": { mode: "primary", model: "stale/old", color: "#FFC44D" } },
+        }),
+      );
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_PROJECT_ROOT: projectRoot,
+        DEPLOY_SCOPE: "project",
+        DEPLOY_DRY_RUN: "false",
+        DEPLOY_MODEL_STANDARD: "openai-codex/gpt-5.6-luna",
+      });
+
+      expect(proc.status).toBe(0);
+      const settings = JSON.parse(
+        readFileSync(resolve(projectRoot, ".pi/settings.json"), "utf-8"),
+      ) as { theme: string; agent: Record<string, Record<string, string>> };
+      expect(settings.theme).toBe("project-theme");
+      expect(settings.agent["arcs-flash"]).toMatchObject({
+        model: "openai-codex/gpt-5.6-luna",
+        color: "#FFC44D",
+      });
+      expect(settings.agent["arcs-orchestrate"].model).toBe("openai-codex/gpt-5.6-luna");
+      expect(existsSync(resolve(configRoot, "agent/settings.json"))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

@@ -12,10 +12,9 @@
 //
 // The compiled agent format targets the pi subagents extension
 // (@tintinweb/pi-subagents) custom agent types: a Claude Code-shaped
-// .md with YAML frontmatter in pi's agent directory. pi's main session is
-// the orchestrator, so there is no settings.json default-agent merge —
-// every agent (including the arcs-* primary prompts) deploys as a spawnable
-// subagent type via the `Agent` tool / `@type` mentions.
+// .md with YAML frontmatter in pi's agent directory. ARCS primary profiles
+// are also kept in settings.json so the pi primary-agent switcher uses the
+// selected tier model rather than a stale per-profile override.
 //
 // Frontmatter mapping (ARCS manifest → pi agent type):
 //   - `model: inherit` is OMITTED — "inherit parent" is the extension default.
@@ -37,6 +36,9 @@
 //   DEPLOY_DRY_RUN      — "false" to actually write; anything else = dry-run (default: dry-run)
 //   DEPLOY_MODEL_HEAVY/STANDARD/LIGHT — 3-tier model overrides (default: "inherit")
 //   DEPLOY_THINKING_HEAVY/STANDARD/LIGHT — optional pi thinking levels
+//
+// settings.json is merged in the selected scope. Only the `model` field of
+// active ARCS primary profiles is changed; all other user settings are kept.
 //
 // Outputs JSON to stdout: DeployResult. Exit code 0 on success, 1 on error.
 // codegraph/rtk are never wired: neither tool supports a pi install target.
@@ -202,6 +204,10 @@ function manifestConfigRelative() {
   return ".arcs-bundle.json";
 }
 
+function settingsConfigRelative() {
+  return scope === "project" ? "settings.json" : "agent/settings.json";
+}
+
 // ---------------------------------------------------------------------------
 // 1. Compile sub-agent prompts
 // ---------------------------------------------------------------------------
@@ -328,6 +334,77 @@ function ensureParentDir(filePath) {
 }
 
 // ---------------------------------------------------------------------------
+// 3. settings.json merge — update ARCS primary models
+// ---------------------------------------------------------------------------
+
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function planPrimarySettingsUpdate(registry) {
+  const settingsRelative = settingsConfigRelative();
+  const settingsAbsolute = resolve(destination, settingsRelative);
+  let existing = null;
+  let parsed = {};
+
+  if (existsSync(settingsAbsolute)) {
+    existing = readFileSync(settingsAbsolute, "utf-8");
+    try {
+      parsed = JSON.parse(existing);
+      if (!isJsonObject(parsed)) parsed = {};
+    } catch {
+      // Malformed JSON must never be overwritten by a deployment.
+      return { settingsRelative, settingsAbsolute, status: "skipped-malformed" };
+    }
+  }
+
+  const configuredAgents = isJsonObject(parsed.agent) ? parsed.agent : {};
+  const mergedAgents = { ...configuredAgents };
+  const primaryAgents = registry.filter(
+    (agent) => agent.kind === "primary" && isActiveAgentForMode(agent, "pi"),
+  );
+
+  for (const agent of primaryAgents) {
+    const model = tierModels[agent.tier];
+    const current = mergedAgents[agent.id];
+
+    if (!isJsonObject(current)) {
+      // A missing profile is part of ARCS's managed primary configuration. Do
+      // not invent fields on profiles that already exist, except for the model
+      // field itself; the mode marks a newly-created profile as a primary.
+      mergedAgents[agent.id] = {
+        mode: "primary",
+        ...(model === "inherit" ? {} : { model }),
+      };
+      continue;
+    }
+
+    const updated = { ...current };
+    if (model === "inherit") {
+      // No model means inherit the parent session model. Removing an old
+      // override is important: leaving it here defeats the selected tier.
+      delete updated.model;
+    } else {
+      updated.model = model;
+    }
+    mergedAgents[agent.id] = updated;
+  }
+
+  const merged = { ...parsed, agent: mergedAgents };
+  const serialized = `${JSON.stringify(merged, null, 2)}\n`;
+  let status;
+  if (existing === null) {
+    status = "added";
+  } else if (existing === serialized) {
+    status = "unchanged";
+  } else {
+    status = "changed";
+  }
+
+  return { settingsRelative, settingsAbsolute, status, serialized };
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -336,6 +413,7 @@ function main() {
   const previousManifest = readInstalledManifest();
   const agentSources = buildAgentSources();
   const skillSources = buildSkillSources();
+  const settingsPlan = planPrimarySettingsUpdate(registry);
 
   // Pass 1: Classify add/change/unchanged for every planned write
   const filesAdded = [];
@@ -367,6 +445,15 @@ function main() {
       }
     }
   }
+
+  if (settingsPlan.status === "added") {
+    filesAdded.push(settingsPlan.settingsRelative);
+  } else if (settingsPlan.status === "changed") {
+    filesChanged.push(settingsPlan.settingsRelative);
+  } else if (settingsPlan.status === "unchanged") {
+    filesUnchanged.push(settingsPlan.settingsRelative);
+  }
+  // status "skipped-malformed" intentionally omitted from all lists
 
   // Orphans
   const filesRemoved = [];
@@ -415,6 +502,11 @@ function main() {
       const abs = resolve(destination, configRelative);
       ensureParentDir(abs);
       writeFileSync(abs, readFileSync(absSource));
+    }
+
+    if (settingsPlan.serialized) {
+      ensureParentDir(settingsPlan.settingsAbsolute);
+      writeFileSync(settingsPlan.settingsAbsolute, settingsPlan.serialized, "utf-8");
     }
 
     for (const fileToRemove of filesRemoved) {
