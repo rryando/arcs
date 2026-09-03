@@ -1004,22 +1004,24 @@ async function selectPiTierModel(
   ];
 
   for (const group of availableModels) {
-    options.push({
-      value: `__sep_${group.provider}__`,
-      label: `── ${group.provider} ──`,
-      hint: "separator",
-    });
     for (const model of group.models) {
-      options.push({ value: model, label: model });
+      options.push({ value: model, label: model, hint: group.provider });
     }
   }
-  options.push({ value: CUSTOM_MODEL_SENTINEL, label: "Enter custom model ID" });
+  options.push({
+    value: CUSTOM_MODEL_SENTINEL,
+    label: "Enter custom model ID",
+    hint: "type a custom provider/model id",
+  });
 
-  const selected = await p.select({ message, options, initialValue: "inherit" });
+  const selected = await p.autocomplete({
+    message,
+    options,
+    initialValue: "inherit",
+    maxItems: 20,
+    placeholder: "Type to filter models...",
+  });
   if (p.isCancel(selected)) return selected;
-  if (typeof selected === "string" && selected.startsWith("__sep_")) {
-    return selectPiTierModel(message, availableModels);
-  }
   if (selected === CUSTOM_MODEL_SENTINEL) {
     const custom = await p.text({
       message: `${message} (custom)`,
@@ -1069,16 +1071,12 @@ async function selectModelForAgent(
   });
 
   for (const group of availableModels) {
-    options.push({
-      value: `__sep_${group.provider}__`,
-      label: `── ${group.provider} ──`,
-      hint: "separator",
-    });
     for (const model of group.models) {
       if (model === defaultModel) continue; // already shown as "keep default"
       options.push({
         value: model,
         label: model,
+        hint: group.provider,
       });
     }
   }
@@ -1086,19 +1084,18 @@ async function selectModelForAgent(
   options.push({
     value: CUSTOM_MODEL_SENTINEL,
     label: "Enter custom model ID",
+    hint: "type a custom provider/model id",
   });
 
-  const selected = await p.select({
+  const selected = await p.autocomplete({
     message,
     options,
     initialValue: KEEP_DEFAULT_SENTINEL,
+    maxItems: 20,
+    placeholder: "Type to filter models...",
   });
 
   if (p.isCancel(selected)) return selected;
-
-  if (typeof selected === "string" && selected.startsWith("__sep_")) {
-    return selectModelForAgent(message, availableModels, defaultModel);
-  }
 
   if (selected === KEEP_DEFAULT_SENTINEL) {
     return defaultModel;
@@ -1119,8 +1116,9 @@ async function selectModelForAgent(
 }
 
 /**
- * Presents a select UI with available models grouped by provider.
- * Falls back to text input if no models available or user picks custom.
+ * Presents a searchable autocomplete UI with available models grouped by
+ * provider (provider name in the hint, so typing filters by provider or model
+ * id). Falls back to text input if no models available or user picks custom.
  */
 async function selectModel(
   message: string,
@@ -1139,17 +1137,12 @@ async function selectModel(
   const options: Array<{ value: string; label: string; hint?: string }> = [];
 
   for (const group of availableModels) {
-    // Add separator-style label for provider group
-    options.push({
-      value: `__sep_${group.provider}__`,
-      label: `── ${group.provider} ──`,
-      hint: "separator",
-    });
     for (const model of group.models) {
+      const baseHint = MODEL_OPTION_HINTS[model] ?? group.provider;
       options.push({
         value: model,
         label: model,
-        hint: model === currentValue ? "current" : MODEL_OPTION_HINTS[model],
+        hint: model === currentValue ? `${baseHint} · current` : baseHint,
       });
     }
   }
@@ -1157,20 +1150,18 @@ async function selectModel(
   options.push({
     value: CUSTOM_MODEL_SENTINEL,
     label: "Enter custom model ID",
+    hint: "type a custom provider/model id",
   });
 
-  const selected = await p.select({
+  const selected = await p.autocomplete({
     message,
     options,
     initialValue: currentValue || undefined,
+    maxItems: 20,
+    placeholder: "Type to filter models...",
   });
 
   if (p.isCancel(selected)) return selected;
-
-  // Skip separators — shouldn't normally happen but guard
-  if (typeof selected === "string" && selected.startsWith("__sep_")) {
-    return selectModel(message, availableModels, currentValue);
-  }
 
   if (selected === CUSTOM_MODEL_SENTINEL) {
     return p.text({
