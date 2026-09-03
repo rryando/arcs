@@ -222,11 +222,72 @@ interface Snapshot {
   rows: Row[];
 }
 
+export type DiagramEdge = { from: string; to: string };
+
+/**
+ * Render diagram nodes+edges as indented ASCII lines, ordered by dependency
+ * depth (roots first). Pure — no I/O, exported for tests.
+ */
+export function renderDiagramAscii(
+  nodes: DiagramInspect["nodes"],
+  edges: DiagramEdge[],
+  readyIds: string[] = [],
+  maxLabel = 48,
+): Array<{ text: string; status: string }> {
+  if (!nodes.length) return [{ text: "(no diagram nodes)", status: "backlog" }];
+  const ready = new Set(readyIds);
+  const known = new Set(nodes.map((n) => n.id));
+  const incoming = new Map<string, string[]>();
+  for (const n of nodes) incoming.set(n.id, []);
+  for (const e of edges) {
+    if (e.from === e.to || !known.has(e.from) || !known.has(e.to)) continue;
+    incoming.get(e.to)?.push(e.from);
+  }
+  // Dependency depth via relaxation — bounded, so cycles cannot hang.
+  const depth = new Map(nodes.map((n) => [n.id, 0]));
+  for (let i = 0; i < nodes.length; i++) {
+    let changed = false;
+    for (const e of edges) {
+      if (e.from === e.to || !depth.has(e.from) || !depth.has(e.to)) continue;
+      const d = (depth.get(e.from) ?? 0) + 1;
+      if (d > (depth.get(e.to) ?? 0)) {
+        depth.set(e.to, d);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const order = [...nodes].sort(
+    (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0) || (a.id < b.id ? -1 : 1),
+  );
+  return order.map((n) => {
+    const mark =
+      n.status === "done"
+        ? "[v]"
+        : n.status === "in_progress"
+          ? "[·]"
+          : n.status === "blocked"
+            ? "[!]"
+            : ready.has(n.id)
+              ? "[o]"
+              : "[ ]";
+    const pad = "  ".repeat(Math.min(depth.get(n.id) ?? 0, 5));
+    const deps = incoming.get(n.id) ?? [];
+    const suffix = deps.length > 0 ? ` ← ${deps.join(", ")}` : "";
+    return {
+      text: `${pad}${mark} ${n.id} ${truncate(n.label, maxLabel)}${suffix}`,
+      status: n.status,
+    };
+  });
+}
+
 async function planDiagramCounts(
   slug: string,
   planId: string,
   cwd: string,
-): Promise<{ ready: DiagramReady; nodes: DiagramInspect["nodes"] } | undefined> {
+): Promise<
+  { ready: DiagramReady; nodes: DiagramInspect["nodes"]; edges: DiagramEdge[] } | undefined
+> {
   const [readyRes, inspectRes] = await Promise.all([
     execArcs(["diagram", "ready", slug, planId, "--json", "--lean"], cwd),
     execArcs(["diagram", "inspect", slug, planId, "--json", "--lean"], cwd),
@@ -247,7 +308,13 @@ async function planDiagramCounts(
       ? (inspectRes.json as Partial<DiagramInspect>)
       : {};
   const nodes = Array.isArray(inspectPayload.nodes) ? inspectPayload.nodes : [];
-  return { ready, nodes };
+  const edgesRaw = (inspectPayload as { edges?: unknown }).edges;
+  const edges: DiagramEdge[] = Array.isArray(edgesRaw)
+    ? (edgesRaw as DiagramEdge[]).filter(
+        (e) => typeof e?.from === "string" && typeof e?.to === "string",
+      )
+    : [];
+  return { ready, nodes, edges };
 }
 
 async function buildSnapshot(cwd: string, error?: string): Promise<Snapshot> {
@@ -338,12 +405,15 @@ async function buildSnapshot(cwd: string, error?: string): Promise<Snapshot> {
         const counts = `●${diagram.ready.done.length} ○${diagram.ready.ready.length} ◌${diagram.ready.blocked.length}`;
         rows.push({ text: `  ${counts} · /arcs-open plan ${plan.id}`, role: "muted" });
         if (index === 0) {
-          for (const node of diagram.nodes.slice(0, 3)) {
-            const mark =
-              node.status === "done" ? "[v]" : node.status === "in_progress" ? "[·]" : "[ ]";
+          for (const line of renderDiagramAscii(
+            diagram.nodes,
+            diagram.edges,
+            diagram.ready.ready,
+            44,
+          ).slice(0, 5)) {
             const role: RowRole =
-              node.status === "done" ? "ready" : node.status === "blocked" ? "warning" : "dim";
-            rows.push({ text: `  ${mark} ${truncate(node.label, 100)}`, role });
+              line.status === "done" ? "ready" : line.status === "blocked" ? "warning" : "dim";
+            rows.push({ text: `  ${truncate(line.text, 110)}`, role });
           }
         }
       } else {
@@ -468,12 +538,28 @@ async function readPlanLines(
     body?: string;
   };
   const meta = payload.meta ?? payload;
+  const diagram = await planDiagramCounts(slug, planId, cwd);
+  const diagramRendered = diagram
+    ? renderDiagramAscii(diagram.nodes, diagram.edges, diagram.ready.ready, 60)
+    : [];
+  const diagramSection = diagram
+    ? section(
+        "Diagram",
+        diagramRendered.length > 40
+          ? [
+              ...diagramRendered.slice(0, 40).map((l) => l.text),
+              `… ${diagramRendered.length - 40} more nodes — see /arcs-web`,
+            ]
+          : diagramRendered.map((l) => l.text),
+      )
+    : [];
   const lines = [
     ...section("Plan", [
       `${meta.title || planId}`,
       `id: ${meta.id || planId} · status: ${meta.status || "?"}`,
     ]),
     ...(meta.summary ? section("Summary", [meta.summary]) : []),
+    ...diagramSection,
   ];
   if (typeof payload.body === "string" && payload.body) {
     lines.push("Body", ...payload.body.split("\n"), "");

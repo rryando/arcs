@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import createArcsSidebar from "../web/extensions/arcs-sidebar.js";
+import createArcsSidebar, { renderDiagramAscii } from "../web/extensions/arcs-sidebar.js";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -98,6 +98,63 @@ describe("arcs-sidebar pi extension", () => {
     const last = [...emitted].reverse().find((e) => e.channel === "pi-atelier:sidebar-panels");
     expect(last?.payload?.type).toBe("unregister");
     expect(last?.payload?.id).toBe("arcs:overview");
+  });
+
+  describe("renderDiagramAscii", () => {
+    it("orders a chain roots-first with depth indent and dep suffix", () => {
+      const lines = renderDiagramAscii(
+        [
+          { id: "T003", label: "Tests", status: "backlog" },
+          { id: "T001", label: "Scaffold", status: "done" },
+          { id: "T002", label: "Sidebar", status: "in_progress" },
+        ],
+        [
+          { from: "T001", to: "T002" },
+          { from: "T002", to: "T003" },
+        ],
+        ["T002"],
+      );
+      expect(lines.map((l) => l.text)).toEqual([
+        "[v] T001 Scaffold",
+        "  [·] T002 Sidebar ← T001",
+        "    [ ] T003 Tests ← T002",
+      ]);
+    });
+
+    it("marks blocked and ready nodes distinctly", () => {
+      const lines = renderDiagramAscii(
+        [
+          { id: "T001", label: "A", status: "done" },
+          { id: "T002", label: "B", status: "blocked" },
+          { id: "T003", label: "C", status: "backlog" },
+        ],
+        [{ from: "T001", to: "T003" }],
+        ["T003"],
+      );
+      expect(lines.map((l) => l.text)).toEqual(["[v] T001 A", "[!] T002 B", "  [o] T003 C ← T001"]);
+    });
+
+    it("ignores unknown endpoints and survives cycles", () => {
+      const lines = renderDiagramAscii(
+        [
+          { id: "T001", label: "A", status: "backlog" },
+          { id: "T002", label: "B", status: "backlog" },
+        ],
+        [
+          { from: "T001", to: "T002" },
+          { from: "T002", to: "T001" },
+          { from: "T001", to: "T999" },
+        ],
+      );
+      expect(lines).toHaveLength(2);
+      expect(lines.map((l) => l.text).join("\n")).not.toMatch(/T999/);
+    });
+
+    it("returns a placeholder for an empty diagram", () => {
+      expect(renderDiagramAscii([], [])).toEqual([
+        { text: "(no diagram nodes)", status: "backlog" },
+      ]);
+    });
   });
 
   it("/arcs-open with bad usage notifies instead of throwing", async () => {

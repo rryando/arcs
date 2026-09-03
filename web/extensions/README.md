@@ -11,7 +11,7 @@ modal.
 |-------|----------|
 | Atelier panel | Live `ARCS` panel via `pi-atelier:sidebar-panels` (phase, health, next task, plan counts) |
 | Footer | `●/○ arcs-web 127.0.0.1:<port>` from `GET /api/health` every ~5s (kept on down) |
-| `/arcs-open [target]` | Keyboard-driven TUI overlay modal: `brief \| next \| status \| plan <id> \| task <id>`; no args opens a picker |
+| `/arcs-open [target]` | Keyboard-driven TUI overlay modal: `brief \| next \| status \| plan <id> \| proposal <id> \| task <id>`; no args opens a picker. Plan view renders the execution diagram as ASCII (depth-indented, `[v]/[·]/[!]/[o]/[ ]` marks, `← deps` suffix) |
 | `/arcs-web` | Opens the web UI detached; scoped to `/p/<slug>` when the cwd resolves to a project |
 | `/arcs-refresh` | Refreshes panel + footer immediately |
 
