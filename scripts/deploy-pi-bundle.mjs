@@ -9,6 +9,14 @@
 //                          <destination>/.pi/agents/<stem>.md     (project)
 //   2. Skills tree       → <destination>/agent/skills/arcs-<name>/...  (global)
 //                          <destination>/.pi/skills/arcs-<name>/...    (project)
+//   3. Sidebar extension → <destination>/agent/extensions/arcs-sidebar.ts (global)
+//                          <destination>/.pi/extensions/arcs-sidebar.ts (project)
+//
+// The sidebar extension (Atelier panel + web status + TUI modal reader) is
+// copied verbatim from web/extensions/arcs-sidebar.ts. A destination file
+// the user modified (differs from both the new source and the hash recorded
+// in the installed manifest) is never overwritten — the deploy reports
+// `extensionSkipped: "user-modified"` and leaves it untouched.
 //
 // The compiled agent format targets the pi subagents extension
 // (@tintinweb/pi-subagents) custom agent types: a Claude Code-shaped
@@ -33,6 +41,9 @@
 //   DEPLOY_CONFIG_ROOT  — override config root (default: ~/.pi)
 //   DEPLOY_PROJECT_ROOT — override project root (default: repository root)
 //   DEPLOY_SCOPE        — `global` or `project` (default: `global`)
+//   DEPLOY_EXTENSION_SOURCE — override sidebar extension source
+//                          (default: web/extensions/arcs-sidebar.ts; a missing
+//                          source skips the extension step without failing)
 //   DEPLOY_DRY_RUN      — "false" to actually write; anything else = dry-run (default: dry-run)
 //   DEPLOY_MODEL_HEAVY/STANDARD/LIGHT — 3-tier model overrides (default: "inherit")
 //   DEPLOY_THINKING_HEAVY/STANDARD/LIGHT — optional pi thinking levels
@@ -206,6 +217,50 @@ function manifestConfigRelative() {
 
 function settingsConfigRelative() {
   return scope === "project" ? "settings.json" : "agent/settings.json";
+}
+
+// ---------------------------------------------------------------------------
+// 4. Sidebar extension — verbatim copy with user-modification guard
+// ---------------------------------------------------------------------------
+
+const defaultExtensionSource = resolve(repoRoot, "web/extensions/arcs-sidebar.ts");
+const extensionSource = process.env.DEPLOY_EXTENSION_SOURCE
+  ? resolve(repoRoot, process.env.DEPLOY_EXTENSION_SOURCE)
+  : defaultExtensionSource;
+
+function extensionConfigRelative() {
+  return scope === "project" ? "extensions/arcs-sidebar.ts" : "agent/extensions/arcs-sidebar.ts";
+}
+
+/**
+ * Classify the sidebar extension install without writing.
+ *
+ * Statuses: added | changed | unchanged | skipped-source-missing |
+ * skipped-user-modified. A destination that differs from both the new
+ * source and the previously installed hash is treated as user-modified
+ * and left untouched.
+ */
+function planExtensionInstall(previousManifest) {
+  const configRelative = extensionConfigRelative();
+  if (!existsSync(extensionSource)) {
+    return { status: "skipped-source-missing", configRelative, content: null };
+  }
+  const content = readFileSync(extensionSource, "utf-8");
+  const abs = resolve(destination, configRelative);
+  if (!existsSync(abs)) {
+    return { status: "added", configRelative, content };
+  }
+  if (readFileSync(abs, "utf-8") === content) {
+    return { status: "unchanged", configRelative, content };
+  }
+  const recorded = previousManifest?.extension;
+  if (
+    recorded?.configRelative === configRelative &&
+    recorded?.sourceHash === sha256(readFileSync(abs))
+  ) {
+    return { status: "changed", configRelative, content };
+  }
+  return { status: "skipped-user-modified", configRelative, content };
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +469,7 @@ function main() {
   const agentSources = buildAgentSources();
   const skillSources = buildSkillSources();
   const settingsPlan = planPrimarySettingsUpdate(registry);
+  const extensionPlan = planExtensionInstall(previousManifest);
 
   // Pass 1: Classify add/change/unchanged for every planned write
   const filesAdded = [];
@@ -454,6 +510,20 @@ function main() {
     filesUnchanged.push(settingsPlan.settingsRelative);
   }
   // status "skipped-malformed" intentionally omitted from all lists
+
+  // Sidebar extension — added/changed/unchanged flow through the file lists;
+  // skipped-* statuses surface as `extensionSkipped` and write nothing.
+  let extensionSkipped = null;
+  if (extensionPlan.status === "added" || extensionPlan.status === "unchanged") {
+    (extensionPlan.status === "added" ? filesAdded : filesUnchanged).push(
+      extensionPlan.configRelative,
+    );
+  } else if (extensionPlan.status === "changed") {
+    filesChanged.push(extensionPlan.configRelative);
+  } else {
+    extensionSkipped =
+      extensionPlan.status === "skipped-source-missing" ? "source-missing" : "user-modified";
+  }
 
   // Orphans
   const filesRemoved = [];
@@ -509,6 +579,12 @@ function main() {
       writeFileSync(settingsPlan.settingsAbsolute, settingsPlan.serialized, "utf-8");
     }
 
+    if (extensionPlan.content && !extensionSkipped) {
+      const abs = resolve(destination, extensionPlan.configRelative);
+      ensureParentDir(abs);
+      writeFileSync(abs, extensionPlan.content, "utf-8");
+    }
+
     for (const fileToRemove of filesRemoved) {
       const abs = resolve(destination, fileToRemove);
       if (existsSync(abs)) {
@@ -532,6 +608,13 @@ function main() {
           tierModels,
           ...(tierThinking ? { tierThinking } : {}),
           ownedPaths: [],
+          extension:
+            extensionPlan.content && !extensionSkipped
+              ? {
+                  configRelative: extensionPlan.configRelative,
+                  sourceHash: sha256(extensionPlan.content),
+                }
+              : (previousManifest?.extension ?? null),
           agents: agentSources.map((agent) => ({
             id: agent.stem,
             promptDestination: agent.configRelative,
@@ -559,6 +642,7 @@ function main() {
     filesRemoved,
     filesUnchanged,
     orphanSkillDirs,
+    extensionSkipped,
     codegraphWired: false,
     rtkWired: false,
   };

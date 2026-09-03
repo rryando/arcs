@@ -17,6 +17,7 @@ type DeployResult = {
   filesChanged: string[];
   filesRemoved: string[];
   filesUnchanged: string[];
+  extensionSkipped: string | null;
   codegraphWired: boolean;
   rtkWired: boolean;
 };
@@ -464,6 +465,152 @@ describe("deploy-pi-bundle", () => {
       });
       expect(procAfter.status).toBe(0);
       expect(existsSync(resolve(configRoot, "agent/skills/omarchy/SKILL.md"))).toBe(true);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("installs the sidebar extension on fresh deploy and reports unchanged on rerun", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-ext-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      const extRel = "agent/extensions/arcs-sidebar.ts";
+
+      const first = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(first.status).toBe(0);
+      const firstResult = JSON.parse(first.stdout) as DeployResult;
+      expect(firstResult.extensionSkipped).toBeNull();
+      expect(firstResult.filesAdded).toContain(extRel);
+
+      const installed = readFileSync(resolve(configRoot, extRel), "utf-8");
+      const source = readFileSync(resolve(root, "web/extensions/arcs-sidebar.ts"), "utf-8");
+      expect(installed).toBe(source);
+
+      const manifest = JSON.parse(
+        readFileSync(resolve(configRoot, ".arcs-bundle.json"), "utf-8"),
+      ) as { extension: { configRelative: string; sourceHash: string } };
+      expect(manifest.extension.configRelative).toBe(extRel);
+
+      // Rerun without changes: extension is unchanged, not rewritten.
+      const second = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(second.status).toBe(0);
+      const secondResult = JSON.parse(second.stdout) as DeployResult;
+      expect(secondResult.extensionSkipped).toBeNull();
+      expect(secondResult.filesUnchanged).toContain(extRel);
+      expect(secondResult.filesAdded).not.toContain(extRel);
+      expect(secondResult.filesChanged).not.toContain(extRel);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites a user-modified sidebar extension", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-ext-user-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      const extRel = "agent/extensions/arcs-sidebar.ts";
+      const userContent = "// my hand-tuned sidebar\nexport default function () {}\n";
+      writeFile(configRoot, extRel, userContent);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(proc.status).toBe(0);
+      const result = JSON.parse(proc.stdout) as DeployResult;
+      expect(result.extensionSkipped).toBe("user-modified");
+      expect(result.filesAdded).not.toContain(extRel);
+      expect(result.filesChanged).not.toContain(extRel);
+      // User content preserved byte-for-byte.
+      expect(readFileSync(resolve(configRoot, extRel), "utf-8")).toBe(userContent);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("overwrites a previously installed extension when the source changes", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-ext-owned-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+    const altSource = resolve(tempRoot, "alt-sidebar.ts");
+    const extRel = "agent/extensions/arcs-sidebar.ts";
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+      // A missing extension source skips the step without failing the deploy.
+      const missing = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_EXTENSION_SOURCE: resolve(tempRoot, "no-such-file.ts"),
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(missing.status).toBe(0);
+      expect((JSON.parse(missing.stdout) as DeployResult).extensionSkipped).toBe("source-missing");
+      expect(existsSync(resolve(configRoot, extRel))).toBe(false);
+
+      // Install v1 from an alternate source (absolute paths pass through
+      // resolve() unchanged), then change the source to v2: the owned file
+      // is overwritten and reported as changed.
+      writeFileSync(altSource, "// v1 sidebar\n", "utf-8");
+      const v1 = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_EXTENSION_SOURCE: altSource,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(v1.status).toBe(0);
+      expect((JSON.parse(v1.stdout) as DeployResult).filesAdded).toContain(extRel);
+
+      writeFileSync(altSource, "// v2 sidebar\n", "utf-8");
+      const v2 = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_EXTENSION_SOURCE: altSource,
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(v2.status).toBe(0);
+      const v2Result = JSON.parse(v2.stdout) as DeployResult;
+      expect(v2Result.extensionSkipped).toBeNull();
+      expect(v2Result.filesChanged).toContain(extRel);
+      expect(readFileSync(resolve(configRoot, extRel), "utf-8")).toBe("// v2 sidebar\n");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("installs the sidebar extension under .pi/extensions at project scope", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-ext-proj-"));
+    const configRoot = resolve(tempRoot, "pi-home");
+    const projectRoot = resolve(tempRoot, "project");
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+
+      const proc = runDeploy({
+        DEPLOY_BUNDLE_ROOT: bundleRoot,
+        DEPLOY_CONFIG_ROOT: configRoot,
+        DEPLOY_PROJECT_ROOT: projectRoot,
+        DEPLOY_SCOPE: "project",
+        DEPLOY_DRY_RUN: "false",
+      });
+      expect(proc.status).toBe(0);
+      const result = JSON.parse(proc.stdout) as DeployResult;
+      expect(result.extensionSkipped).toBeNull();
+      expect(result.filesAdded).toContain("extensions/arcs-sidebar.ts");
+      expect(existsSync(resolve(projectRoot, ".pi/extensions/arcs-sidebar.ts"))).toBe(true);
+      expect(existsSync(resolve(configRoot, "agent/extensions/arcs-sidebar.ts"))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

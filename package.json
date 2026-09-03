@@ -12,7 +12,8 @@
     "scripts/",
     "templates/",
     "skills/",
-    "opencode/"
+    "opencode/",
+    "web/extensions/"
   ],
   "engines": {
     "node": ">=20"

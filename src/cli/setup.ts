@@ -828,6 +828,11 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
           if (proc.stdout) {
             try {
               const res = JSON.parse(proc.stdout);
+              const sidebarFiles = [
+                ...(res.filesAdded ?? []),
+                ...(res.filesChanged ?? []),
+                ...(res.filesUnchanged ?? []),
+              ].filter((f: string) => f.endsWith("extensions/arcs-sidebar.ts"));
               const summaryLines = [
                 `${color.green("✔")} Source: ${res.source}`,
                 `${color.green("✔")} Destination: ${res.destination}`,
@@ -840,6 +845,15 @@ export async function runSetup(mode: "init" | "config"): Promise<void> {
                 `${color.green("✔")} Files added: ${res.filesAdded?.length || 0}`,
                 `${color.green("✔")} Files changed: ${res.filesChanged?.length || 0}`,
                 `${color.green("✔")} Files removed: ${res.filesRemoved?.length || 0}`,
+                ...(res.extensionSkipped === "user-modified"
+                  ? [
+                      `${color.yellow("⊘")} Sidebar extension kept as-is (user-modified): ${color.dim(sidebarFiles[0] ?? "agent/extensions/arcs-sidebar.ts")}`,
+                    ]
+                  : sidebarFiles.length > 0
+                    ? [
+                        `${color.green("✔")} Sidebar: ${color.dim(sidebarFiles[0])} ${color.dim("(/arcs-open reader · /arcs-web · Atelier panel)")}`,
+                      ]
+                    : []),
                 `${color.dim("Requires @tintinweb/pi-subagents extension in pi.")}`,
               ];
               p.note(summaryLines.join("\n"), "pi Deployment Summary");

@@ -1,3 +1,33 @@
+# pi extensions (repo-owned)
+
+## arcs-sidebar — ARCS panel + web status + TUI modal reader (recommended)
+
+The consolidated ARCS extension for pi. It keeps the Atelier overview panel
+and the `arcs-web` footer status, and adds an interactive in-terminal modal
+reader — Atelier sidebar rows are display-only, so reading happens in the
+modal.
+
+| Piece | Behavior |
+|-------|----------|
+| Atelier panel | Live `ARCS` panel via `pi-atelier:sidebar-panels` (phase, health, next task, plan counts) |
+| Footer | `●/○ arcs-web 127.0.0.1:<port>` from `GET /api/health` every ~5s (kept on down) |
+| `/arcs-open [target]` | Keyboard-driven TUI overlay modal: `brief \| next \| status \| plan <id> \| task <id>`; no args opens a picker |
+| `/arcs-web` | Opens the web UI detached; scoped to `/p/<slug>` when the cwd resolves to a project |
+| `/arcs-refresh` | Refreshes panel + footer immediately |
+
+Modal keys: `j/k` or `↑/↓` scroll, `space` page, `g/G` top/bottom, `q`/`Esc` close.
+
+Installed automatically by `arcs init` (pi deploy step) to
+`~/.pi/agent/extensions/arcs-sidebar.ts`. A file you modified by hand is
+never overwritten — the deploy reports `extensionSkipped: "user-modified"`
+and leaves it alone. Manual install:
+
+```bash
+cp web/extensions/arcs-sidebar.ts ~/.pi/agent/extensions/
+```
+
+---
+
 # arcs-web-status — ARCS web server status in pi
 
 A small pi extension that shows whether the ARCS web server is up in pi's
