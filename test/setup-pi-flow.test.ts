@@ -216,6 +216,19 @@ openai-codex  gpt-5.4  1  1  yes  yes
 opencode  claude-sonnet-4-6  1  1  no  yes
 ` as any;
         }
+        // This override replaces the fail-closed beforeEach mock, so the
+        // host-binary probes must stay hermetic here too: only pi is
+        // "installed" — letting `which <host>` fall through to the real
+        // environment breaks the test on machines without pi (e.g. CI).
+        if (typeof cmd === "string" && cmd.includes("which pi")) {
+          return "/usr/local/bin/pi\n" as any;
+        }
+        if (
+          typeof cmd === "string" &&
+          (cmd.includes("which opencode") || cmd.includes("which claude"))
+        ) {
+          throw new Error("binary not installed in tests");
+        }
         return (actualChildProcess.execSync as any)(cmd, ...rest);
       }) as any);
       vi.mocked((prompts as any).__select).mockImplementation(async (input: any) => {
