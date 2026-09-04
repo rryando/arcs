@@ -12,6 +12,7 @@ vi.mock("@clack/prompts", () => {
   const text = vi.fn();
   const multiselect = vi.fn();
   const select = vi.fn();
+  const autocomplete = vi.fn();
 
   return {
     intro: vi.fn(),
@@ -32,11 +33,13 @@ vi.mock("@clack/prompts", () => {
     text,
     multiselect,
     select,
+    autocomplete,
     __confirm: confirm,
     __note: note,
     __text: text,
     __multiselect: multiselect,
     __select: select,
+    __autocomplete: autocomplete,
   };
 });
 
@@ -67,11 +70,14 @@ describe("OpenCode setup flow", () => {
     vi.mocked((prompts as any).__text).mockReset();
     vi.mocked((prompts as any).__multiselect).mockReset();
     vi.mocked((prompts as any).__select).mockReset();
+    vi.mocked((prompts as any).__autocomplete).mockReset();
     // text prompts return empty strings by default (model config)
     vi.mocked((prompts as any).__text).mockResolvedValue("");
     // select prompts (model tiers, primary orchestrator) return an unrecognized
     // value by default, which leaves every default-picking path on its fallback
     vi.mocked((prompts as any).__select).mockResolvedValue("");
+    // tier model prompts use searchable autocomplete; default mirrors select
+    vi.mocked((prompts as any).__autocomplete).mockResolvedValue("");
     vi.mocked((prompts as any).__multiselect).mockResolvedValue(["opencode"]);
     const actualChildProcess =
       await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -522,6 +528,8 @@ describe("OpenCode setup flow", () => {
       const prompts = await import("@clack/prompts");
       vi.mocked((prompts as any).__select).mockReset();
       vi.mocked((prompts as any).__select).mockResolvedValue("");
+      vi.mocked((prompts as any).__autocomplete).mockReset();
+      vi.mocked((prompts as any).__autocomplete).mockResolvedValue("");
     }
 
     it("offers reuse and skips every model prompt when the user accepts", async () => {
@@ -716,6 +724,14 @@ describe("OpenCode setup flow", () => {
       vi.mocked((prompts as any).__multiselect).mockResolvedValue(["claudecode"]);
       vi.mocked((prompts as any).__select).mockReset();
       vi.mocked((prompts as any).__select).mockResolvedValue(DEFAULT_PRIMARY);
+      // Tier model prompts use searchable autocomplete (see selectModel in
+      // setup.ts); forward them to the same stub so per-test __select routing
+      // (HEAVY/STANDARD/LIGHT by message) also answers the tier prompts.
+      // The primary-orchestrator pick still uses select directly.
+      vi.mocked((prompts as any).__autocomplete).mockReset();
+      vi.mocked((prompts as any).__autocomplete).mockImplementation((...args: any[]) =>
+        vi.mocked((prompts as any).__select)(...args),
+      );
 
       vi.mocked(childProcess.spawnSync).mockImplementation(((cmd: any, args: any, options: any) => {
         if (cmd === "node") {

@@ -12,6 +12,7 @@ vi.mock("@clack/prompts", () => {
   const text = vi.fn();
   const multiselect = vi.fn();
   const select = vi.fn();
+  const autocomplete = vi.fn();
 
   return {
     intro: vi.fn(),
@@ -32,11 +33,13 @@ vi.mock("@clack/prompts", () => {
     text,
     multiselect,
     select,
+    autocomplete,
     __confirm: confirm,
     __note: note,
     __text: text,
     __multiselect: multiselect,
     __select: select,
+    __autocomplete: autocomplete,
   };
 });
 
@@ -90,8 +93,10 @@ describe("pi setup flow", () => {
     vi.mocked((prompts as any).__text).mockReset();
     vi.mocked((prompts as any).__multiselect).mockReset();
     vi.mocked((prompts as any).__select).mockReset();
+    vi.mocked((prompts as any).__autocomplete).mockReset();
     vi.mocked((prompts as any).__text).mockResolvedValue("");
     vi.mocked((prompts as any).__select).mockResolvedValue("inherit");
+    vi.mocked((prompts as any).__autocomplete).mockResolvedValue("inherit");
     vi.mocked((prompts as any).__multiselect).mockResolvedValue(["pi"]);
 
     const actualChildProcess =
@@ -200,6 +205,7 @@ describe("pi setup flow", () => {
       expect(deployEnv.DEPLOY_MODEL_LIGHT).toBe("opencode/deepseek-v4-mini");
       // reuse path skips the tier selects entirely
       expect(vi.mocked((prompts as any).__select)).not.toHaveBeenCalled();
+      expect(vi.mocked((prompts as any).__autocomplete)).not.toHaveBeenCalled();
     });
   });
 
@@ -235,6 +241,10 @@ opencode  claude-sonnet-4-6  1  1  no  yes
         const values = input.options.map((option: any) => option.value);
         return values.includes("openai-codex/gpt-5.4") ? "openai-codex/gpt-5.4" : "inherit";
       });
+      vi.mocked((prompts as any).__autocomplete).mockImplementation(async (input: any) => {
+        const values = input.options.map((option: any) => option.value);
+        return values.includes("openai-codex/gpt-5.4") ? "openai-codex/gpt-5.4" : "inherit";
+      });
 
       await runSetup("init");
 
@@ -258,6 +268,7 @@ opencode  claude-sonnet-4-6  1  1  no  yes
       const prompts = await import("@clack/prompts");
       vi.mocked((prompts as any).__confirm).mockResolvedValue(true);
       vi.mocked((prompts as any).__select).mockResolvedValue("__custom__");
+      vi.mocked((prompts as any).__autocomplete).mockResolvedValue("__custom__");
       vi.mocked((prompts as any).__text)
         .mockResolvedValueOnce("opencode/deepseek-r1")
         .mockResolvedValueOnce("opencode/deepseek-v4")
