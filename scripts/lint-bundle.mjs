@@ -67,6 +67,8 @@ function isPromptPath(value) {
   );
 }
 
+const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 function isAgentRegistryRecord(agent) {
   return (
     agent &&
@@ -85,7 +87,14 @@ function isAgentRegistryRecord(agent) {
     agent.permissions &&
     ["edit", "bash", "webfetch", "mcp", "task"].every((permission) =>
       ["allow", "deny"].includes(agent.permissions[permission]),
-    )
+    ) &&
+    (!agent.pi || (
+      Array.isArray(agent.pi.extensions) &&
+      agent.pi.extensions.every((extension) => typeof extension === "string" && extension.length > 0) &&
+      Array.isArray(agent.pi.skills) &&
+      agent.pi.skills.every((skill) => typeof skill === "string" && skill.length > 0) &&
+      (agent.pi.thinking === undefined || thinkingLevels.includes(agent.pi.thinking))
+    ))
   );
 }
 

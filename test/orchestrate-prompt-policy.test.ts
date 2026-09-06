@@ -18,20 +18,23 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
 
   it("identifies as orchestrator, not direct implementer", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/orchestrator/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/dispatch.*not implement/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/dispatch, don't implement/i);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/you do not implement/i);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/never read source.*edit files/is);
   });
 
-  it("delegates aggressively via routing tiers", () => {
+  it("delegates to enabled routing tiers", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/delegate aggressively/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /Explore.*Investigate.*graph-explorer.*tech-architect.*oncall-ops.*qa-analyst/is,
+      /Explore.*Investigate.*graph-explorer.*tech-architect/is,
     );
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Implement.*Fix.*software-engineer/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/DAG.*Knowledge.*arcs-docs/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Review.*Audit.*code-reviewer/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Research.*Synthesize.*docs-researcher/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Research.*Synthesize.*tech-architect/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(
+      /oncall-ops|qa-analyst|docs-researcher|knowledge-collector/,
+    );
   });
 
   it("covers special-case direct work", () => {
@@ -67,8 +70,8 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
   it("uses plans and knowledge only when useful", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/plan.*broad|multi-step|architectural/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/delegate plan creation/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/explicit.*create.*plan.*authoriz/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/goal.*scope.*destructive.*external/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/explicit request to create a plan authoriz/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/goal or material scope changes/is);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/exact artifact authorization/i);
   });
 
@@ -103,27 +106,27 @@ describe("orchestrate prompt policy — plan worktree discipline", () => {
   it("ensures a plan worktree before dispatching implementation", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/arcs worktree ensure <slug> <planId>/);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/returned path verbatim in SCOPE/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/confine delegate edits\/tests to it/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/confine delegate edits\/tests there/i);
   });
 
   it("never dispatches implementation against the main checkout when a tree exists", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /never dispatch implementation against the main checkout/i,
-    );
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/parallel plans get parallel trees/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never share one/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never use the main checkout when a plan tree exists/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/parallel plans get separate trees/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/never share one|separate trees/i);
   });
 
   it("gates task completion on worktree validation and skips non-git repos", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/arcs worktree validate <slug>/);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/non-zero exit blocks `arcs done`/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/non-git repos: skip silently/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
+      /validate <slug>.*must pass or `arcs done` is blocked/is,
+    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/skip silently for non-git repos/i);
   });
 
   it("carries the ensure/validate minimum into flash", () => {
     expect(FLASH_PROMPT_TEXT).toMatch(/arcs worktree ensure <slug> <planId>/);
     expect(FLASH_PROMPT_TEXT).toMatch(/arcs worktree validate <slug>/);
-    expect(FLASH_PROMPT_TEXT).toMatch(/never dispatch implementation against the main checkout/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/never use the main checkout when a plan tree exists/i);
   });
 });
 

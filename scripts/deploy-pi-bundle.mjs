@@ -30,9 +30,11 @@
 //   - DEPLOY_THINKING_* values emit the pi-subagents `thinking:` frontmatter
 //     field for the corresponding ARCS tier.
 //   - permissions → `tools:` allowlist: edit→write/edit, bash→bash,
-//     mcp→ext:mcp, base read-only set read/grep/find/ls. Read-only
+//     mcp→ext:pi-mcp-adapter, base read-only set read/grep/find/ls. Read-only
 //     specialists (code-reviewer, tech-architect, graph-explorer) get no
 //     mutation tools.
+//   - optional `pi.extensions`/`pi.skills` fields → role-specific loading and
+//     preloading, avoiding blanket initialization in every child session.
 //   - `task: allow` (primaries only) → `allowed_subagents: all`, mirroring
 //     the Task tool those prompts were written against.
 //
@@ -183,7 +185,14 @@ function readAgentRegistry() {
       ["allow", "deny"].includes(agent.permissions.bash) &&
       ["allow", "deny"].includes(agent.permissions.webfetch) &&
       ["allow", "deny"].includes(agent.permissions.mcp) &&
-      ["allow", "deny"].includes(agent.permissions.task);
+      ["allow", "deny"].includes(agent.permissions.task) &&
+      (!agent.pi || (
+        Array.isArray(agent.pi.extensions) &&
+        agent.pi.extensions.every((extension) => typeof extension === "string" && extension.length > 0) &&
+        Array.isArray(agent.pi.skills) &&
+        agent.pi.skills.every((skill) => typeof skill === "string" && skill.length > 0) &&
+        (agent.pi.thinking === undefined || thinkingLevels.includes(agent.pi.thinking))
+      ));
     if (!valid) throw new Error(`Invalid agent registry record: ${JSON.stringify(agent)}`);
     if (ids.has(agent.id)) throw new Error(`Duplicate agent registry id: ${agent.id}`);
     if (sources.has(agent.source))
@@ -271,8 +280,17 @@ function piTools(agent) {
   const tools = ["read", "grep", "find", "ls"];
   if (agent.permissions.edit === "allow") tools.push("write", "edit");
   if (agent.permissions.bash === "allow") tools.push("bash");
-  if (agent.permissions.mcp === "allow") tools.push("ext:mcp");
+  if (agent.permissions.mcp === "allow") tools.push("ext:pi-mcp-adapter");
   return tools.join(", ");
+}
+
+function piExtensions(agent) {
+  if (agent.pi?.extensions) return agent.pi.extensions;
+  return agent.permissions.mcp === "allow" ? ["pi-mcp-adapter"] : [];
+}
+
+function piSkills(agent) {
+  return agent.pi?.skills ?? [];
 }
 
 function buildAgentSources() {
@@ -306,9 +324,18 @@ function buildAgentSources() {
     if (model !== "inherit") {
       frontmatter.push(`model: ${model}`);
     }
-    if (tierThinking) frontmatter.push(`thinking: ${tierThinking[agent.tier]}`);
+    const thinking = agent.pi?.thinking ?? (tierThinking ? tierThinking[agent.tier] : undefined);
+    if (thinking) frontmatter.push(`thinking: ${thinking}`);
 
     frontmatter.push(`tools: ${piTools(agent)}`);
+
+    // Explicit resource policy keeps child startup from discovering and
+    // preloading every global extension/skill. `none` is the parser's explicit
+    // deny value, not an omitted default.
+    const extensions = piExtensions(agent);
+    const skills = piSkills(agent);
+    frontmatter.push(`extensions: ${extensions.length > 0 ? extensions.join(", ") : "none"}`);
+    frontmatter.push(`skills: ${skills.length > 0 ? skills.join(", ") : "none"}`);
 
     // primaries were authored with a Task tool (task: allow); on pi that is
     // ownership-scoped nested delegation.

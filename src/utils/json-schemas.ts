@@ -204,6 +204,12 @@ const agentPromptPathSchema = z
   .string()
   .refine(isPromptPath, "must be a safe relative .txt path under prompts/");
 
+const piAgentPolicySchema = z.object({
+  thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+  extensions: z.array(z.string().min(1)).optional(),
+  skills: z.array(z.string().min(1)).optional(),
+});
+
 export const agentRegistryRecordSchema = z.object({
   id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   status: agentStatusSchema,
@@ -220,6 +226,7 @@ export const agentRegistryRecordSchema = z.object({
     mcp: agentPermissionSchema,
     task: agentPermissionSchema,
   }),
+  pi: piAgentPolicySchema.optional(),
   replacementId: z
     .string()
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)

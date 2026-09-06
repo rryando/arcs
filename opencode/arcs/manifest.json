@@ -14,6 +14,10 @@
       "kind": "subagent",
       "tier": "heavy",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-implementation", "arcs-test-driven-development", "arcs-systematic-debugging"]
+      },
       "source": "prompts/software-engineer.txt",
       "destination": "prompts/software-engineer.txt",
       "description": "Implementation specialist. Writes code, runs tests, and ships verified work using orchestrator-selected implementation bounded or inspect mode.",
@@ -31,6 +35,10 @@
       "kind": "subagent",
       "tier": "heavy",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-brainstorming"]
+      },
       "source": "prompts/tech-architect.txt",
       "destination": "prompts/tech-architect.txt",
       "description": "Architecture, analysis, and cited research specialist. Produces read-only structural guidance, trade-off evaluation, and DAG-first research synthesis.",
@@ -66,6 +74,10 @@
       "kind": "subagent",
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+      },
       "source": "prompts/arcs-docs.txt",
       "destination": "prompts/arcs-docs.txt",
       "description": "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
@@ -83,6 +95,10 @@
       "kind": "subagent",
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-deep-pr-review"]
+      },
       "source": "prompts/code-reviewer.txt",
       "destination": "prompts/code-reviewer.txt",
       "description": "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
@@ -136,6 +152,10 @@
       "kind": "subagent",
       "tier": "light",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "extensions": ["pi-mcp-adapter"],
+        "skills": []
+      },
       "source": "prompts/graph-explorer.txt",
       "destination": "prompts/graph-explorer.txt",
       "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
@@ -153,6 +173,11 @@
       "kind": "primary",
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "thinking": "medium",
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+      },
       "source": "prompts/arcs-orchestrate.txt",
       "destination": "prompts/arcs-orchestrate.txt",
       "description": "The central coordinator for executing plans, managing agent dispatch, and handling DAG workflows.",
@@ -170,6 +195,11 @@
       "kind": "primary",
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "thinking": "off",
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+      },
       "source": "prompts/arcs-orchestrate-caveman.txt",
       "destination": "prompts/arcs-orchestrate-caveman.txt",
       "description": "A terse, high-efficiency orchestrator that drives tasks without extra commentary.",
@@ -187,6 +217,11 @@
       "kind": "primary",
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
+      "pi": {
+        "thinking": "low",
+        "extensions": ["pi-mcp-adapter"],
+        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+      },
       "source": "prompts/arcs-flash.txt",
       "destination": "prompts/arcs-flash.txt",
       "description": "A speed-optimized orchestrator that sources context from arcs knowledge first and maximizes parallel sub-agent dispatch under tiered gates.",

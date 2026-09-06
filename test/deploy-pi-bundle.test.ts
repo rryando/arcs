@@ -179,25 +179,29 @@ describe("deploy-pi-bundle", () => {
       expect(result.dryRun).toBe(false);
       expect(result.filesAdded).toContain("agent/agents/software-engineer.md");
 
-      // Writer agent: full builtin allowlist + mcp extension tools
+      // Writer agent: full builtin allowlist + correctly identified MCP adapter
       const se = readFileSync(resolve(configRoot, "agent/agents/software-engineer.md"), "utf-8");
       expect(se).toContain("name: software-engineer");
       expect(se).toContain(
         "description: Implementation specialist. Writes code, runs tests, ships features.",
       );
-      expect(se).toContain("tools: read, grep, find, ls, write, edit, bash, ext:mcp");
+      expect(se).toContain("tools: read, grep, find, ls, write, edit, bash, ext:pi-mcp-adapter");
       // `model: inherit` is the extension default and must be omitted
       expect(se).not.toContain("model:");
       // subagents (task: deny) get no nested delegation
       expect(se).not.toContain("allowed_subagents");
       expect(se).toContain("software engineer prompt body");
+      expect(se).toContain("extensions: pi-mcp-adapter");
+      expect(se).toContain("skills: none");
 
       // Read-only agent: no mutation tools
       const da = readFileSync(resolve(configRoot, "agent/agents/devil-advocate.md"), "utf-8");
-      expect(da).toContain("tools: read, grep, find, ls, bash, ext:mcp");
+      expect(da).toContain("tools: read, grep, find, ls, bash, ext:pi-mcp-adapter");
       const daToolsLine = da.split("\n").find((line) => line.startsWith("tools: "));
       expect(daToolsLine).not.toContain(", write");
       expect(daToolsLine).not.toContain(", edit");
+      expect(da).toContain("extensions: pi-mcp-adapter");
+      expect(da).toContain("skills: none");
 
       // Primary orchestrator: task: allow mirrors to nested delegation
       const orch = readFileSync(resolve(configRoot, "agent/agents/arcs-orchestrate.md"), "utf-8");
