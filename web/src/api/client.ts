@@ -116,6 +116,23 @@ export interface FileRef {
   anchor?: string;
 }
 
+/** One captured code slice attached to a knowledge entry: a line range in a
+ *  workspace file plus the text lifted from it. Mirrors the server's
+ *  `CodeChunk` (src/utils/storage-utils.ts); the optional fields are omitted
+ *  rather than nulled when unknown. */
+export interface CodeChunk {
+  path: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  language?: string;
+  snippet: string;
+  anchor?: string;
+  /** Workspace head revision at capture time. */
+  headRev?: string;
+  capturedAt: string;
+}
+
 export interface KnowledgeMeta {
   id: string;
   normalizedId: string;
@@ -125,9 +142,65 @@ export interface KnowledgeMeta {
   keywords: string[];
   summary: string;
   sourceFiles?: FileRef[];
+  /** Evidence captured with the entry (`arcs remember --code`). */
+  codeChunks?: CodeChunk[];
   file: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** The completion-receipt pointer persisted on a task or plan. It is what the
+ *  store carries; the receipt BODY (diff included) is a sidecar read through
+ *  `GET /api/p/:slug/receipts/:id`. Mirrors the server's `TaskReportRef`
+ *  (src/utils/run-report.ts). */
+export interface TaskReportRef {
+  commit?: string;
+  branch?: string;
+  baseRef?: string;
+  url?: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  /** Data-root-relative paths of the stored receipt and its diff sidecar. */
+  reportFile: string;
+  diffFile?: string;
+  truncated: boolean;
+  capturedAt: string;
+}
+
+/** Per-task attribution recorded on a PLAN receipt: how each of the plan's
+ *  tasks contributed to the aggregate base→head range. Every stat is optional
+ *  — a task with no receipt of its own contributes only its head sha. */
+export interface PlanTaskAttribution {
+  taskId: string;
+  startHead?: string;
+  commit?: string;
+  filesChanged?: number;
+  insertions?: number;
+  deletions?: number;
+}
+
+/** A stored completion receipt, exactly as persisted (`StoredReceipt` on the
+ *  server). `diff` is the capped unified diff — already bounded to 300 lines /
+ *  12KB at capture time, so it is safe to carry whole. */
+export interface StoredReceipt {
+  taskId?: string;
+  planId?: string;
+  repoRoot: string;
+  baseRef: string;
+  baseSha: string;
+  headSha: string;
+  branch: string;
+  remoteUrl: string | null;
+  url: string | null;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  diff: string;
+  diffTruncated: boolean;
+  capturedAt: string;
+  /** Present on a plan receipt only. */
+  taskAttribution?: PlanTaskAttribution[];
 }
 
 export interface TaskMeta {
@@ -144,6 +217,8 @@ export interface TaskMeta {
   verify?: string;
   skill?: string;
   workMode?: "bounded" | "inspect";
+  /** Completion receipt captured when the task was marked done. */
+  report?: TaskReportRef;
   createdAt: string;
   updatedAt: string;
 }
@@ -370,6 +445,9 @@ export interface PlanMeta {
   keywords: string[];
   summary: string;
   sourceFiles?: FileRef[];
+  /** Aggregate completion receipt captured when the plan's last task finished;
+   *  carries the per-task attribution on the stored body. */
+  report?: TaskReportRef;
   file: string;
   createdAt: string;
   updatedAt: string;
@@ -514,6 +592,12 @@ export const api = {
     }),
   deleteKnowledge: (slug: string, id: string) =>
     request<{ deleted: boolean }>(`/api/p/${slug}/knowledge/${id}`, { method: "DELETE" }),
+
+  /** A completion receipt's BODY (diff included), read by the task/plan id it
+   *  was stored under. The `meta.report` pointer is the summary; this is the
+   *  evidence the panel expands into. */
+  receipt: (slug: string, id: string) =>
+    request<StoredReceipt>(`/api/p/${slug}/receipts/${encodeURIComponent(id)}`),
 
   tasks: (slug: string) =>
     request<{ tasks: TaskMeta[]; order: string[] | null }>(`/api/p/${slug}/tasks?order=topo`),

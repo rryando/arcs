@@ -93,6 +93,41 @@ export type SessionLinkedNodeType = (typeof SESSION_LINKED_NODE_TYPES)[number];
 export interface FileRef {
   path: string;
   anchor?: string;
+  /**
+   * Optional 1-indexed line range, carried through from a proposal or a
+   * `--source-files`-style ref so a code chunk can be captured deterministically.
+   * Present only as a pair with `endLine`.
+   */
+  startLine?: number;
+  endLine?: number;
+}
+
+/**
+ * A line range in a workspace file. Mirrors the `file` reference vocabulary
+ * used by the ask route (`path` + `startLine` + `endLine`). Paths containing
+ * Windows drive letters or colons are out of scope for `parseCodeRef`.
+ */
+export interface CodeRef {
+  path: string;
+  startLine: number;
+  endLine: number;
+  anchor?: string;
+}
+
+/**
+ * A captured slice of a workspace file: the range plus the text lifted from it
+ * at capture time. `headRev`/`capturedAt` are supplied by the caller (the
+ * caller owns git); this module never shells out.
+ */
+export interface CodeChunk {
+  path: string;
+  startLine: number;
+  endLine: number;
+  language?: string;
+  snippet: string;
+  anchor?: string;
+  headRev?: string;
+  capturedAt: string;
 }
 
 /**
@@ -100,6 +135,8 @@ export interface FileRef {
  * - path: backslashes normalized to forward slashes first, then validated.
  *   Must be relative (no leading /), no .., no empty, no #, comma, or colon.
  * - anchor: if provided, must be non-empty/non-whitespace, no # or comma.
+ * - startLine/endLine: optional 1-indexed range; must be supplied together and
+ *   satisfy 1 <= startLine <= endLine. Carried through verbatim when valid.
  * Returns a new array with normalized paths. Throws on invalid input.
  */
 export function sanitizeFileRefs(refs: FileRef[]): FileRef[] {
@@ -129,6 +166,59 @@ export function sanitizeFileRefs(refs: FileRef[]): FileRef[] {
       }
       result.anchor = ref.anchor;
     }
+    if (ref.startLine !== undefined || ref.endLine !== undefined) {
+      if (ref.startLine === undefined || ref.endLine === undefined) {
+        throw invalidFileRef("startLine and endLine must be provided together");
+      }
+      if (
+        !Number.isInteger(ref.startLine) ||
+        !Number.isInteger(ref.endLine) ||
+        ref.startLine < 1 ||
+        ref.endLine < ref.startLine
+      ) {
+        throw invalidFileRef(`invalid line range ${ref.startLine}-${ref.endLine} for "${path}"`);
+      }
+      result.startLine = ref.startLine;
+      result.endLine = ref.endLine;
+    }
+    return result;
+  });
+}
+
+/**
+ * Validate and normalize captured code chunks before they are persisted on a
+ * knowledge meta file. Structural problems throw; otherwise a shallow copy is
+ * returned so callers never mutate caller-owned objects. Optional fields are
+ * preserved only when defined, keeping on-disk JSON lean.
+ */
+export function sanitizeCodeChunks(chunks: CodeChunk[]): CodeChunk[] {
+  return chunks.map((chunk) => {
+    if (!chunk.path?.trim()) {
+      throw invalidFileRef("code chunk path must not be empty");
+    }
+    if (
+      !Number.isInteger(chunk.startLine) ||
+      !Number.isInteger(chunk.endLine) ||
+      chunk.startLine < 1 ||
+      chunk.endLine < chunk.startLine
+    ) {
+      throw invalidFileRef(
+        `code chunk for "${chunk.path}" has invalid line range ${chunk.startLine}-${chunk.endLine}`,
+      );
+    }
+    if (typeof chunk.snippet !== "string") {
+      throw invalidFileRef(`code chunk for "${chunk.path}" is missing a snippet`);
+    }
+    const result: CodeChunk = {
+      path: chunk.path,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      snippet: chunk.snippet,
+      capturedAt: chunk.capturedAt,
+    };
+    if (chunk.language !== undefined) result.language = chunk.language;
+    if (chunk.anchor !== undefined) result.anchor = chunk.anchor;
+    if (chunk.headRev !== undefined) result.headRev = chunk.headRev;
     return result;
   });
 }

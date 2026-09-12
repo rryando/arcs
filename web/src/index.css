@@ -161,9 +161,6 @@
   .md input[type="checkbox"] {
     @apply mr-1 accent-emerald-500;
   }
-  .hljs {
-    background: transparent;
-  }
 
   /* CodeMirror host fills its container */
   .cm-host,
@@ -180,4 +177,23 @@
   .cm-host .cm-scroller {
     font-family: var(--font-mono);
   }
+}
+
+/* ---- highlighted code / diff blocks (components/CodeBlock) ----
+   The highlight.js theme above is @import-ed UNLAYERED, and an unlayered
+   declaration outranks every @layer (theme/base/components/utilities) no matter
+   the specificity. So the two theme rules that fight this app's chrome have to
+   be overridden unlayered too, here, after the theme:
+     - `.hljs` paints an opaque #1a1b26 background; evidence blocks own their
+       base from the term-* tokens instead and keep only the theme's token
+       colors (the `.hljs` rule inside @layer components above cannot win).
+     - `pre code.hljs` adds 1em of padding and its own horizontal scroller;
+       CodeBlock scrolls once, on the `pre`, so a nested scroller never appears. */
+.hljs {
+  background: transparent;
+}
+
+.code-evidence pre code.hljs {
+  overflow-x: visible;
+  padding: 0;
 }

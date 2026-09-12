@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { KnowledgeMeta, PlanMeta } from "../src/utils/project-memory.js";
+import type { CodeChunk, KnowledgeMeta, PlanMeta } from "../src/utils/project-memory.js";
 
 vi.mock("../src/utils/paths.js", () => ({
   getProjectDir: (slug: string) => `/fake/${slug}`,
@@ -10,7 +10,12 @@ vi.mock("../src/utils/project-memory.js", () => ({
   readPlanIndex: vi.fn(),
 }));
 
-import { buildProjectRetrievalIndex } from "../src/retrieval/index-builder.js";
+import {
+  buildProjectRetrievalIndex,
+  chunkFieldText,
+  knowledgeToDocument,
+  MAX_CHUNK_TEXT_BYTES,
+} from "../src/retrieval/index-builder.js";
 import { readKnowledgeIndex, readPlanIndex } from "../src/utils/project-memory.js";
 
 const mockReadKnowledge = vi.mocked(readKnowledgeIndex);
@@ -42,6 +47,15 @@ function makePlan(overrides: Partial<PlanMeta> & { id: string; title: string }):
     updatedAt: "2025-01-01T00:00:00.000Z",
     ...overrides,
   } as PlanMeta;
+}
+
+function makeChunk(overrides: Partial<CodeChunk> & { path: string; snippet: string }): CodeChunk {
+  return {
+    startLine: 1,
+    endLine: 1,
+    capturedAt: "2025-01-01T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -232,5 +246,163 @@ describe("buildProjectRetrievalIndex", () => {
     const results = index.searchKnowledge("test");
 
     expect(results[0].summary).toBe("My summary");
+  });
+});
+
+describe("knowledge code chunks in the retrieval document", () => {
+  it("finds an entry by a term that appears only inside a chunk snippet", async () => {
+    mockReadKnowledge.mockResolvedValue({
+      entries: [
+        makeKnowledge({
+          id: "k1",
+          title: "Unrelated title",
+          summary: "Nothing relevant in the prose",
+          codeChunks: [makeChunk({ path: "src/a.ts", snippet: "const zephyrquartz = 1;" })],
+        }),
+      ],
+    });
+    mockReadPlans.mockResolvedValue({ plans: [] });
+
+    const index = await buildProjectRetrievalIndex("test-project");
+    const results = index.searchKnowledge("zephyrquartz");
+
+    expect(results.map((r) => r.id)).toContain("k1");
+  });
+
+  it("finds an entry by a term that appears only in a chunk file path", async () => {
+    mockReadKnowledge.mockResolvedValue({
+      entries: [
+        makeKnowledge({
+          id: "k1",
+          title: "Unrelated title",
+          summary: "Nothing relevant",
+          codeChunks: [makeChunk({ path: "src/flibbertigibbet.ts", snippet: "noop" })],
+        }),
+      ],
+    });
+    mockReadPlans.mockResolvedValue({ plans: [] });
+
+    const index = await buildProjectRetrievalIndex("test-project");
+    const results = index.searchKnowledge("flibbertigibbet");
+
+    expect(results.map((r) => r.id)).toContain("k1");
+  });
+
+  it("weights a chunk-path term below a title term", async () => {
+    mockReadKnowledge.mockResolvedValue({
+      entries: [
+        makeKnowledge({ id: "k-title", title: "flibbertigibbet", summary: "" }),
+        makeKnowledge({
+          id: "k-path",
+          title: "Unrelated",
+          summary: "Unrelated",
+          codeChunks: [makeChunk({ path: "src/flibbertigibbet.ts", snippet: "noop" })],
+        }),
+      ],
+    });
+    mockReadPlans.mockResolvedValue({ plans: [] });
+
+    const index = await buildProjectRetrievalIndex("test-project");
+    const results = index.searchKnowledge("flibbertigibbet");
+
+    const byId = new Map(results.map((r) => [r.id, r.score]));
+    // Path-only entry is still a hit, but the title hit outranks it.
+    expect(byId.has("k-path")).toBe(true);
+    expect(results[0].id).toBe("k-title");
+    expect(byId.get("k-title")!).toBeGreaterThan(byId.get("k-path")!);
+  });
+
+  it("produces a byte-identical document for an entry with zero chunks", () => {
+    const entry = makeKnowledge({
+      id: "k1",
+      title: "Fixed fixture",
+      keywords: ["alpha", "beta"],
+      summary: "A fixed summary",
+    });
+    // The exact pre-change document shape: only title/keywords/summary.
+    const expected = {
+      id: "k1",
+      fields: { title: "Fixed fixture", keywords: "alpha beta", summary: "A fixed summary" },
+    };
+
+    const doc = knowledgeToDocument(entry);
+    expect(doc).toEqual(expected);
+    expect(JSON.stringify(doc)).toBe(JSON.stringify(expected));
+    expect(Object.keys(doc.fields)).toEqual(["title", "keywords", "summary"]);
+  });
+
+  it("treats an explicitly empty codeChunks array as no chunks", () => {
+    const entry = makeKnowledge({
+      id: "k1",
+      title: "Fixed",
+      keywords: [],
+      summary: "",
+      codeChunks: [],
+    });
+    expect(knowledgeToDocument(entry).fields).toEqual({
+      title: "Fixed",
+      keywords: "",
+      summary: "",
+    });
+  });
+
+  it("orders multiple chunks deterministically by path then startLine", () => {
+    const a = makeChunk({ path: "b.ts", startLine: 5, endLine: 6, snippet: "beta" });
+    const b = makeChunk({ path: "a.ts", startLine: 9, endLine: 10, snippet: "alpha" });
+    const c = makeChunk({ path: "b.ts", startLine: 2, endLine: 3, snippet: "gamma" });
+
+    const text = chunkFieldText([a, b, c]);
+    const idxAlpha = text.indexOf("alpha");
+    const idxGamma = text.indexOf("gamma");
+    const idxBeta = text.indexOf("beta");
+
+    expect(idxAlpha).toBeGreaterThanOrEqual(0);
+    expect(idxAlpha).toBeLessThan(idxGamma); // a.ts before b.ts
+    expect(idxGamma).toBeLessThan(idxBeta); // b.ts:2 before b.ts:5
+    // Order-independent: a shuffled input yields the same field text.
+    expect(chunkFieldText([c, b, a])).toBe(text);
+  });
+
+  it("caps indexed chunk snippet text so one huge chunk cannot dominate", () => {
+    const huge = makeChunk({ path: "src/big.ts", snippet: "dominance ".repeat(50000) });
+    const field = chunkFieldText([huge]);
+
+    // The header path is preserved in full; only the snippet is capped.
+    const snippetBytes =
+      Buffer.byteLength(field, "utf8") - Buffer.byteLength("src/big.ts\n", "utf8");
+    expect(snippetBytes).toBeLessThanOrEqual(MAX_CHUNK_TEXT_BYTES);
+    // The cap actually truncated the enormous snippet.
+    expect(field.length).toBeLessThan(huge.snippet.length);
+
+    // A small chunk is emitted in full alongside its header.
+    const small = makeChunk({ path: "src/small.ts", snippet: "tiny" });
+    expect(chunkFieldText([small])).toBe("src/small.ts\ntiny");
+  });
+
+  it("does not let a capped huge chunk dominate an entry with a small chunk", async () => {
+    const hugeChunk = makeChunk({ path: "src/huge.ts", snippet: "bulwark ".repeat(20000) });
+    const smallChunk = makeChunk({ path: "src/small.ts", snippet: "bulwark" });
+    mockReadKnowledge.mockResolvedValue({
+      entries: [
+        makeKnowledge({ id: "k-huge", title: "Huge", summary: "", codeChunks: [hugeChunk] }),
+        makeKnowledge({ id: "k-small", title: "Small", summary: "", codeChunks: [smallChunk] }),
+      ],
+    });
+    mockReadPlans.mockResolvedValue({ plans: [] });
+
+    const index = await buildProjectRetrievalIndex("test-project");
+    const results = index.searchKnowledge("bulwark");
+
+    const hugeField = knowledgeToDocument(
+      makeKnowledge({ id: "x", title: "Huge", codeChunks: [hugeChunk] }),
+    ).fields.chunks!;
+    // The capped huge chunk contributes at most its path plus the byte cap,
+    // so it cannot balloon the corpus/index compared with a small chunk.
+    const hugeBytes = Buffer.byteLength(hugeField, "utf8");
+    expect(hugeBytes).toBeLessThanOrEqual(
+      Buffer.byteLength("src/huge.ts\n", "utf8") + MAX_CHUNK_TEXT_BYTES,
+    );
+    expect(hugeField.length).toBeLessThan(hugeChunk.snippet.length);
+    expect(results.map((r) => r.id).sort()).toEqual(["k-huge", "k-small"]);
   });
 });

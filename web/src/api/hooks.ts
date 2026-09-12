@@ -23,6 +23,10 @@ export const qk = {
   knowledge: (slug: string) => ["knowledge", slug] as const,
   knowledgeEntry: (slug: string, id: string) => ["knowledge", slug, id] as const,
   tasks: (slug: string) => ["tasks", slug] as const,
+  /** A receipt nests under the area that produced it, so a change event for
+   *  `tasks`/`plans` refetches the receipt alongside the pointer naming it. */
+  receipt: (slug: string, area: "tasks" | "plans", id: string) =>
+    [area, slug, "receipt", id] as const,
   plans: (slug: string) => ["plans", slug] as const,
   plan: (slug: string, id: string) => ["plan", slug, id] as const,
   graph: (slug: string) => ["graph", slug] as const,
@@ -96,6 +100,13 @@ export const useKnowledgeEntry = (slug: string, id: string) =>
   useQuery({ queryKey: qk.knowledgeEntry(slug, id), queryFn: () => api.knowledgeEntry(slug, id) });
 export const useTasks = (slug: string) =>
   useQuery({ queryKey: qk.tasks(slug), queryFn: () => api.tasks(slug) });
+/** One receipt body. Read eagerly by the panel that mounts it: only the
+ *  selected task's (or the open plan's) receipt is ever mounted, so the read is
+ *  one request per page — and it is what makes the base→head range link
+ *  available without an extra step. The diff itself still renders only when the
+ *  panel is expanded. */
+export const useReceipt = (slug: string, area: "tasks" | "plans", id: string) =>
+  useQuery({ queryKey: qk.receipt(slug, area, id), queryFn: () => api.receipt(slug, id) });
 export const usePlans = (slug: string) =>
   useQuery({ queryKey: qk.plans(slug), queryFn: () => api.plans(slug) });
 export const usePlan = (slug: string, id: string) =>

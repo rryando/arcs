@@ -11,6 +11,7 @@ import {
   readKnowledgeIndex,
   readPlanIndex,
 } from "../utils/project-memory.js";
+import type { CodeChunk } from "../utils/storage-utils.js";
 import { type Bm25Index, createBm25Index, type Document } from "./bm25.js";
 
 export interface ScoredEntry {
@@ -47,17 +48,77 @@ async function sourceSignature(projectDir: string): Promise<string | null> {
   return parts.some((part) => part === null) ? null : parts.join("|");
 }
 
-const FIELD_WEIGHTS = { title: 3, keywords: 2, summary: 1 };
+/**
+ * BM25 field weights. `title`, `keywords`, and `summary` are the primary
+ * signals; `chunks` (captured code evidence, folded in as `path` + `snippet`)
+ * is deliberately down-weighted to half of `summary` because chunks are
+ * supporting evidence rather than the entry's authored intent. Keeping the
+ * chunk weight below `summary` preserves the existing
+ * title > keywords > summary ranking.
+ */
+const FIELD_WEIGHTS = { title: 3, keywords: 2, summary: 1, chunks: 0.5 };
 
-function knowledgeToDocument(entry: KnowledgeMeta): Document {
-  return {
-    id: entry.id,
-    fields: {
-      title: entry.title,
-      keywords: entry.keywords.join(" "),
-      summary: entry.summary ?? "",
-    },
+/**
+ * Ceiling (in UTF-8 bytes) on the snippet text a single code chunk contributes
+ * to the BM25 document field. Chunk snippets are already bounded at capture
+ * time (see `DEFAULT_MAX_BYTES` in code-snippet.ts), but this second cap keeps
+ * one oversized or pre-existing chunk from dominating the corpus or bloating
+ * the on-disk index cache.
+ */
+export const MAX_CHUNK_TEXT_BYTES = 4096;
+
+/** Truncate `text` to at most `maxBytes` UTF-8 bytes without splitting a code point. */
+function truncateToBytes(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= maxBytes) return text;
+  let out = "";
+  let bytes = 0;
+  for (const char of text) {
+    const size = encoder.encode(char).length;
+    if (bytes + size > maxBytes) break;
+    out += char;
+    bytes += size;
+  }
+  return out;
+}
+
+/**
+ * Fold captured code chunks into one string for the BM25 `chunks` field.
+ *
+ * Chunks are ordered deterministically (by `path`, then `startLine`) so the
+ * cached index is reproducible across runs. Each chunk contributes its file
+ * `path` and its captured `snippet` (itself capped at `MAX_CHUNK_TEXT_BYTES`),
+ * so a query term can match either the path or the source text at the same low
+ * `chunks` weight. Returns `""` when there are no chunks, so a chunkless entry
+ * gets no `chunks` field and its document is byte-identical to before.
+ */
+export function chunkFieldText(chunks: readonly CodeChunk[] | undefined): string {
+  if (!chunks || chunks.length === 0) return "";
+  const ordered = [...chunks].sort((a, b) =>
+    a.path === b.path ? a.startLine - b.startLine : a.path < b.path ? -1 : 1,
+  );
+  const parts: string[] = [];
+  for (const chunk of ordered) {
+    const snippet = truncateToBytes(chunk.snippet ?? "", MAX_CHUNK_TEXT_BYTES);
+    parts.push(snippet.length > 0 ? `${chunk.path}\n${snippet}` : chunk.path);
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Build the BM25 document for a knowledge entry. A `chunks` field is added
+ * only when the entry actually carries code chunks, keeping chunkless entries
+ * byte-identical to the pre-chunk document shape.
+ */
+export function knowledgeToDocument(entry: KnowledgeMeta): Document {
+  const fields: Record<string, string> = {
+    title: entry.title,
+    keywords: entry.keywords.join(" "),
+    summary: entry.summary ?? "",
   };
+  const chunks = chunkFieldText(entry.codeChunks);
+  if (chunks !== "") fields.chunks = chunks;
+  return { id: entry.id, fields };
 }
 
 function planToDocument(plan: PlanMeta): Document {

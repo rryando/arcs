@@ -14,11 +14,17 @@
  *
  * There is no editing affordance and no save button, by design — the plane
  * behind this component has no write route. Changes flow through the agent.
+ *
+ * Syntax highlighting is derived from the path's extension via
+ * `lib/evidence` (a local map — this workspace cannot import `src/utils`).
+ * A file whose extension is not in that map renders exactly as it always did:
+ * plain per-line text.
  */
 
 import { useMemo, useState } from "react";
 import type { SessionFileReference } from "../api/client";
 import { useWorkspaceFile, useWorkspaceTree } from "../api/hooks";
+import { highlightToHtml, languageFromPath, splitHighlightedLines } from "../lib/evidence";
 import { cx } from "../lib/format";
 
 /** Ceiling on the anchor text sent with a reference. The server clips again
@@ -68,6 +74,24 @@ export function WorkspaceFileViewer({
     if (split.length > 1 && split[split.length - 1] === "") split.pop();
     return split;
   }, [file.data?.content]);
+
+  /**
+   * Highlighted HTML per line, or null when the file's extension maps to no
+   * language this stack knows — an unknown type keeps the previous plain-text
+   * rendering rather than guessing. Only the lines that can actually render are
+   * highlighted, and the whole slice is highlighted in one pass so a token that
+   * spans lines (block comment, template literal) is colored correctly; the
+   * spans are then re-balanced per line, because each line is its own DOM node
+   * here.
+   */
+  const highlightedLines = useMemo(() => {
+    const data = file.data;
+    if (data === undefined) return null;
+    const language = languageFromPath(data.path);
+    if (language === undefined) return null;
+    const code = lines.slice(0, MAX_RENDERED_LINES).join("\n");
+    return splitHighlightedLines(highlightToHtml(code, language));
+  }, [file.data, lines]);
 
   const startLine = anchor !== null && focus !== null ? Math.min(anchor, focus) : null;
   const endLine = anchor !== null && focus !== null ? Math.max(anchor, focus) : null;
@@ -177,6 +201,7 @@ export function WorkspaceFileViewer({
                         endLine !== null &&
                         line >= startLine &&
                         line <= endLine;
+                      const html = highlightedLines?.[index];
                       return (
                         <button
                           // Line numbers are the identity here; the text is not
@@ -193,7 +218,15 @@ export function WorkspaceFileViewer({
                           <span className="w-8 shrink-0 text-right text-term-dim tabular-nums">
                             {line}
                           </span>
-                          <span className="whitespace-pre text-term-fg">{text || " "}</span>
+                          {html === undefined ? (
+                            <span className="whitespace-pre text-term-fg">{text || " "}</span>
+                          ) : (
+                            <span
+                              className="hljs whitespace-pre text-term-fg"
+                              // biome-ignore lint/security/noDangerouslySetInnerHtml: the line comes from highlightToHtml (dompurify-sanitized) split into balanced per-line spans; the file's own text is never interpreted as markup
+                              dangerouslySetInnerHTML={{ __html: html }}
+                            />
+                          )}
                         </button>
                       );
                     })}

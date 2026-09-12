@@ -1,8 +1,13 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_MAX_LINES } from "../src/utils/code-snippet.js";
 import type { KnowledgeProposal } from "../src/utils/codegraph.js";
-import { writeProposalsFile } from "../src/utils/codegraph-knowledge.js";
+import {
+  resolveAnchorRange,
+  resolveAnchorRef,
+  writeProposalsFile,
+} from "../src/utils/codegraph-knowledge.js";
 import { getProjectDir } from "../src/utils/paths.js";
 import { readProposals } from "../src/utils/proposal-store.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
@@ -200,6 +205,188 @@ describe("writeProposalsFile", () => {
       const ids = after?.proposals.map((p) => p.id).sort();
       // Backfilled proposal survived — agent enrichment work is not lost.
       expect(ids).toEqual(["codegraph-cluster-backfilled", "codegraph-cluster-fresh"]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deterministic anchor → line-range resolution
+
+describe("resolveAnchorRange", () => {
+  it("matches whole words only — `foo` never matches inside `foobar`", () => {
+    expect(resolveAnchorRange("const foobar = 1;\n", "foo")).toBeNull();
+
+    const range = resolveAnchorRange("const foobar = 1;\nconst foo = 2;\n", "foo");
+    expect(range).not.toBeNull();
+    expect(range?.matchLine).toBe(2);
+    expect(range?.matchCount).toBe(1);
+    expect(range?.firstMatch).toBe(false);
+  });
+
+  it("resolves the first match on ambiguity and records that it did so", () => {
+    const range = resolveAnchorRange("foo();\nfoo();\n", "foo");
+    expect(range).not.toBeNull();
+    expect(range?.firstMatch).toBe(true);
+    expect(range?.matchCount).toBe(2);
+    expect(range?.matchLine).toBe(1);
+  });
+
+  it("returns null when the anchor is absent", () => {
+    expect(resolveAnchorRange("const bar = 1;\n", "foo")).toBeNull();
+  });
+
+  it("expands a declaration to its enclosing brace-balanced block", () => {
+    const content = [
+      "export function outer() {",
+      "  const x = 1;",
+      "  function foo() {",
+      "    return foo_bar;",
+      "  }",
+      "}",
+      "",
+    ].join("\n");
+
+    const range = resolveAnchorRange(content, "foo");
+    expect(range?.startLine).toBe(1);
+    expect(range?.endLine).toBe(6);
+    expect(range?.matchLine).toBe(3);
+    // `foo_bar` on line 4 is NOT a whole-word match.
+    expect(range?.matchCount).toBe(1);
+  });
+
+  it("caps the resolved range at DEFAULT_MAX_LINES and keeps the match inside it", () => {
+    const lines = ["function big() {"];
+    for (let i = 2; i <= 501; i++) lines.push(i === 300 ? "  middle();" : "  x();");
+    lines.push("}");
+
+    const range = resolveAnchorRange(`${lines.join("\n")}\n`, "middle");
+    expect(range).not.toBeNull();
+    if (!range) return;
+    expect(range.endLine - range.startLine + 1).toBe(DEFAULT_MAX_LINES);
+    expect(range.startLine).toBeLessThanOrEqual(300);
+    expect(range.endLine).toBeGreaterThanOrEqual(300);
+  });
+});
+
+describe("resolveAnchorRef", () => {
+  it("reads only the named file and returns a CodeRef", async () => {
+    await withTempDataDir(async (dir) => {
+      const ws = mkdtempSync(resolve(dir, "ws-"));
+      writeFileSync(
+        resolve(ws, "sym.ts"),
+        "const foobar = 1;\nexport function target() {\n  return 1;\n}\n",
+      );
+
+      const ref = await resolveAnchorRef(ws, "sym.ts", "target");
+      expect(ref).not.toBeNull();
+      expect(ref?.path).toBe("sym.ts");
+      expect(ref?.anchor).toBe("target");
+      expect(ref?.startLine).toBe(1);
+      // content ends with a trailing newline, so the file has 5 lines.
+      expect(ref?.endLine).toBe(5);
+    });
+  });
+
+  it("returns null for an unsafe path, a missing file, and an absent anchor", async () => {
+    await withTempDataDir(async (dir) => {
+      const ws = mkdtempSync(resolve(dir, "ws-"));
+      writeFileSync(resolve(ws, "sym.ts"), "const bar = 1;\n");
+
+      expect(await resolveAnchorRef(ws, "../escape.ts", "bar")).toBeNull();
+      expect(await resolveAnchorRef(ws, "nope.ts", "bar")).toBeNull();
+      expect(await resolveAnchorRef(ws, "sym.ts", "target")).toBeNull();
+    });
+  });
+
+  it("records the chosen position on the ref when the match was ambiguous", async () => {
+    await withTempDataDir(async (dir) => {
+      const ws = mkdtempSync(resolve(dir, "ws-"));
+      writeFileSync(resolve(ws, "dup.ts"), "foo();\nfoo();\n");
+
+      const ref = await resolveAnchorRef(ws, "dup.ts", "foo");
+      expect(ref?.anchor).toBe("foo (first match at line 1)");
+    });
+  });
+});
+
+describe("writeProposalsFile — anchor resolution", () => {
+  it("resolves anchor-only source files to line ranges at write time", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = getProjectDir(SLUG);
+      mkdirSync(projectDir, { recursive: true });
+      const ws = mkdtempSync(resolve(dir, "ws-"));
+      mkdirSync(resolve(ws, "src"), { recursive: true });
+      writeFileSync(
+        resolve(ws, "src/sym.ts"),
+        "const foobar = 1;\nexport function target() {\n  return 1;\n}\n",
+      );
+      writeFileSync(
+        resolve(projectDir, "meta.json"),
+        JSON.stringify({ id: SLUG, workspacePaths: [ws] }),
+        "utf-8",
+      );
+
+      await writeProposalsFile(
+        SLUG,
+        [makeProposal({ sourceFiles: [{ path: "src/sym.ts", anchor: "target" }] })],
+        '{"nodes":[]}',
+      );
+
+      const file = await readProposals(SLUG);
+      const sf = file?.proposals[0]?.sourceFiles[0] as unknown as {
+        path: string;
+        anchor?: string;
+        startLine?: number;
+        endLine?: number;
+      };
+      expect(sf.path).toBe("src/sym.ts");
+      expect(sf.anchor).toBe("target");
+      expect(sf.startLine).toBe(1);
+      expect(sf.endLine).toBe(5);
+    });
+  });
+
+  it("leaves anchor-only source files unchanged when no workspace is registered", async () => {
+    await withTempDataDir(async () => {
+      seedProject();
+
+      await writeProposalsFile(
+        SLUG,
+        [makeProposal({ sourceFiles: [{ path: "src/sym.ts", anchor: "target" }] })],
+        '{"nodes":[]}',
+      );
+
+      const file = await readProposals(SLUG);
+      const sf = file?.proposals[0]?.sourceFiles[0] as unknown as { startLine?: number };
+      expect(sf.startLine).toBeUndefined();
+    });
+  });
+
+  it("leaves an unresolvable anchor without a range", async () => {
+    await withTempDataDir(async (dir) => {
+      const projectDir = getProjectDir(SLUG);
+      mkdirSync(projectDir, { recursive: true });
+      const ws = mkdtempSync(resolve(dir, "ws-"));
+      writeFileSync(resolve(ws, "sym.ts"), "const bar = 1;\n");
+      writeFileSync(
+        resolve(projectDir, "meta.json"),
+        JSON.stringify({ id: SLUG, workspacePaths: [ws] }),
+        "utf-8",
+      );
+
+      await writeProposalsFile(
+        SLUG,
+        [makeProposal({ sourceFiles: [{ path: "sym.ts", anchor: "does-not-exist" }] })],
+        '{"nodes":[]}',
+      );
+
+      const file = await readProposals(SLUG);
+      const sf = file?.proposals[0]?.sourceFiles[0] as unknown as {
+        anchor?: string;
+        startLine?: number;
+      };
+      expect(sf.anchor).toBe("does-not-exist");
+      expect(sf.startLine).toBeUndefined();
     });
   });
 });

@@ -5,6 +5,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { getTask } from "../src/utils/task-store.js";
 import { runCommand } from "./helpers/cli-runner.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
@@ -38,6 +39,21 @@ function seedDiagram(dir: string, slug: string, planId: string, nodeId: string):
 }
 
 describe("task transition — atomic diagram update", () => {
+  it("records the workspace startHead when transitioning to in_progress", async () => {
+    await withTempDataDir(async (dir) => {
+      await createTestProject(dir);
+      const taskId = await createTestTask("test-proj");
+
+      const result = await runCommand("task transition", ["test-proj", taskId, "in_progress"]);
+
+      expect(result.ok).toBe(true);
+      const task = await getTask(resolve(dir, "projects", "test-proj"), taskId);
+      expect(task.status).toBe("in_progress");
+      expect(typeof task.startHead).toBe("string");
+      expect(task.startHead?.length).toBeGreaterThan(0);
+    });
+  });
+
   it("transitions task without diagram params (unchanged behavior)", async () => {
     await withTempDataDir(async (dir) => {
       await createTestProject(dir);

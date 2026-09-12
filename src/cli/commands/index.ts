@@ -18,6 +18,7 @@ import "./brief.js";
 import "./next.js";
 import "./remember.js";
 import "./done.js";
+import "./report.js";
 import "./status.js";
 import "./proposal.js";
 import "./proposal-doc.js";

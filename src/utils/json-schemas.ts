@@ -93,6 +93,61 @@ export type ProjectMetaJson = z.infer<typeof projectMetaSchema>;
 const fileRefSchemaLocal = z.object({
   path: z.string(),
   anchor: z.string().optional(),
+  startLine: z.number().int().min(1).optional(),
+  endLine: z.number().int().min(1).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Code chunks — a captured line range in a workspace file
+// ---------------------------------------------------------------------------
+
+/** A `path:start-end` line range. `endLine` must not precede `startLine`. */
+export const codeRefSchema = z
+  .object({
+    path: z.string().min(1),
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+    anchor: z.string().optional(),
+  })
+  .refine((ref) => ref.endLine >= ref.startLine, {
+    message: "endLine must be greater than or equal to startLine",
+    path: ["endLine"],
+  });
+
+/** A captured code slice: the range plus the text, optional language/revision. */
+export const codeChunkSchema = z
+  .object({
+    path: z.string().min(1),
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+    language: z.string().optional(),
+    snippet: z.string(),
+    anchor: z.string().optional(),
+    headRev: z.string().optional(),
+    capturedAt: z.string(),
+  })
+  .refine((chunk) => chunk.endLine >= chunk.startLine, {
+    message: "endLine must be greater than or equal to startLine",
+    path: ["endLine"],
+  });
+
+/**
+ * The completion-receipt pointer stored on a task or plan. Mirrors
+ * `TaskReportRef` in `run-report.ts`; kept permissive so an older/newer
+ * persisted pointer never fails a plan index rebuild.
+ */
+export const taskReportRefSchema = z.object({
+  commit: z.string().optional(),
+  branch: z.string().optional(),
+  baseRef: z.string().optional(),
+  url: z.string().optional(),
+  filesChanged: z.number(),
+  insertions: z.number(),
+  deletions: z.number(),
+  reportFile: z.string(),
+  diffFile: z.string().optional(),
+  truncated: z.boolean(),
+  capturedAt: z.string(),
 });
 
 export const planMetaSchema = z.object({
@@ -106,6 +161,7 @@ export const planMetaSchema = z.object({
   file: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  report: taskReportRefSchema.optional(),
 });
 
 export const planIndexSchema = z.object({
@@ -124,6 +180,7 @@ export const knowledgeMetaSchema = z.object({
   file: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  codeChunks: z.array(codeChunkSchema).optional(),
 });
 
 export const knowledgeIndexSchema = z.object({

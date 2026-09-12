@@ -10,6 +10,7 @@ import { Field, inputClass, SelectInput, TextInput } from "../components/Dialog"
 import { MarkdownEditor } from "../components/MarkdownEditor.lazy";
 import { MarkdownViewer } from "../components/MarkdownViewer";
 import { MermaidDiagram } from "../components/MermaidDiagram";
+import { ReceiptPanel } from "../components/ReceiptPanel";
 import { useToaster } from "../components/Toaster";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { formatFileRefs, parseFileRefs } from "../lib/file-refs";
@@ -261,6 +262,22 @@ export function PlanDetail() {
                     {file.anchor ? `#${file.anchor}` : ""}
                   </code>
                 ))}
+              </div>
+            )}
+            {/*
+             * Plan completion receipt (written when the plan's last task
+             * finished). Conditional, so a plan without one renders exactly as
+             * before. The range/compare link and the per-task attribution come
+             * from the stored body the panel fetches.
+             */}
+            {meta.report && (
+              <div className="mb-4">
+                <ReceiptPanel
+                  slug={slug}
+                  area="plans"
+                  id={meta.normalizedId}
+                  report={meta.report}
+                />
               </div>
             )}
             <MarkdownViewer

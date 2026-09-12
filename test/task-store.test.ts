@@ -2,6 +2,7 @@
 // Tests for task-store dependsOn field
 // ---------------------------------------------------------------------------
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -14,6 +15,46 @@ function makeProjectDir(): string {
   const dir = mkdtempSync(resolve(tmpdir(), "arcs-task-store-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+/** One git call, argv only (never a shell), throwing on failure. */
+function git(dir: string, args: string[]): string {
+  const proc = spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8" });
+  if (proc.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${proc.stderr ?? proc.error}`);
+  }
+  return (proc.stdout ?? "").trim();
+}
+
+/** A real temp git repo with a LOCAL identity (CI has no global git config). */
+function makeRepo(): string {
+  const dir = mkdtempSync(resolve(tmpdir(), "arcs-task-store-repo-"));
+  tempDirs.push(dir);
+  git(dir, ["init", "-q"]);
+  git(dir, ["config", "user.email", "test@example.com"]);
+  git(dir, ["config", "user.name", "Task Store Test"]);
+  git(dir, ["config", "commit.gpgsign", "false"]);
+  writeFileSync(resolve(dir, "a.txt"), "one\n");
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "base"]);
+  return dir;
+}
+
+function commitFile(dir: string, name: string, content: string): string {
+  writeFileSync(resolve(dir, name), content);
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", `add ${name}`]);
+  return git(dir, ["rev-parse", "HEAD"]);
+}
+
+/** Write the project meta a store-side startHead capture reads for its workspace. */
+function writeProjectMeta(projectDir: string, workspacePaths: string[]): void {
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    resolve(projectDir, "meta.json"),
+    JSON.stringify({ name: "Test", workspacePaths }),
+    "utf-8",
+  );
 }
 
 afterEach(() => {
@@ -294,5 +335,138 @@ describe("task-store: per-node diagram metadata fields", () => {
     await expect(
       createTask(dir, { title: "Invalid Mode", workMode: "unbounded" as "bounded" }),
     ).rejects.toThrow('Invalid task work mode "unbounded"');
+  });
+});
+
+describe("task-store: startHead capture and report ref", () => {
+  it("records startHead on transition to in_progress from a git workspace", async () => {
+    const repo = makeRepo();
+    const head = git(repo, ["rev-parse", "HEAD"]);
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [repo]);
+
+    const task = await createTask(dir, { title: "Tracked" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.status).toBe("in_progress");
+    expect(updated.startHead).toBe(head);
+  });
+
+  it("leaves startHead absent when the workspace is not a git repo", async () => {
+    const plain = mkdtempSync(resolve(tmpdir(), "arcs-task-store-plain-"));
+    tempDirs.push(plain);
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [plain]);
+
+    const task = await createTask(dir, { title: "Untracked" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.status).toBe("in_progress");
+    expect(updated.startHead).toBeUndefined();
+  });
+
+  it("leaves startHead absent when the project registers no workspace", async () => {
+    const dir = makeProjectDir();
+    const task = await createTask(dir, { title: "No Workspace" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.status).toBe("in_progress");
+    expect(updated.startHead).toBeUndefined();
+  });
+
+  it("does not overwrite startHead on an in_progress re-transition", async () => {
+    const repo = makeRepo();
+    const base = git(repo, ["rev-parse", "HEAD"]);
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [repo]);
+
+    const task = await createTask(dir, { title: "Re-run" });
+    const first = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+    expect(first.startHead).toBe(base);
+
+    commitFile(repo, "b.txt", "two\n");
+    const again = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+    expect(again.startHead).toBe(base);
+  });
+
+  it("refreshes startHead when a task is reopened after done", async () => {
+    const repo = makeRepo();
+    const base = git(repo, ["rev-parse", "HEAD"]);
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [repo]);
+
+    const task = await createTask(dir, { title: "Reopen" });
+    await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+    await updateTask(dir, { id: task.normalizedId, status: "done" });
+
+    const next = commitFile(repo, "b.txt", "two\n");
+    const reopened = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(reopened.startHead).toBe(next);
+    expect(reopened.startHead).not.toBe(base);
+  });
+
+  it("keeps startHead on a paused re-entry with no completion in between", async () => {
+    const repo = makeRepo();
+    const base = git(repo, ["rev-parse", "HEAD"]);
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [repo]);
+
+    const task = await createTask(dir, { title: "Pause" });
+    await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+    await updateTask(dir, { id: task.normalizedId, status: "backlog" });
+
+    commitFile(repo, "b.txt", "two\n");
+    const resumed = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(resumed.startHead).toBe(base);
+  });
+
+  it("round-trips a report ref and clears it with null", async () => {
+    const dir = makeProjectDir();
+    const task = await createTask(dir, { title: "Reported" });
+    const ref = {
+      commit: "abc123def456",
+      filesChanged: 1,
+      insertions: 2,
+      deletions: 3,
+      reportFile: "projects/p/reports/reported.json",
+      truncated: false,
+      capturedAt: "2026-01-01T00:00:00Z",
+    };
+
+    const set = await updateTask(dir, { id: task.normalizedId, report: ref });
+    expect(set.report).toEqual(ref);
+
+    const cleared = await updateTask(dir, { id: task.normalizedId, report: null });
+    expect(cleared.report).toBeUndefined();
+  });
+
+  it("loads legacy index fixtures without startHead or report", async () => {
+    const dir = makeProjectDir();
+    mkdirSync(resolve(dir, "tasks"), { recursive: true });
+    writeFileSync(
+      resolve(dir, "tasks", "index.json"),
+      JSON.stringify({
+        tasks: [
+          {
+            id: "legacy",
+            normalizedId: "legacy",
+            title: "Legacy Task",
+            status: "done",
+            priority: "medium",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
+      "utf-8",
+    );
+
+    const { getTask, listTasks } = await import("../src/utils/task-store.js");
+    const fetched = await getTask(dir, "legacy");
+    expect(fetched.startHead).toBeUndefined();
+    expect(fetched.report).toBeUndefined();
+    await expect(listTasks(dir)).resolves.toHaveLength(1);
   });
 });

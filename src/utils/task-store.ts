@@ -5,7 +5,9 @@
  * with a flat JSON index and markdown render for human-readable output.
  */
 
-import { basename, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { invalidateGraphCache } from "../retrieval/graph-invalidate.js";
 import {
   itemNotFound,
@@ -15,6 +17,7 @@ import {
 } from "./errors.js";
 import { withLock } from "./file-lock.js";
 import { readJsonSafe } from "./json.js";
+import type { TaskReportRef } from "./run-report.js";
 import { normalizeIdentifier } from "./slug.js";
 import {
   ensureDir,
@@ -68,6 +71,15 @@ export interface TaskMeta {
   skill?: string;
   /** Per-node `%% work-mode:` metadata for implementation task routing. */
   workMode?: TaskWorkMode;
+  /**
+   * Full HEAD sha of the workspace repo when this task last entered
+   * `in_progress`. It is the deterministic base for a completion receipt.
+   * Absent when the workspace is not a git repo (or the task never entered
+   * `in_progress`).
+   */
+  startHead?: string;
+  /** Pointer at the persisted completion receipt captured by `arcs done`. */
+  report?: TaskReportRef;
   createdAt: string;
   updatedAt: string;
 }
@@ -113,6 +125,8 @@ export interface UpdateTaskInput {
   skill?: string | null;
   /** Pass `null` to clear; pass a work mode to set. */
   workMode?: TaskWorkMode | null;
+  /** Pass `null` to clear; pass a report ref to set. */
+  report?: TaskReportRef | null;
   now?: string;
 }
 
@@ -164,6 +178,64 @@ async function readTaskIndex(projectDir: string): Promise<TaskIndex> {
     return { tasks: [] };
   }
   return { tasks: index.tasks.map(normalizeTaskWorkMetadata) };
+}
+
+// ---------------------------------------------------------------------------
+// startHead capture — best-effort, never blocks a transition
+// ---------------------------------------------------------------------------
+
+/** Hard ceiling on the one git call a startHead capture makes. */
+const TASK_START_HEAD_TIMEOUT_MS = 2_000;
+
+/**
+ * The first registered workspace path for a project, absolute and `~`-expanded.
+ * Mirrors `project-resolver`'s expansion so a slug lookup and a store-side
+ * capture agree on the repo root. Returns "" for a workspace-less project.
+ */
+async function resolveWorkspacePath(projectDir: string): Promise<string> {
+  const meta = await readJsonSafe<{ workspacePaths?: unknown }>(join(projectDir, "meta.json"));
+  const paths = Array.isArray(meta?.workspacePaths) ? meta.workspacePaths : [];
+  const first = paths.find((p): p is string => typeof p === "string" && p.length > 0);
+  if (first === undefined) return "";
+  return first.startsWith("~") ? resolvePath(homedir(), first.slice(2)) : resolvePath(first);
+}
+
+/**
+ * Full HEAD sha of `cwd`, fail-soft to undefined. A non-git workspace, a
+ * missing git binary, or a wedged git must never break a task transition.
+ */
+function readHeadSha(cwd: string): string | undefined {
+  try {
+    const proc = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+      timeout: TASK_START_HEAD_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (proc.error !== undefined || proc.status !== 0) return undefined;
+    const sha = (typeof proc.stdout === "string" ? proc.stdout : "").trim();
+    return sha === "" ? undefined : sha;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Decide whether a task entering `in_progress` should (re)capture `startHead`.
+ *
+ * Rule: `startHead` is captured only on an actual status CHANGE into
+ * `in_progress`, and only when the task has no start point yet or has been
+ * completed since (previous status `done`, or a persisted `report` from a prior
+ * completion). A re-transition that stays `in_progress`, or a plain re-entry
+ * with a lingering startHead, is left untouched — the original work baseline is
+ * the more useful evidence. Capture is fail-soft: when the workspace has no git
+ * repo the field simply stays absent.
+ */
+function shouldCaptureStartHead(previousStatus: TaskMeta["status"], task: TaskMeta): boolean {
+  if (previousStatus === "in_progress") return false;
+  if (task.startHead === undefined) return true;
+  return previousStatus === "done" || task.report !== undefined;
 }
 
 function taskStoreLockPath(projectDir: string): string {
@@ -339,6 +411,7 @@ async function updateTaskUnlocked(projectDir: string, input: UpdateTaskInput): P
     throw itemNotFound("task", input.id);
   }
   const task = index.tasks[taskIndex];
+  const previousStatus = task.status;
 
   if (input.title !== undefined) task.title = input.title;
   if (input.status !== undefined) task.status = input.status;
@@ -400,6 +473,24 @@ async function updateTaskUnlocked(projectDir: string, input: UpdateTaskInput): P
       task.workMode = input.workMode;
     }
   }
+  if (input.report !== undefined) {
+    if (input.report === null) {
+      delete task.report;
+    } else {
+      task.report = input.report;
+    }
+  }
+
+  // Record the task's start commit when it enters in_progress. Fail-soft: a
+  // non-git workspace leaves startHead absent rather than failing the write.
+  if (input.status === "in_progress" && shouldCaptureStartHead(previousStatus, task)) {
+    const workspace = await resolveWorkspacePath(projectDir);
+    if (workspace !== "") {
+      const sha = readHeadSha(workspace);
+      if (sha !== undefined) task.startHead = sha;
+    }
+  }
+
   task.updatedAt = nowISO(input.now);
 
   const normalizedTask = normalizeTaskWorkMetadata(task);

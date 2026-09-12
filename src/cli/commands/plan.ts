@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { getProjectDir } from "../../utils/paths.js";
+import { getDataDir, getProjectDir } from "../../utils/paths.js";
 import {
   createPlan,
   deletePlan,
@@ -13,6 +13,8 @@ import {
   readPlanIndex,
   updatePlan,
 } from "../../utils/project-memory.js";
+import { readReceipt, type StoredReceipt } from "../../utils/report-store.js";
+import { commitUrl, type TaskReportRef } from "../../utils/run-report.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import { readStdin } from "../../utils/stdin.js";
 import {
@@ -105,6 +107,7 @@ const planGetParams = {
   slug: { type: "string", required: true, positional: 0, description: "Project slug" },
   planId: { type: "string", required: true, positional: 1, description: "Plan ID" },
   body: { type: "boolean", description: "Include plan body content" },
+  diff: { type: "boolean", description: "Include the capped unified diff of the plan receipt" },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -114,6 +117,63 @@ defineCommand({
   handler: handlePlanGet,
 });
 
+/**
+ * Build a base→head compare URL from a remote. Reuses `commitUrl` for host
+ * detection, so a remote that yields no commit link yields no range link
+ * either. Falls back to the head commit URL for hosts with no range form.
+ * Pure/offline — no network call.
+ */
+function compareUrl(remoteUrl: string | null, baseSha: string, headSha: string): string | null {
+  const headUrl = commitUrl(remoteUrl, headSha);
+  if (headUrl === null) return null;
+
+  const gitlabSuffix = `/-/commit/${headSha}`;
+  if (headUrl.endsWith(gitlabSuffix)) {
+    return `${headUrl.slice(0, -gitlabSuffix.length)}/-/compare/${baseSha}...${headSha}`;
+  }
+  const bitbucketSuffix = `/commits/${headSha}`;
+  if (headUrl.endsWith(bitbucketSuffix)) {
+    return `${headUrl.slice(0, -bitbucketSuffix.length)}/compare/${headSha}`;
+  }
+  const githubSuffix = `/commit/${headSha}`;
+  if (headUrl.endsWith(githubSuffix)) {
+    return `${headUrl.slice(0, -githubSuffix.length)}/compare/${baseSha}...${headSha}`;
+  }
+  // Unrecognized commit-URL shape: prefer a real link over none.
+  return headUrl;
+}
+
+/**
+ * Summarize a plan's persisted receipt (when present) for the plan-get
+ * envelope. Falls back to the stored pointer when the receipt body is gone, so
+ * the contract degrades to "pointer only" rather than erroring.
+ */
+function buildPlanReceiptSummary(
+  receipt: StoredReceipt | null,
+  pointer: TaskReportRef | undefined,
+  rangeUrl: string | null,
+): Record<string, unknown> | undefined {
+  if (receipt === null && pointer === undefined) return undefined;
+  const baseSha = receipt?.baseSha ?? pointer?.baseRef;
+  const headSha = receipt?.headSha ?? pointer?.commit;
+  const url = rangeUrl ?? receipt?.url ?? pointer?.url;
+  const capturedAt = receipt?.capturedAt ?? pointer?.capturedAt;
+  return {
+    ...(baseSha !== undefined ? { baseSha } : {}),
+    ...(headSha !== undefined ? { headSha } : {}),
+    ...(receipt?.remoteUrl !== undefined && receipt.remoteUrl !== null
+      ? { remoteUrl: receipt.remoteUrl }
+      : {}),
+    ...(url !== undefined && url !== null ? { url } : {}),
+    filesChanged: receipt?.filesChanged ?? pointer?.filesChanged ?? 0,
+    insertions: receipt?.insertions ?? pointer?.insertions ?? 0,
+    deletions: receipt?.deletions ?? pointer?.deletions ?? 0,
+    truncated: receipt?.diffTruncated ?? pointer?.truncated ?? false,
+    ...(capturedAt !== undefined ? { capturedAt } : {}),
+    ...(receipt?.taskAttribution !== undefined ? { taskAttribution: receipt.taskAttribution } : {}),
+  };
+}
+
 async function handlePlanGet(
   params: ParsedParams<typeof planGetParams>,
   _flags: CommandFlags,
@@ -121,6 +181,7 @@ async function handlePlanGet(
   const slug = params.slug;
   const planId = params.planId;
   const includeBody = params.body;
+  const includeDiff = params.diff === true;
 
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
@@ -135,16 +196,26 @@ async function handlePlanGet(
     });
   }
 
+  // Read the stored plan completion receipt (no git, no network). A plan with
+  // no pointer short-circuits to the exact pre-receipt output.
+  const receipt = plan.report ? readReceipt(getDataDir(), slug, plan.normalizedId) : null;
+  const rangeUrl = receipt ? compareUrl(receipt.remoteUrl, receipt.baseSha, receipt.headSha) : null;
+  const receiptSummary = buildPlanReceiptSummary(receipt, plan.report, rangeUrl);
+  const extra = {
+    ...(receiptSummary ? { receipt: receiptSummary } : {}),
+    ...(includeDiff && receipt ? { diff: receipt.diff } : {}),
+  };
+
   if (includeBody) {
     const bodyPath = resolve(projectDir, plan.file);
     let body: string | undefined;
     if (existsSync(bodyPath)) {
       body = await readFile(bodyPath, "utf-8");
     }
-    return success({ meta: plan, body });
+    return success({ meta: plan, body, ...extra });
   }
 
-  return success(plan);
+  return success({ ...plan, ...extra });
 }
 
 // --- plan create ---

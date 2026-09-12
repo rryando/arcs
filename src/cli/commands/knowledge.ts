@@ -15,9 +15,11 @@ import {
 } from "../../utils/knowledge-templates.js";
 import { getProjectDir } from "../../utils/paths.js";
 import {
+  captureCodeChunks,
   createKnowledgeEntry,
   deleteKnowledgeEntry,
   readKnowledgeIndex,
+  splitCodeRefs,
   updateKnowledgeEntry,
 } from "../../utils/project-memory.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
@@ -193,6 +195,11 @@ const knowledgeCreateParams = {
       'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
   },
   audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
+  code: {
+    type: "string",
+    description:
+      'Code reference "path:start-end" to capture as a snapshot; comma-separated for multiple (e.g. "src/a.ts:10-25,src/b.ts:3-9")',
+  },
   "allow-thin": {
     type: "boolean",
     description: "Suppress the shallow-body warning for an intentional stub",
@@ -227,6 +234,9 @@ async function handleKnowledgeCreate(
     return failure(ERROR_CODES.ENTITY_NOT_FOUND, `Body file not found: ${bodyFile}`);
   }
   const sourceFiles = parseSourceFiles(sourceFilesRaw);
+  const capture = await captureCodeChunks(projectDir, splitCodeRefs(params.code));
+  if (!capture.ok) return failure(capture.code, capture.message);
+  const codeChunks = capture.chunks;
   if (flags.dryRun) {
     const id = normalizeIdentifier(title);
     const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : [];
@@ -242,6 +252,7 @@ async function handleKnowledgeCreate(
         hasBody: !!(bodyInline || bodyFile),
         ...(sourceFiles && { sourceFiles }),
         ...(audience && { audience }),
+        ...(codeChunks.length > 0 && { codeChunks }),
       },
     });
   }
@@ -267,6 +278,7 @@ async function handleKnowledgeCreate(
       ...(content && { content }),
       ...(sourceFiles && { sourceFiles }),
       ...(audience && { audience }),
+      ...(codeChunks.length > 0 && { codeChunks }),
     });
     return success({ ...entry, ...(warnings.length > 0 && { warnings }) });
   } catch (err) {
@@ -287,6 +299,11 @@ const knowledgeUpdateMetaParams = {
       'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
   },
   audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
+  code: {
+    type: "string",
+    description:
+      'Code reference "path:start-end" to capture as a snapshot; comma-separated for multiple (e.g. "src/a.ts:10-25,src/b.ts:3-9")',
+  },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -312,6 +329,9 @@ async function handleKnowledgeUpdateMeta(
   const result = requireProject(slug);
   if (typeof result !== "string") return result;
   const projectDir = result;
+  const capture = await captureCodeChunks(projectDir, splitCodeRefs(params.code));
+  if (!capture.ok) return failure(capture.code, capture.message);
+  const codeChunks = capture.chunks;
   if (flags.dryRun) {
     const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : undefined;
     return success({
@@ -325,6 +345,7 @@ async function handleKnowledgeUpdateMeta(
         keywords,
         ...(sourceFiles && { sourceFiles }),
         ...(audience && { audience }),
+        ...(codeChunks.length > 0 && { codeChunks }),
       },
     });
   }
@@ -338,6 +359,7 @@ async function handleKnowledgeUpdateMeta(
       keywords,
       ...(sourceFiles && { sourceFiles }),
       ...(audience && { audience }),
+      ...(codeChunks.length > 0 && { codeChunks }),
     });
     return success({ meta });
   } catch (err) {
@@ -436,6 +458,11 @@ const knowledgeUpsertParams = {
       'Comma-separated source file references (e.g. "src/utils/dag.ts,src/cli/index.ts:MyClass")',
   },
   audience: { type: "string", description: "Target audience", enum: KNOWLEDGE_AUDIENCES },
+  code: {
+    type: "string",
+    description:
+      'Code reference "path:start-end" to capture as a snapshot; comma-separated for multiple (e.g. "src/a.ts:10-25,src/b.ts:3-9")',
+  },
   "allow-thin": {
     type: "boolean",
     description: "Suppress the shallow-body warning for an intentional stub",
@@ -469,6 +496,9 @@ async function handleKnowledgeUpsert(
   if (bodyFile && !existsSync(bodyFile)) {
     return failure(ERROR_CODES.ENTITY_NOT_FOUND, `Body file not found: ${bodyFile}`);
   }
+  const capture = await captureCodeChunks(projectDir, splitCodeRefs(params.code));
+  if (!capture.ok) return failure(capture.code, capture.message);
+  const codeChunks = capture.chunks;
   const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : [];
   const id = normalizeIdentifier(title);
   const metaPath = resolve(projectDir, "knowledge", `${id}.meta.json`);
@@ -490,6 +520,7 @@ async function handleKnowledgeUpsert(
         keywords,
         ...(sourceFiles && { sourceFiles }),
         ...(audience && { audience }),
+        ...(codeChunks.length > 0 && { codeChunks }),
       });
       // On the update path the body is only rewritten when new content is
       // supplied; with no content the existing body is untouched, so there is
@@ -520,6 +551,7 @@ async function handleKnowledgeUpsert(
       ...(content && { content }),
       ...(sourceFiles && { sourceFiles }),
       ...(audience && { audience }),
+      ...(codeChunks.length > 0 && { codeChunks }),
     });
     return success({ created: true, id, meta: entry, ...(warnings.length > 0 && { warnings }) });
   } catch (err) {

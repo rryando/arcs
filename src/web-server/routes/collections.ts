@@ -21,6 +21,7 @@ import {
   readKnowledgeIndex,
   updateKnowledgeDocument,
 } from "../../utils/knowledge-store.js";
+import { getDataDir } from "../../utils/paths.js";
 import {
   createPlan,
   deletePlan,
@@ -29,6 +30,7 @@ import {
   readPlanIndex,
   updatePlanDocument,
 } from "../../utils/plan-store.js";
+import { readReceipt } from "../../utils/report-store.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import {
   createTask,
@@ -309,5 +311,36 @@ collectionsRoute.delete("/api/p/:slug/plans/:id", async (c) =>
     const projectDir = requireProjectDir(c.req.param("slug"));
     await deletePlan(projectDir, c.req.param("id"));
     return { deleted: true };
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Receipts
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only access to a project's stored completion receipts. A receipt is a
+ * sidecar pair (`reports/<id>.json` + `.diff`) written by the frozen engine in
+ * `src/utils/report-store.ts`, so it is NOT part of the task/plan meta the
+ * collection routes already return: `meta.report` is only the pointer, and the
+ * body — capped unified diff included — is read here.
+ *
+ * There is deliberately no list route yet: the client only ever dereferences a
+ * receipt it already has a pointer to (`meta.report` on a task or plan), and a
+ * listing would have to invent an id for each entry, since the file name is the
+ * normalized task/plan id and the stored `taskId`/`planId` is the raw one.
+ */
+collectionsRoute.get("/api/p/:slug/receipts/:id", async (c) =>
+  respond(c, async () => {
+    const slug = c.req.param("slug");
+    // A receipt belongs to a project; an unknown slug stays a 404 of its own
+    // rather than reading another project's reports directory.
+    requireProjectDir(slug);
+    const id = c.req.param("id");
+    const receipt = readReceipt(getDataDir(), slug, id);
+    if (receipt === null) {
+      throw new DagError("RECEIPT_NOT_FOUND", `Receipt "${id}" not found`);
+    }
+    return receipt;
   }),
 );

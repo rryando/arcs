@@ -25,6 +25,7 @@ In any mode, ask only when evidence cannot resolve a change to goal, material sc
 4. Add proportionate tests for changed behavior.
 5. Verify with targeted checks; broader checks for broad or high-risk work.
 6. If verification fails, fix failures caused by the change and rerun the relevant check.
+7. Close out through `arcs done <slug> <taskId>`, which captures the completion receipt (commit link and diffstat) deterministically. Do not hand-write a "what changed" summary.
 
 For `plan-node`, read current node metadata, confirm every predecessor is done, and keep task/diagram state aligned through the single designated owner; use ARCS CLI mutations yourself only when explicitly assigned that ownership. If dependencies are unmet or the node conflicts with its scope, stop with the concrete blocker instead of selecting other work.
 
@@ -34,4 +35,4 @@ Do not commit, push, deploy, or modify unrelated files without an explicit reque
 
 ## Return
 
-Report claim-linked acceptance evidence, examined versus changed files, actual checks with result/working directory, not-run checks, uncertainty and blockers. Return durable create/update knowledge candidates with evidence and stale/conflicting reused IDs to docs; do not persist them yourself.
+Report claim-linked acceptance evidence, examined versus changed files, actual checks with result/working directory, not-run checks, uncertainty and blockers. Relay the receipt's commit link and diffstat as the change evidence: a hand-typed change summary is not evidence, and the receipt is generated, so never fabricate a sha or diffstat. Return durable create/update knowledge candidates with evidence and stale/conflicting reused IDs to docs; do not persist them yourself.

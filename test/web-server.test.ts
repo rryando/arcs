@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildProjectRetrievalIndex } from "../src/retrieval/index-builder.js";
+import { writeReceipt } from "../src/utils/report-store.js";
+import type { Receipt } from "../src/utils/run-report.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
 import { requireProjectDir } from "../src/web-server/respond.js";
 import { onDataChange, startWatcher, stopWatcher } from "../src/web-server/watcher.js";
@@ -688,5 +690,98 @@ describe("web server", () => {
 
     const entry = await api(base, "/api/p/demo/knowledge/prop-one");
     expect(entry.body.ok).toBe(true);
+  });
+
+  it("serves a stored completion receipt and 404s an unknown id", async () => {
+    const { base, dir } = await boot();
+    const headSha = "b".repeat(40);
+    const receipt: Receipt = {
+      repoRoot: "/repo",
+      baseRef: "HEAD~1",
+      baseSha: "a".repeat(40),
+      headSha,
+      branch: "main",
+      remoteUrl: "git@github.com:acme/arcs.git",
+      url: `https://github.com/acme/arcs/commit/${headSha}`,
+      filesChanged: 2,
+      insertions: 12,
+      deletions: 4,
+      diff: "--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      diffTruncated: false,
+      capturedAt: "2026-02-01T00:00:00.000Z",
+    };
+    // The receipt is a sidecar the engine writes; the route only reads it, so
+    // seeding it through the same frozen writer keeps the test honest about the
+    // on-disk shape (and its id normalization).
+    writeReceipt(dir, "demo", receipt, { taskId: "task one" });
+
+    const found = await api(base, "/api/p/demo/receipts/task-one");
+    expect(found.status).toBe(200);
+    const data = found.body.data as { diff: string; headSha: string; filesChanged: number };
+    expect(data.headSha).toBe(headSha);
+    expect(data.filesChanged).toBe(2);
+    expect(data.diff).toContain("+new");
+
+    const missing = await api(base, "/api/p/demo/receipts/nope");
+    expect(missing.status).toBe(404);
+    expect(missing.body.ok).toBe(false);
+    expect(missing.body.code).toBe("RECEIPT_NOT_FOUND");
+  });
+
+  it("returns meta.codeChunks for a chunked knowledge entry, unchanged without", async () => {
+    const { base, dir } = await boot();
+    const knowledgeDir = resolve(dir, "projects", "demo", "knowledge");
+    mkdirSync(knowledgeDir, { recursive: true });
+
+    const ts = "2026-02-01T00:00:00.000Z";
+    const meta = {
+      id: "chunked-entry",
+      normalizedId: "chunked-entry",
+      title: "Chunked",
+      kind: "pattern",
+      keywords: [],
+      summary: "",
+      file: "knowledge/chunked-entry.md",
+      createdAt: ts,
+      updatedAt: ts,
+      codeChunks: [
+        {
+          path: "src/x.ts",
+          startLine: 3,
+          endLine: 4,
+          language: "typescript",
+          snippet: "const a = 1;\n",
+          capturedAt: ts,
+        },
+      ],
+    };
+    writeFileSync(
+      resolve(knowledgeDir, "chunked-entry.meta.json"),
+      `${JSON.stringify(meta, null, 2)}\n`,
+      "utf-8",
+    );
+    writeFileSync(resolve(knowledgeDir, "chunked-entry.md"), "# Chunked\n\nbody\n", "utf-8");
+
+    const chunked = await api(base, "/api/p/demo/knowledge/chunked-entry");
+    expect(chunked.status).toBe(200);
+    const chunkedData = chunked.body.data as {
+      meta: { codeChunks?: Array<{ snippet: string; language?: string }> };
+      body: string;
+    };
+    expect(chunkedData.meta.codeChunks?.[0]?.snippet).toBe("const a = 1;\n");
+    expect(chunkedData.meta.codeChunks?.[0]?.language).toBe("typescript");
+    expect(chunkedData.body).toContain("body");
+
+    // An entry created without chunks keeps the plain `{ meta, body }` shape.
+    await api(base, "/api/p/demo/knowledge", {
+      method: "POST",
+      body: JSON.stringify({ id: "plain-entry", title: "Plain", kind: "lesson", content: "hi" }),
+    });
+    const plain = await api(base, "/api/p/demo/knowledge/plain-entry");
+    expect(plain.status).toBe(200);
+    const plainData = plain.body.data as { meta: Record<string, unknown>; body: string };
+    expect(plainData.meta.codeChunks).toBeUndefined();
+    expect(plainData.meta.title).toBe("Plain");
+    expect(plainData.body).toContain("hi");
   });
 });

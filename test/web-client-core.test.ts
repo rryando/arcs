@@ -22,6 +22,19 @@ import {
 import { composeTurnList } from "../web/src/components/AskAIPanel.js";
 import { deriveAskContext, describeAskContext } from "../web/src/lib/ask-context.js";
 import { ASK_PRESETS, presetsForContext } from "../web/src/lib/ask-presets.js";
+import {
+  escapeHtml,
+  formatCodeLabel,
+  formatDiffstat,
+  formatPartialDiffstat,
+  highlightToHtml,
+  languageFromPath,
+  receiptLink,
+  receiptRangeUrl,
+  shortSha,
+  splitHighlightedLines,
+  truncateMiddle,
+} from "../web/src/lib/evidence.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { resolveReference } from "../web/src/lib/reference-resolver.js";
@@ -716,6 +729,137 @@ describe("api client web token", () => {
  * cannot reach a shipped shell. `vite` is already a root devDependency, so this
  * costs no new dependency.
  */
+describe("code evidence", () => {
+  it("maps known extensions to highlight.js language ids and nothing else", () => {
+    expect(languageFromPath("src/x.ts")).toBe("typescript");
+    expect(languageFromPath("web/src/App.tsx")).toBe("typescript");
+    expect(languageFromPath("scripts/run.mjs")).toBe("javascript");
+    expect(languageFromPath("a/b/c.yml")).toBe("yaml");
+    expect(languageFromPath("README.md")).toBe("markdown");
+    // Unknown or absent extensions render plain — never a guessed language.
+    expect(languageFromPath("Makefile")).toBeUndefined();
+    expect(languageFromPath("src/x.zig")).toBeUndefined();
+    expect(languageFromPath(".gitignore")).toBeUndefined();
+  });
+
+  it("labels a chunk range and middle-truncates a long path", () => {
+    expect(formatCodeLabel({ path: "src/x.ts", startLine: 3, endLine: 9 })).toBe("src/x.ts:3-9");
+    expect(formatCodeLabel({ path: "src/x.ts" })).toBe("src/x.ts");
+    expect(formatCodeLabel({})).toBeUndefined();
+    expect(formatCodeLabel({ path: "", startLine: 1, endLine: 2 })).toBeUndefined();
+
+    const long = formatCodeLabel({
+      path: `src/${"deep/".repeat(20)}module.ts`,
+      startLine: 10,
+      endLine: 42,
+    });
+    expect(long?.length).toBe(64);
+    expect(long).toContain("…");
+    expect(long?.startsWith("src/deep/")).toBe(true);
+    expect(long?.endsWith("module.ts:10-42")).toBe(true);
+
+    expect(truncateMiddle("short", 64)).toBe("short");
+  });
+
+  it("re-balances spans when highlighted HTML is split per line", () => {
+    // A multi-line token leaves its span open across the newline; each line has
+    // to stand alone because the viewer renders one node per line.
+    const lines = splitHighlightedLines('<span class="hljs-comment">/* a\nb */</span>');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe('<span class="hljs-comment">/* a</span>');
+    expect(lines[1]).toBe('<span class="hljs-comment">b */</span>');
+
+    const plain = splitHighlightedLines("a\nb\nc");
+    expect(plain).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps highlighted output on hljs classes and escapes a refused snippet", () => {
+    const html = highlightToHtml("const a = 1;", "typescript");
+    expect(html).toContain("hljs-keyword");
+
+    // An unknown language id must not throw — highlight.js does not know it, so
+    // the snippet is detected (or escaped) instead.
+    expect(() => highlightToHtml("<not code>", "nope-not-a-language")).not.toThrow();
+    expect(escapeHtml('<img src=x onerror="1">')).toBe("&lt;img src=x onerror=&quot;1&quot;&gt;");
+  });
+
+  it("keeps one output line per input line for a real diff", () => {
+    const diff = "--- a/x.ts\n+++ b/x.ts\n@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;\n";
+    const lines = splitHighlightedLines(highlightToHtml(diff, "diff"));
+    // The viewer indexes highlighted lines against the file's own line array;
+    // losing or gaining a row would shift every line number after it.
+    expect(lines).toHaveLength(diff.split("\n").length);
+    expect(lines.join("\n")).toContain("hljs-addition");
+  });
+
+  it("formats receipt diffstats", () => {
+    expect(formatDiffstat({ filesChanged: 3, insertions: 12, deletions: 4 })).toBe(
+      "3 files changed, +12/-4",
+    );
+    expect(formatDiffstat({ filesChanged: 1, insertions: 0, deletions: 1 })).toBe(
+      "1 file changed, +0/-1",
+    );
+    expect(formatPartialDiffstat({ insertions: 5 })).toBe("0 files changed, +5/-0");
+    expect(formatPartialDiffstat({})).toBeUndefined();
+  });
+
+  it("shortens shas without inventing one", () => {
+    expect(shortSha("0123456789abcdef")).toBe("0123456");
+    expect(shortSha("abc")).toBe("abc");
+    expect(shortSha(undefined)).toBe("");
+    expect(shortSha(null)).toBe("");
+  });
+
+  it("derives the same base→head range URLs the CLI does", () => {
+    const head = "b".repeat(40);
+    const base = "a".repeat(40);
+
+    expect(
+      receiptRangeUrl({
+        baseSha: base,
+        headSha: head,
+        url: `https://github.com/acme/arcs/commit/${head}`,
+      }),
+    ).toBe(`https://github.com/acme/arcs/compare/${base}...${head}`);
+    expect(
+      receiptRangeUrl({
+        baseSha: base,
+        headSha: head,
+        url: `https://gitlab.com/acme/arcs/-/commit/${head}`,
+      }),
+    ).toBe(`https://gitlab.com/acme/arcs/-/compare/${base}...${head}`);
+    expect(
+      receiptRangeUrl({
+        baseSha: base,
+        headSha: head,
+        url: `https://bitbucket.org/acme/arcs/commits/${head}`,
+      }),
+    ).toBe(`https://bitbucket.org/acme/arcs/compare/${head}`);
+
+    // No stored link / no range data ⇒ no range URL, and never a guessed one.
+    expect(receiptRangeUrl({ baseSha: base, headSha: head, url: null })).toBeNull();
+    expect(receiptRangeUrl({ url: "local" })).toBeNull();
+  });
+
+  it("prefers the range link once the receipt body is loaded", () => {
+    const head = "b".repeat(40);
+    const base = "a".repeat(40);
+    const report = { url: `https://github.com/acme/arcs/commit/${head}` };
+
+    // Before the expand only the pointer's commit link is known.
+    expect(receiptLink(report)).toBe(report.url);
+    // A body carrying a recognizable commit link yields the base→head range.
+    expect(receiptLink(report, { url: report.url, baseSha: base, headSha: head })).toBe(
+      `https://github.com/acme/arcs/compare/${base}...${head}`,
+    );
+    // A body with no link of its own (unrecognized remote) falls back to the
+    // pointer's link — consistent, since both came from the same capture.
+    expect(receiptLink(report, { url: null, baseSha: base, headSha: head })).toBe(report.url);
+    expect(receiptLink(report, { url: "https://example.com/c/1" })).toBe("https://example.com/c/1");
+    expect(receiptLink({})).toBeUndefined();
+  });
+});
+
 describe("arcs-web-token-dev vite plugin", () => {
   const PLUGIN = "arcs-web-token-dev";
   const webDir = fileURLToPath(new URL("../web", import.meta.url));

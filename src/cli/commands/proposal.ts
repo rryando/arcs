@@ -10,6 +10,8 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { readCodeChunk } from "../../utils/code-snippet.js";
+import { getHeadCommitAsync } from "../../utils/git.js";
 import { readJsonSafe, validateJson } from "../../utils/json.js";
 import { knowledgeMetaSchema } from "../../utils/json-schemas.js";
 import { deleteKnowledgeEntry, readKnowledgeIndex } from "../../utils/knowledge-store.js";
@@ -17,6 +19,7 @@ import { getProjectDir } from "../../utils/paths.js";
 import {
   createKnowledgeEntry,
   type KnowledgeKind,
+  resolveWorkspaceRoot,
   updateKnowledgeEntry,
 } from "../../utils/project-memory.js";
 import {
@@ -29,6 +32,7 @@ import {
 } from "../../utils/proposal-store.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import { readStdin } from "../../utils/stdin.js";
+import type { CodeChunk, CodeRef } from "../../utils/storage-utils.js";
 import {
   type CLIResult,
   type CommandFlags,
@@ -68,6 +72,66 @@ function parseSourceFiles(raw: string): Array<{ path: string; anchor?: string }>
     const [path, anchor] = s.trim().split(":");
     return anchor ? { path, anchor } : { path };
   });
+}
+
+/**
+ * Deterministically capture a chunk for every proposal source file that names
+ * a line range. A file that carries only a free-text `anchor` (or no range at
+ * all) is left out — the CLI never guesses a range from an anchor. Ranges that
+ * do not resolve against the registered workspace (missing file, past EOF) are
+ * skipped rather than failing the promote, since proposal promotion predates
+ * chunk capture and must stay robust to a stale queue.
+ */
+async function captureProposalChunks(
+  projectDir: string,
+  sourceFiles: Array<{ path: string; anchor?: string; startLine?: number; endLine?: number }>,
+): Promise<CodeChunk[]> {
+  const ranged = sourceFiles.filter(
+    (f) =>
+      Number.isInteger(f.startLine) &&
+      Number.isInteger(f.endLine) &&
+      (f.startLine as number) >= 1 &&
+      (f.endLine as number) >= (f.startLine as number),
+  );
+  if (ranged.length === 0) return [];
+
+  const workspaceRoot = await resolveWorkspaceRoot(projectDir);
+  if (!workspaceRoot) return [];
+
+  const headRev = (await getHeadCommitAsync(workspaceRoot)) ?? undefined;
+  const chunks: CodeChunk[] = [];
+  for (const f of ranged) {
+    const ref: CodeRef = {
+      path: f.path,
+      startLine: f.startLine as number,
+      endLine: f.endLine as number,
+    };
+    if (f.anchor !== undefined) ref.anchor = f.anchor;
+    const chunk = await readCodeChunk(
+      workspaceRoot,
+      ref,
+      headRev !== undefined ? { headRev } : undefined,
+    );
+    if (chunk) chunks.push(chunk);
+  }
+  return chunks;
+}
+
+/**
+ * Union existing and incoming chunks, deduping on path + range so a re-promote
+ * never duplicates a snapshot already attached to the entry.
+ */
+function mergeCodeChunkLists(existing: CodeChunk[], incoming: CodeChunk[]): CodeChunk[] {
+  const seen = new Set(existing.map((c) => `${c.path}|${c.startLine}|${c.endLine}`));
+  const result = [...existing];
+  for (const chunk of incoming) {
+    const key = `${chunk.path}|${chunk.startLine}|${chunk.endLine}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(chunk);
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +271,9 @@ async function handleProposalPromote(
     }
   }
 
+  // Deterministic chunk capture from the proposal's ranged source files.
+  const proposalChunks = await captureProposalChunks(projectDir, proposal.sourceFiles);
+
   // Resolve the body content
   let body: string;
   if (bodyInline) {
@@ -247,9 +314,14 @@ async function handleProposalPromote(
         sourceFiles && sourceFiles.length > 0
           ? mergeSourceFileLists(existingMeta.sourceFiles ?? [], sourceFiles)
           : undefined;
+      const mergedChunks =
+        proposalChunks.length > 0
+          ? mergeCodeChunkLists(existingMeta.codeChunks ?? [], proposalChunks)
+          : undefined;
       await updateKnowledgeEntry(projectDir, {
         id: existingMeta.id,
         ...(mergedSourceFiles && { sourceFiles: mergedSourceFiles }),
+        ...(mergedChunks && { codeChunks: mergedChunks }),
       });
       knowledgeId = existingMeta.id;
     } else {
@@ -262,6 +334,7 @@ async function handleProposalPromote(
         summary,
         content: body,
         ...(sourceFiles && { sourceFiles }),
+        ...(proposalChunks.length > 0 && { codeChunks: proposalChunks }),
       });
       knowledgeId = created.id;
     }

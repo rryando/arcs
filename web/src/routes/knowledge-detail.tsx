@@ -7,6 +7,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import { useDeleteKnowledge, useKnowledgeEntry, useUpdateKnowledge } from "../api/hooks";
 import { Badge, kindColor } from "../components/Badge";
+import { CodeBlock } from "../components/CodeBlock";
 import { ConfirmDialog, Field, inputClass, SelectInput, TextInput } from "../components/Dialog";
 import { MarkdownEditor } from "../components/MarkdownEditor.lazy";
 import { MarkdownViewer } from "../components/MarkdownViewer";
@@ -282,6 +283,39 @@ export function KnowledgeDetail() {
               slug={slug}
               referenceSource={{ kind: "knowledge", label: meta.title, id: meta.normalizedId }}
             />
+
+            {/*
+             * Captured code chunks (arcs remember --code). Evidence, so it
+             * sits under the prose. No `stale` marker is passed: staleness is
+             * `isChunkStale(workspaceRoot, chunk)` server-side and this plane
+             * has no workspace root to compare against — a guess would be
+             * worse than the silence.
+             */}
+            {(meta.codeChunks?.length ?? 0) > 0 && (
+              <section
+                className="mt-6 border-t border-term-border pt-3"
+                aria-label="captured code chunks"
+              >
+                <div className="mb-2 flex items-center gap-2 text-[10px] tracking-wide text-term-dim uppercase">
+                  <span>code chunks</span>
+                  <span>{meta.codeChunks?.length}</span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {meta.codeChunks?.map((chunk) => (
+                    <CodeBlock
+                      // A re-capture of the same range is a different chunk, so
+                      // the timestamp is part of the identity.
+                      key={`${chunk.path}:${chunk.startLine}-${chunk.endLine}:${chunk.capturedAt}`}
+                      code={chunk.snippet}
+                      language={chunk.language}
+                      path={chunk.path}
+                      startLine={chunk.startLine}
+                      endLine={chunk.endLine}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         </div>
       )}

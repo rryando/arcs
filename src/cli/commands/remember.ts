@@ -3,7 +3,12 @@
 // ---------------------------------------------------------------------------
 import { existsSync } from "node:fs";
 import { getProjectDir } from "../../utils/paths.js";
-import { createKnowledgeEntry, type KnowledgeKind } from "../../utils/project-memory.js";
+import {
+  captureCodeChunks,
+  createKnowledgeEntry,
+  type KnowledgeKind,
+  splitCodeRefs,
+} from "../../utils/project-memory.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import {
   type CLIResult,
@@ -32,6 +37,11 @@ function autoTitle(text: string): string {
 const rememberParams = {
   slug: { type: "string", required: true, positional: 0, description: "Project slug" },
   text: { type: "string", required: true, positional: 1, description: "The insight to remember" },
+  code: {
+    type: "string",
+    description:
+      'Code reference "path:start-end" to capture alongside the insight; comma-separated for multiple (e.g. "src/a.ts:10-25")',
+  },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -59,6 +69,9 @@ async function handleRemember(
   const kind = classifyKind(text);
   const id = normalizeIdentifier(title);
 
+  const capture = await captureCodeChunks(projectDir, splitCodeRefs(params.code));
+  if (!capture.ok) return failure(capture.code, capture.message);
+
   try {
     const entry = await createKnowledgeEntry(projectDir, {
       id,
@@ -66,6 +79,7 @@ async function handleRemember(
       kind,
       keywords: [],
       summary: text,
+      ...(capture.chunks.length > 0 && { codeChunks: capture.chunks }),
     });
     if (flags.json) {
       return success({

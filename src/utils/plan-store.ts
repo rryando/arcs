@@ -52,6 +52,12 @@ export interface PlanMeta {
   file: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Pointer at the plan-level completion receipt captured when the plan's last
+   * open task completes. Absent until then (and always absent for a plan whose
+   * tasks were never completed in a git workspace).
+   */
+  report?: import("./run-report.js").TaskReportRef;
 }
 
 interface PlanIndex {
@@ -82,6 +88,8 @@ export interface UpdatePlanInput {
   sourceFiles?: import("./storage-utils.js").FileRef[];
   content?: string;
   diagram?: string | null;
+  /** Set or replace the plan-level completion-receipt pointer. */
+  report?: import("./run-report.js").TaskReportRef;
   now?: string;
 }
 
@@ -239,6 +247,7 @@ async function updatePlanUnlocked(
   if (input.diagram !== undefined) {
     diagram = input.diagram === null || input.diagram.trim() === "" ? null : input.diagram;
   }
+  if (input.report !== undefined) meta.report = input.report;
   meta.updatedAt = nowISO(input.now);
 
   const indexPath = join(plansDir, "index.json");

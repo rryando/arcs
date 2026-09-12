@@ -20,6 +20,7 @@ import {
   TextInput,
 } from "../components/Dialog";
 import { Panel } from "../components/Panel";
+import { ReceiptPanel } from "../components/ReceiptPanel";
 import { useToaster } from "../components/Toaster";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { formatFileRefs, parseFileRefs } from "../lib/file-refs";
@@ -63,6 +64,10 @@ export function TasksView() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<TaskMeta | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TaskMeta | null>(null);
+  /** The row whose completion receipt is expanded under the table. The receipt
+   *  is a sidecar, so it renders as a panel beside the table rather than as a
+   *  column — a task with no receipt keeps its exact old rendering. */
+  const [receiptTarget, setReceiptTarget] = useState<TaskMeta | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
 
   const ordered = useMemo(() => {
@@ -151,6 +156,28 @@ export function TasksView() {
                 {t.workMode ? ` ${t.workMode}` : ""}
               </span>
             )}
+            {t.report && (
+              <button
+                type="button"
+                title="show the completion receipt"
+                onClick={(event) => {
+                  // The row itself opens the edit dialog; the affordance must
+                  // not.
+                  event.stopPropagation();
+                  setReceiptTarget((current) =>
+                    current?.normalizedId === t.normalizedId ? null : t,
+                  );
+                }}
+                className={cx(
+                  "ml-2 align-middle",
+                  receiptTarget?.normalizedId === t.normalizedId
+                    ? "text-term-green"
+                    : "text-term-dim hover:text-term-green",
+                )}
+              >
+                ⚑
+              </button>
+            )}
           </span>
         ),
       },
@@ -179,7 +206,7 @@ export function TasksView() {
         render: (t) => <span className="text-term-dim">{relativeTime(t.updatedAt)}</span>,
       },
     ],
-    [planTitle],
+    [planTitle, receiptTarget],
   );
 
   return (
@@ -224,7 +251,7 @@ export function TasksView() {
           <span className="flex-1" />
           <span className="text-term-dim">
             <span className="kbd">s</span> cycle status · <span className="kbd">e</span> edit ·{" "}
-            <span className="kbd">x</span> delete
+            <span className="kbd">r</span> receipt · <span className="kbd">x</span> delete
           </span>
         </div>
 
@@ -240,9 +267,40 @@ export function TasksView() {
             rowActions={[
               { keys: "s", description: "cycle status", run: cycleStatus },
               { keys: "e", description: "edit task", run: (t) => setEditTarget(t) },
+              // Only meaningful on a task that has a receipt; a task without
+              // one leaves the selection untouched rather than blanking it.
+              {
+                keys: "r",
+                description: "toggle receipt",
+                run: (t) => t.report && setReceiptTarget((current) => (current === t ? null : t)),
+              },
             ]}
             emptyMessage="no tasks — press n"
           />
+        )}
+
+        {receiptTarget?.report && (
+          <div className="border-t border-term-border p-2">
+            <div className="mb-1 flex items-center gap-2 text-[11px]">
+              <span className="truncate text-term-dim" title={receiptTarget.title}>
+                receipt — {truncate(receiptTarget.title, 40)}
+              </span>
+              <span className="flex-1" />
+              <button
+                type="button"
+                onClick={() => setReceiptTarget(null)}
+                className="text-term-dim hover:text-term-fg"
+              >
+                close [r]
+              </button>
+            </div>
+            <ReceiptPanel
+              slug={slug}
+              area="tasks"
+              id={receiptTarget.normalizedId}
+              report={receiptTarget.report}
+            />
+          </div>
         )}
       </Panel>
 

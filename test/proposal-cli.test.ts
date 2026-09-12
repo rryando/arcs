@@ -4,8 +4,9 @@
 // (human-in-the-loop proposal docs in the project data dir)
 // ---------------------------------------------------------------------------
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createKnowledgeEntry, readKnowledgeIndex } from "../src/utils/knowledge-store.js";
@@ -305,6 +306,145 @@ describe("proposal promote", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.code).toBe("missing_param");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposal promote — code-chunk carry-through
+// ---------------------------------------------------------------------------
+
+describe("proposal promote code chunks", () => {
+  /** A workspace with a real file so ranged refs resolve deterministically. */
+  function seedWorkspace(): { workspace: string; snippet: string } {
+    const workspace = mkdtempSync(join(tmpdir(), "arcs-promote-ws-"));
+    mkdirSync(join(workspace, "src"), { recursive: true });
+    const snippet = "const a = 1;\nconst b = 2;\nconst c = 3;";
+    writeFileSync(join(workspace, "src", "x.ts"), `${snippet}\n`, "utf-8");
+    return { workspace, snippet };
+  }
+
+  function registerWorkspace(projectDir: string, workspace: string): void {
+    writeFileSync(
+      resolve(projectDir, "meta.json"),
+      JSON.stringify({ id: SLUG, name: "Demo Project", workspacePaths: [workspace] }),
+      "utf-8",
+    );
+  }
+
+  /**
+   * Write a proposals file directly so source-file line ranges survive — the
+   * `Proposal` TypeScript type predates ranges, though the on-disk schema
+   * (fileRefSchemaLocal) permits them.
+   */
+  function seedProposals(projectDir: string, sourceFiles: unknown[]): void {
+    const dir = join(projectDir, "proposals");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "codegraph.json"),
+      JSON.stringify({
+        version: 1,
+        generatedAt: "2026-06-02T00:00:00.000Z",
+        graphFingerprint: "deadbeef",
+        proposals: [
+          {
+            id: "graphify-cluster-src-utils",
+            kind: "architecture",
+            label: "src/utils",
+            structuralFacts: {},
+            sourceFiles,
+            suggestedDedupCandidates: [],
+          },
+        ],
+      }),
+      "utf-8",
+    );
+  }
+
+  it("stores chunks captured from ranged source files", async () => {
+    await withTempDataDir(async () => {
+      const projectDir = seedProject();
+      const { workspace, snippet } = seedWorkspace();
+      registerWorkspace(projectDir, workspace);
+      seedProposals(projectDir, [
+        { path: "src/x.ts", startLine: 1, endLine: 3 },
+        { path: "src/x.ts", anchor: "freeText" },
+      ]);
+
+      const result = await runCommand("proposal promote", [
+        SLUG,
+        "graphify-cluster-src-utils",
+        "--title=Ranged Promote",
+        "--kind=architecture",
+        "--summary=summary",
+        "--body=body",
+      ]);
+      expect(result.ok).toBe(true);
+
+      const meta = JSON.parse(
+        await readFile(resolve(projectDir, "knowledge", "ranged-promote.meta.json"), "utf-8"),
+      );
+      expect(meta.codeChunks).toHaveLength(1);
+      expect(meta.codeChunks[0].path).toBe("src/x.ts");
+      expect(meta.codeChunks[0].snippet).toBe(snippet);
+    });
+  });
+
+  it("stores no chunks when source files carry only free-text anchors, and still succeeds", async () => {
+    await withTempDataDir(async () => {
+      const projectDir = seedProject();
+      const { workspace } = seedWorkspace();
+      registerWorkspace(projectDir, workspace);
+      seedProposals(projectDir, [{ path: "src/x.ts", anchor: "doStuff" }]);
+
+      const result = await runCommand("proposal promote", [
+        SLUG,
+        "graphify-cluster-src-utils",
+        "--title=Anchor Only",
+        "--kind=architecture",
+        "--summary=summary",
+        "--body=body",
+      ]);
+      expect(result.ok).toBe(true);
+
+      const meta = JSON.parse(
+        await readFile(resolve(projectDir, "knowledge", "anchor-only.meta.json"), "utf-8"),
+      );
+      expect("codeChunks" in meta).toBe(false);
+    });
+  });
+
+  it("unions chunks onto an existing entry via --merge-with", async () => {
+    await withTempDataDir(async () => {
+      const projectDir = seedProject();
+      const { workspace, snippet } = seedWorkspace();
+      registerWorkspace(projectDir, workspace);
+      seedProposals(projectDir, [{ path: "src/x.ts", startLine: 1, endLine: 3 }]);
+
+      const createResult = await runCommand("knowledge create", [
+        SLUG,
+        "Merge Target",
+        "--kind=architecture",
+        "--body=Original body.",
+      ]);
+      expect(createResult.ok).toBe(true);
+
+      const result = await runCommand("proposal promote", [
+        SLUG,
+        "graphify-cluster-src-utils",
+        "--title=Whatever",
+        "--kind=architecture",
+        "--summary=summary",
+        "--body=Appended.",
+        "--merge-with=merge-target",
+      ]);
+      expect(result.ok).toBe(true);
+
+      const meta = JSON.parse(
+        await readFile(resolve(projectDir, "knowledge", "merge-target.meta.json"), "utf-8"),
+      );
+      expect(meta.codeChunks).toHaveLength(1);
+      expect(meta.codeChunks[0].snippet).toBe(snippet);
     });
   });
 });

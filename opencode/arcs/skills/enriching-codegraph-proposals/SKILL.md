@@ -22,6 +22,8 @@ Designated `arcs-docs` owns authorized curation using `writing-knowledge` freshn
 4. For keep or merge, author a human title, concise impact summary, substantive body, and source files.
 5. Apply the requested promote/drop operation and continue until the useful queue is handled.
 
+Proposal source files may carry `startLine`/`endLine`, resolved deterministically at ingest where possible; promotion carries those ranges into knowledge `codeChunks`. When you know the region, supply or keep a precise range over a bare free-text anchor.
+
 Source files and structural evidence must support every promoted claim. Never invent responsibilities from names alone. Preserve proposal IDs and give a reason for drops. Cap source files to the most useful anchors when the raw list is large.
 
 Use `--body-file` for long bodies. Stop and report races or missing merge targets instead of silently changing the decision.

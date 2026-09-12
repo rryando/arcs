@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -117,5 +117,50 @@ describe("arcs remember", () => {
     const parsed = JSON.parse(stderr[0]);
     expect(parsed.ok).toBe(false);
     expect(parsed.message).toContain("nonexistent");
+  });
+});
+
+describe("arcs remember --code", () => {
+  function rememberKnowledgeDir(): string {
+    return join(dataDir, "projects", "test-proj", "knowledge");
+  }
+
+  it("captures a deterministic chunk from the project workspace", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "arcs-remember-ws-"));
+    mkdirSync(join(workspace, "src"), { recursive: true });
+    const snippet = "const a = 1;\nconst b = 2;\nconst c = 3;";
+    writeFileSync(join(workspace, "src", "x.ts"), `${snippet}\n`, "utf-8");
+    writeFileSync(
+      join(dataDir, "projects", "test-proj", "meta.json"),
+      JSON.stringify({
+        id: "test-proj",
+        name: "Test Project",
+        workspacePaths: [workspace],
+      }),
+      "utf-8",
+    );
+
+    await handleDagCommand("remember", [
+      "test-proj",
+      "Code linked lesson",
+      "--code=src/x.ts:1-3",
+      "--json",
+    ]);
+    const parsed = JSON.parse(stdout[0]);
+    expect(parsed.id).toBeTruthy();
+    const meta = JSON.parse(
+      readFileSync(join(rememberKnowledgeDir(), `${parsed.id}.meta.json`), "utf-8"),
+    );
+    expect(meta.codeChunks).toHaveLength(1);
+    expect(meta.codeChunks[0].path).toBe("src/x.ts");
+    expect(meta.codeChunks[0].snippet).toBe(snippet);
+  });
+
+  it("rejects a malformed --code and creates nothing", async () => {
+    await handleDagCommand("remember", ["test-proj", "Bad code ref", "--code=src/x.ts", "--json"]);
+    const parsed = JSON.parse(stderr[0]);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.message).toContain("src/x.ts");
+    expect(existsSync(join(rememberKnowledgeDir(), "bad-code-ref.meta.json"))).toBe(false);
   });
 });

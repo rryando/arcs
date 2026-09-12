@@ -9,6 +9,7 @@ import { attemptDiagramUpdate } from "../../utils/diagram-store.js";
 import { getProjectDir } from "../../utils/paths.js";
 import { PROJECT_DOC_FILES, type ProjectDocType } from "../../utils/project-documents.js";
 import {
+  captureCodeChunks,
   createKnowledgeEntry,
   createPlan,
   createTask,
@@ -19,6 +20,7 @@ import {
   type KnowledgeAudience,
   type KnowledgeKind,
   type PlanStatus,
+  splitCodeRefs,
   type TaskPriority,
   type TaskStatus,
   type TaskWorkMode,
@@ -99,6 +101,20 @@ function toSourceFileRefs(raw: unknown): FileRef[] | undefined {
     }
     return item as FileRef;
   });
+}
+
+/**
+ * Convert a batch op's `code` value into raw `path:start-end` refs. Accepts a
+ * single string (comma-separated allowed) or an array of strings, mirroring the
+ * single-command `--code` flag. Returns [] when absent or malformed-by-shape so
+ * the capture step can name any bad ref.
+ */
+function toCodeRefs(raw: unknown): string[] {
+  if (typeof raw === "string") return splitCodeRefs(raw);
+  if (Array.isArray(raw)) {
+    return raw.flatMap((item) => (typeof item === "string" ? splitCodeRefs(item) : []));
+  }
+  return [];
 }
 
 const batchParams = {
@@ -246,6 +262,8 @@ async function handleBatch(
           const id = normalizeIdentifier(title);
           const sourceFiles = toSourceFileRefs(op.sourceFiles);
           const audience = op.audience as KnowledgeAudience | undefined;
+          const capture = await captureCodeChunks(projectDir, toCodeRefs(op.code));
+          if (!capture.ok) throw new Error(capture.message);
           const entry = await createKnowledgeEntry(projectDir, {
             id,
             title,
@@ -255,6 +273,7 @@ async function handleBatch(
             content: op.body as string | undefined,
             ...(sourceFiles && { sourceFiles }),
             ...(audience && { audience }),
+            ...(capture.chunks.length > 0 && { codeChunks: capture.chunks }),
           });
           results.push({ index: i, op: op.op, success: true, result: { id: entry.id } });
           break;
@@ -263,6 +282,8 @@ async function handleBatch(
           const projectDir = getProjectDir(op.slug);
           const entryId2 = op.entryId as string;
           if (!entryId2) throw new Error("entryId required");
+          const capture = await captureCodeChunks(projectDir, toCodeRefs(op.code));
+          if (!capture.ok) throw new Error(capture.message);
           const entry = await updateKnowledgeEntry(projectDir, {
             id: entryId2,
             title: op.title as string | undefined,
@@ -271,6 +292,7 @@ async function handleBatch(
             keywords: op.keywords as string[] | undefined,
             audience: op.audience as KnowledgeAudience | undefined,
             sourceFiles: toSourceFileRefs(op.sourceFiles),
+            ...(capture.chunks.length > 0 && { codeChunks: capture.chunks }),
           });
           results.push({ index: i, op: op.op, success: true, result: { entryId: entry.id } });
           break;
