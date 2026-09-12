@@ -14,3 +14,5 @@ Start with the narrowest useful command:
 - `arcs project list/get` for cross-project context.
 
 Use optional `graph-explorer` only when a code-structure or dependency question needs codegraph or targeted source evidence. Report the answer directly and avoid broad scans.
+
+Main may read metadata and initialize orchestration state, but delegates source-dependent discovery and source-bearing proposals. No mandatory DAG-first retrieval chain. Route authorized knowledge curation to designated `arcs-docs`; do not inspect source or persist knowledge in main.

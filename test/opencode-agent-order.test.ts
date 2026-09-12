@@ -148,7 +148,7 @@ describe("writeOpencodeAgent — agent key order", () => {
 
       expect(agents["ARCS Flash"].mode).toBe("primary");
       expect(agents["ARCS Flash"].prompt).toBe("{file:./prompts/arcs-flash.txt}");
-      expect(agents["ARCS Flash"].description).toContain("speed-optimized orchestrator");
+      expect(agents["ARCS Flash"].description).toContain("optional relevant knowledge");
     });
   });
 
@@ -242,8 +242,8 @@ describe("Caveman narration overlay behavior", () => {
       expect(agents["ARCS Orchestrator"].mode).toBe("primary");
       expect(agents["ARCS Caveman"].color).toBe("#d2691e");
       expect(agents["ARCS Caveman"].mode).toBe("primary");
-      expect(agents["ARCS Caveman"].description).toContain("terse");
-      expect(agents["ARCS Caveman"].description).toContain("high-efficiency");
+      expect(agents["ARCS Caveman"].description).toMatch(/terse/i);
+      expect(agents["ARCS Caveman"].description).toContain("no implementation-source reads");
     });
   });
 

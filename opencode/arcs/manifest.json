@@ -20,7 +20,7 @@
       },
       "source": "prompts/software-engineer.txt",
       "destination": "prompts/software-engineer.txt",
-      "description": "Implementation specialist. Writes code, runs tests, and ships verified work using orchestrator-selected implementation bounded or inspect mode.",
+      "description": "Owns bounded investigation, implementation and verification, including tiny code tasks and initially unknown files. No nested delegation.",
       "permissions": {
         "edit": "allow",
         "bash": "allow",
@@ -41,7 +41,7 @@
       },
       "source": "prompts/tech-architect.txt",
       "destination": "prompts/tech-architect.txt",
-      "description": "Architecture, analysis, and cited research specialist. Produces read-only structural guidance, trade-off evaluation, and DAG-first research synthesis.",
+      "description": "Read-only architecture, trade-offs and cited research; not a prerequisite for implementation. No nested delegation.",
       "permissions": {
         "edit": "deny",
         "bash": "allow",
@@ -80,7 +80,7 @@
       },
       "source": "prompts/arcs-docs.txt",
       "destination": "prompts/arcs-docs.txt",
-      "description": "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
+      "description": "Designated owner for authorized documentation and knowledge persistence, deduplication and disposition; DAG transitions only when assigned.",
       "permissions": {
         "edit": "allow",
         "bash": "allow",
@@ -101,7 +101,7 @@
       },
       "source": "prompts/code-reviewer.txt",
       "destination": "prompts/code-reviewer.txt",
-      "description": "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
+      "description": "Independent read-only correctness and risk review with claim-linked evidence; no implementation or nested delegation.",
       "permissions": {
         "edit": "deny",
         "bash": "allow",
@@ -158,7 +158,7 @@
       },
       "source": "prompts/graph-explorer.txt",
       "destination": "prompts/graph-explorer.txt",
-      "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
+      "description": "Bounded read-only code structure, dependency and location discovery. Uses relevant evidence without mandatory DAG-first retrieval. No nested delegation.",
       "permissions": {
         "edit": "deny",
         "bash": "allow",
@@ -180,7 +180,7 @@
       },
       "source": "prompts/arcs-orchestrate.txt",
       "destination": "prompts/arcs-orchestrate.txt",
-      "description": "The central coordinator for executing plans, managing agent dispatch, and handling DAG workflows.",
+      "description": "Coordinates intent, acceptance, dispatch, evidence and DAG bookkeeping; no implementation-source reads or code edits.",
       "permissions": {
         "edit": "allow",
         "bash": "allow",
@@ -202,7 +202,7 @@
       },
       "source": "prompts/arcs-orchestrate-caveman.txt",
       "destination": "prompts/arcs-orchestrate-caveman.txt",
-      "description": "A terse, high-efficiency orchestrator that drives tasks without extra commentary.",
+      "description": "Terse coordinator for intent, dispatch and evidence; no implementation-source reads or code edits.",
       "permissions": {
         "edit": "allow",
         "bash": "allow",
@@ -224,7 +224,7 @@
       },
       "source": "prompts/arcs-flash.txt",
       "destination": "prompts/arcs-flash.txt",
-      "description": "A speed-optimized orchestrator that sources context from arcs knowledge first and maximizes parallel sub-agent dispatch under tiered gates.",
+      "description": "Low-context coordinator using optional relevant knowledge and ready independent dispatch; no implementation-source reads or code edits.",
       "permissions": {
         "edit": "allow",
         "bash": "allow",
@@ -299,7 +299,7 @@
       {
         "path": ["agent", "graph-explorer"],
         "value": {
-          "description": "DAG-first codebase and knowledge exploration specialist. Queries arcs search, related, and context first, then codegraph MCP code-intelligence tools, before falling back to raw file-system tools. Replaces vanilla explore for ARCS projects.",
+          "description": "Bounded read-only code structure, dependency and location discovery. Uses relevant evidence without mandatory DAG-first retrieval. No nested delegation.",
           "mode": "subagent",
           "model": "github-copilot/claude-haiku-4.5",
           "temperature": 0,
@@ -318,7 +318,7 @@
       {
         "path": ["agent", "code-reviewer"],
         "value": {
-          "description": "Reviews code changes for production readiness and catches correctness, maintainability, and testing issues.",
+          "description": "Independent read-only correctness and risk review with claim-linked evidence; no implementation or nested delegation.",
           "mode": "subagent",
           "model": "github-copilot/claude-sonnet-4.6",
           "temperature": 0.5,
@@ -337,7 +337,7 @@
       {
         "path": ["agent", "tech-architect"],
         "value": {
-          "description": "Architecture, analysis, and cited research specialist. Produces read-only structural guidance, trade-off evaluation, and DAG-first research synthesis.",
+          "description": "Read-only architecture, trade-offs and cited research; not a prerequisite for implementation. No nested delegation.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "temperature": 0.4,
@@ -356,7 +356,7 @@
       {
         "path": ["agent", "software-engineer"],
         "value": {
-          "description": "Implementation specialist. Writes code, runs tests, and ships verified work using orchestrator-selected implementation bounded or inspect mode.",
+          "description": "Owns bounded investigation, implementation and verification, including tiny code tasks and initially unknown files. No nested delegation.",
           "mode": "subagent",
           "model": "github-copilot/claude-opus-4.6",
           "temperature": 0,
@@ -375,7 +375,7 @@
       {
         "path": ["agent", "arcs-docs"],
         "value": {
-          "description": "ARCS documentation specialist. Manages plans, knowledge entries, diagrams, and DAG health. Knows ARCS structure intimately.",
+          "description": "Designated owner for authorized documentation and knowledge persistence, deduplication and disposition; DAG transitions only when assigned.",
           "mode": "subagent",
           "model": "github-copilot/claude-sonnet-4.6",
           "temperature": 0.1,

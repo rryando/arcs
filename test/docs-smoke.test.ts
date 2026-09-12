@@ -23,13 +23,13 @@ describe("docs and skills smoke tests", () => {
     }
   });
 
-  it("keeps orchestration delegation-preferred", () => {
-    expect(orchestrateSkill).toMatch(/UNDERSTAND.*WORK.*VERIFY.*REPORT/is);
-    expect(orchestrateSkill).toMatch(/inspect.*edit.*verify.*directly/is);
-    expect(orchestrateSkill).toMatch(/strongly prefer delegation/is);
-    expect(orchestrateSkill).toMatch(/tiny.*tightly coupled.*orchestration-state/is);
-    expect(orchestrateSkill).toMatch(/one owner.*no nested delegation/is);
-    expect(orchestrateSkill).toMatch(/review.*risk-based.*not automatic/is);
+  it("keeps orchestration source-free", () => {
+    expect(orchestrateSkill).toMatch(/PARSE.*DISPATCH.*COLLECT.*SYNTHESIZE.*REPORT/is);
+    expect(orchestrateSkill).toMatch(/zero implementation-source reads/is);
+    expect(orchestrateSkill).toMatch(/tiny code tasks get one engineer/is);
+    expect(orchestrateSkill).toMatch(/orchestration bookkeeping/is);
+    expect(orchestrateSkill).toMatch(/one outcome owner.*no nested delegation/is);
+    expect(orchestrateSkill).toMatch(/material risk or contradictions.*independent reviewer/is);
   });
 
   it("keeps initialization authorized and codegraph optional", () => {
@@ -52,8 +52,8 @@ describe("docs and skills smoke tests", () => {
 
   it("keeps the canonical prompt aligned with root guidance", () => {
     expect(orchestratePrompt).toMatch(/PARSE.*DISPATCH.*COLLECT.*SYNTHESIZE.*REPORT/is);
-    expect(orchestratePrompt).toMatch(/inspect source.*edit files.*run commands.*verify/is);
-    expect(orchestratePrompt).toMatch(/delegate aggressively/i);
+    expect(orchestratePrompt).toMatch(/zero implementation-source reads/is);
+    expect(orchestratePrompt).toMatch(/tiny code tasks.*software-engineer/is);
     expect(orchestratePrompt).not.toMatch(/only completion verifier|PHASE_GATE|exact artifact/i);
   });
 

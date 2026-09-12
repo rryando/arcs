@@ -132,13 +132,13 @@ describe("lean skill contracts", () => {
     expect(codegraph).not.toMatch(/gh pr diff/);
   });
 
-  it("keeps root skills aligned with delegation-preferred behavior", () => {
+  it("keeps root skills aligned with source-free orchestration", () => {
     const orchestrate = read("skills/orchestrate.md");
     const explore = read("skills/explore-dag.md");
     const init = read("skills/init-project.md");
     const docs = read("skills/update-docs.md");
-    expect(orchestrate).toMatch(/UNDERSTAND.*WORK.*VERIFY.*REPORT/is);
-    expect(orchestrate).toMatch(/strongly prefer.*delegat.*separable/is);
+    expect(orchestrate).toMatch(/PARSE.*DISPATCH.*COLLECT.*SYNTHESIZE.*REPORT/is);
+    expect(orchestrate).toMatch(/zero implementation-source reads/is);
     expect(explore).toMatch(/use.*graph-explorer.*only when|graph-explorer.*optional/is);
     expect(init).not.toMatch(/devil-advocate|exact authorization/i);
     expect(docs).not.toMatch(/two-pass|devil-advocate/i);

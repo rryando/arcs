@@ -9,6 +9,8 @@ description: Triage pending codegraph proposals into useful project knowledge
 
 Use when init or codegraph sync reports `pending_enrichment: true`, or when the user asks to process the proposal queue.
 
+Designated `arcs-docs` owns authorized curation using `writing-knowledge` freshness and deduplication rules. Main routes source-bearing proposal inspection, not reading it locally. No nested delegation; return missing evidence to main for routing.
+
 ## Method
 
 1. Run `arcs proposal list <slug>`.

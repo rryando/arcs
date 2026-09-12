@@ -19,26 +19,24 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
   it("identifies as orchestrator, not direct implementer", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/orchestrator/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/dispatch, don't implement/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/you do not implement/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(/never read source.*edit files/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/zero implementation-source reads/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/including source-returning codegraph/i);
   });
 
   it("delegates to enabled routing tiers", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/delegate aggressively/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
-      /Explore.*Investigate.*graph-explorer.*tech-architect/is,
-    );
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/bounded discovery/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Explore.*Discover.*graph-explorer/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Implement.*Fix.*software-engineer/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/DAG.*Knowledge.*arcs-docs/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Review.*Audit.*code-reviewer/is);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Research.*Synthesize.*tech-architect/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/Architecture.*Research.*tech-architect/is);
     expect(ORCHESTRATE_PROMPT_TEXT).not.toMatch(
       /oncall-ops|qa-analyst|docs-researcher|knowledge-collector/,
     );
   });
 
-  it("covers special-case direct work", () => {
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/tiny tightly coupled/i);
+  it("limits direct work to orchestration", () => {
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/tiny code tasks.*one.*software-engineer/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/orchestration-state/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/final synthesis.*reporting/i);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/one owner per outcome/i);
@@ -47,7 +45,7 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
 
   it("routes independent units in parallel", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/parallel/i);
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/wait for all.*return/i);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/do not wait for all/i);
   });
 
   it("uses the exact lean dispatch and return contracts", () => {
@@ -57,7 +55,7 @@ describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(
       /STATUS:\s*<[^>]+>\s*RESULT:\s*<[^>]+>\s*FILES:\s*<[^>]+>\s*VERIFY:\s*<[^>]+>\s*BLOCKER:\s*<[^>]+>/s,
     );
-    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/KNOWLEDGE.*only.*durable discover/is);
+    expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/KNOWLEDGE.*durable delta/is);
     expect(ORCHESTRATE_PROMPT_TEXT).toMatch(/do not echo context or narrate process/i);
   });
 

@@ -21,27 +21,24 @@ describe("flash prompt policy — dispatch-first with flash bias", () => {
   });
 
   it("delegates aggressively via routing tiers", () => {
-    expect(FLASH_PROMPT_TEXT).toMatch(/delegate aggressively/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/bounded discovery/i);
     expect(FLASH_PROMPT_TEXT).toMatch(/Implement.*Fix.*software-engineer/is);
-    expect(FLASH_PROMPT_TEXT).toMatch(/Explore.*Investigate.*graph-explorer/is);
+    expect(FLASH_PROMPT_TEXT).toMatch(/Explore.*Discover.*graph-explorer/is);
     expect(FLASH_PROMPT_TEXT).toMatch(/one owner per outcome/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/tiny tightly coupled/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/tiny code tasks.*one.*software-engineer/is);
     expect(FLASH_PROMPT_TEXT).toMatch(/no nested delegation/i);
   });
 
-  it("searches knowledge exactly once for non-mechanical requests", () => {
-    expect(FLASH_PROMPT_TEXT).toMatch(/exactly one targeted `arcs knowledge search`/i);
-    expect(FLASH_PROMPT_TEXT.match(/arcs knowledge search/gi)).toHaveLength(1);
-    expect(FLASH_PROMPT_TEXT).toMatch(/before dispatching non-mechanical/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/skip.*mechanical work/i);
-    expect(FLASH_PROMPT_TEXT).toMatch(/empty.*(?:immediately )?.*repository evidence/is);
+  it("uses optional compact knowledge without a source-reading fallback", () => {
+    expect(FLASH_PROMPT_TEXT).toMatch(/knowledge search.*only when useful/i);
+    expect(FLASH_PROMPT_TEXT).toMatch(/empty.*delegate.*repository evidence/is);
     expect(FLASH_PROMPT_TEXT).not.toMatch(
-      /retry|KNOWLEDGE_CHECKED|knowledge ledger|knowledge gate|per-dispatch search/i,
+      /exactly one targeted|before dispatching non-mechanical|keep small cohesive work local/i,
     );
   });
 
   it("dispatches all separable units in parallel on first action", () => {
-    expect(FLASH_PROMPT_TEXT).toMatch(/parallel.*first action|first action.*parallel/is);
+    expect(FLASH_PROMPT_TEXT).toMatch(/independent.*parallel/is);
     expect(FLASH_PROMPT_TEXT).not.toMatch(/Tier [0-3]|Every return is gated/);
     expect(FLASH_PROMPT_TEXT).not.toMatch(/completion gate.*never skipped/i);
     expect(FLASH_PROMPT_TEXT).not.toMatch(/only completion verifier/i);

@@ -71,7 +71,7 @@ describe("typed-agent prompt contract", () => {
     expect(prompt).toMatch(/file:line/i);
     expect(prompt).toMatch(/correctness.*security.*maintainability.*tests/is);
     expect(prompt).toMatch(/security.*migration.*public contract.*concurrency.*destructive/is);
-    expect(prompt).toMatch(/risk mode.*optional|optional.*risk mode/is);
+    expect(prompt).toMatch(/risk mode.*material risk.*not a gate for every task/is);
     expect(prompt).not.toMatch(
       /risk mode is a mandatory completion gate|mandatory completion verifier/is,
     );

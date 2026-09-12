@@ -9,7 +9,7 @@ description: Drive human-in-the-loop proposal documents for big changes, then co
 
 Use when a request is architecture-changing, a large feature, a cross-cutting
 refactor, or otherwise too broad to start coding directly. Small, well-scoped
-work does not need a proposal — work directly or go straight to `writing-plans`.
+work does not need a proposal — main dispatches one engineer or requested planning.
 
 Trigger points: the user says "proposal", or you judge that material scope,
 design trade-offs, or migration strategy need human sign-off before tasks exist.
@@ -19,12 +19,11 @@ design trade-offs, or migration strategy need human sign-off before tasks exist.
 ```
 request → proposal doc (iterate with user) → approved
         → promote + plan + tasks (writing-plans) → execution (implementation)
-        → knowledge capture (writing-knowledge)
+        → optional durable knowledge curation (writing-knowledge)
 ```
 
 The proposal doc is stage one of the DAG: docs → plan → task → execution →
-knowledge. Each stage has its own owner skill; this skill owns stages one and
-the handoff to stage two, then delegates explicitly.
+knowledge when useful. Main coordinates handoffs; specialists never delegate. `tech-architect` provides read-only design evidence, designated `arcs-docs` persists authorized proposals/plans/knowledge. This skill does not expand role permissions.
 
 ## CLI
 
@@ -42,8 +41,7 @@ migration):
 
 ## Stage 1 — Proposal Doc Loop
 
-1. **Understand before drafting.** Read the relevant code/DAG state first
-   (`arcs brief`, knowledge search). A proposal grounded only in the request
+1. **Understand before drafting.** Main uses delegated code evidence; specialists inspect the bounded source needed for design. Use compact DAG/knowledge context only when relevant. A proposal grounded only in the request
    text is a guess, not a proposal.
 2. **Draft** with `arcs proposal-doc create <slug> "<title>"`. This scaffolds
    `proposals/<kebab-id>.proposal.md` under the project's data dir with the required sections:
@@ -76,12 +74,10 @@ Only after explicit approval — use the promote result:
 2. Load `writing-plans` and create the plan plus outcome-sized tasks with real
    `dependsOn` edges. Task granularity follows `writing-plans`; do not mirror
    proposal sections one-to-one.
-3. Include a first task that commits the approved proposal doc if it is not yet
-   tracked, so the artifact enters history with the work.
+3. Preserve the approved proposal reference; do not invent a commit task without explicit Git authorization.
 4. Generate/validate the companion diagram per `writing-plans`.
 5. Hand execution to the normal agent loop (`arcs next` → work → `arcs done`),
-   using `implementation` skill conventions. Capture durable discoveries with
-   `arcs remember` / `writing-knowledge`.
+   using `implementation` skill conventions and a single task/diagram transition owner. Workers return durable candidates; docs deduplicates authorized knowledge and acknowledges persisted ID, already covered ID or deferred reason.
 
 If implementation reveals the approved design is wrong, stop and reopen the
 proposal loop — do not silently redesign mid-execution.

@@ -216,7 +216,7 @@ $ arcs brief myapp --lean --json
 
 ## The Agent Bundle
 
-ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **five typed sub-agents**, and **eleven skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
+ARCS ships an OpenCode / Claude Code bundle: **three primary orchestrators**, **five typed sub-agents**, and **twelve skills**, deployed via `arcs deploy-superpowers` (or wired automatically by `arcs init`).
 
 ### Orchestrators
 
@@ -224,13 +224,13 @@ All three share the same authority, safety invariants, and tool access — they 
 
 | Agent | Pick it when |
 |-------|--------------|
-| **ARCS Orchestrator** (`arcs-orchestrate`) | Default coordinator for direct work, plan execution, one-hop delegation, and DAG writes |
-| **ARCS Flash** (`arcs-flash`) | Fast, knowledge-first work with one request-level lookup and compact delegation |
+| **ARCS Orchestrator** (`arcs-orchestrate`) | Coordinates intent, acceptance, specialist dispatch, evidence and DAG bookkeeping |
+| **ARCS Flash** (`arcs-flash`) | Low-context routing with optional relevant knowledge and compact dispatch |
 | **ARCS Caveman** (`arcs-orchestrate-caveman`) | You want the same engine with terse narration — a chat-facing overlay that adds zero workflow authority |
 
-Primaries retain direct tools, but **strongly prefer one-hop delegation** for separable outcomes. Each delegated outcome has one owner, and sub-agents cannot delegate again. Tiny work, tightly coupled work, and orchestration-state changes may stay direct; delegation is a routing preference, not a mandatory gate loop.
+Primaries retain metadata and host tools, but perform **zero implementation-source reads by default** (including source-returning codegraph and source-bearing diffs) and no code edits. Tiny code tasks get one engineer, not a swarm. Unknown files are valid bounded discovery; use one scout only when boundaries need discovery. No compulsory explorer → architect → engineer pipeline or nested delegation. Main may coordinate justified review/repair; independent outcomes run as host opt-in/capabilities permit, shared-file edits serialize, and ready downstream work need not await unrelated returns.
 
-Flash performs exactly one targeted knowledge search before non-mechanical work, reuses that result for the whole request, skips the lookup for mechanical work, and proceeds immediately when the search is empty. It does not retry the search or repeat it per dispatch.
+All variants search compact relevant knowledge only when useful, reuse it, and delegate repository investigation when it is empty. Main owns task/diagram transitions unless explicitly reassigned; designated `arcs-docs` owns authorized docs/knowledge persistence. Explicitly authorized Git bookkeeping stays direct without reading source-bearing diffs.
 
 ### Sub-agents
 
@@ -239,27 +239,27 @@ Each has a sharp niche and receives a compact, self-contained dispatch with exac
 | Sub-agent | Role |
 |-----------|------|
 | **software-engineer** | Implementation or incident diagnosis using `bounded`, `inspect`, or `plan-node` hints |
-| **tech-architect** | Read-only `architecture` design or DAG-first cited `research` |
-| **graph-explorer** | DAG-first location and dependency questions, with codegraph/source fallback when the DAG cannot answer |
+| **tech-architect** | Read-only architecture, trade-offs and cited research |
+| **graph-explorer** | Bounded location/dependency discovery using relevant evidence, not a mandatory retrieval chain |
 | **code-reviewer** | Read-only `review`, proactive `audit`, or adversarial `risk` analysis |
-| **arcs-docs** | Documentation audit and requested updates, including SYNC work |
+| **arcs-docs** | Authorized documentation/knowledge persistence, deduplication and disposition; DAG transitions when assigned |
 
 Every sub-agent returns exactly the compact fields below, with `KNOWLEDGE` added only for a durable finding:
 
 ```
 STATUS: done | blocked | partial
-RESULT: <concise outcome>
-FILES: src/foo.ts
-VERIFY: vitest run test/foo.test.ts → pass
+RESULT: <acceptance coverage with claim-linked evidence anchors and uncertainty>
+FILES: <examined paths separately from changed paths/IDs>
+VERIFY: <actual command, result, working directory, evidence location; not-run checks/reason>
 BLOCKER: <none or concrete evidence>
-KNOWLEDGE: <optional durable finding>
+KNOWLEDGE: <optional durable create/update candidate ID, delta, rationale/evidence, stale/conflicting reused entries>
 ```
 
-Verification is proportionate to the outcome and its risk. Review is available when useful, but ordinary work does not require a reviewer-repair chain or completion gate.
+Main assesses claim-linked evidence without rereading source: missing evidence returns to the owner; material risk or contradictions go to independent review. Docs closes each durable candidate with persisted ID, already covered ID or deferred reason. No automatic knowledge entry or review gate for every task. Static prompt tests do not prove live behavior; see [the reproducible evaluation rubric](docs/orchestrator-behavior-evaluation.md).
 
 ### Skills (loaded per dispatch)
 
-The eleven skills are: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, and `caveman-commit`.
+The twelve skills are: `implementation`, `test-driven-development`, `systematic-debugging`, `brainstorming`, `writing-proposals`, `writing-plans`, `to-diagram`, `writing-knowledge`, `init-project`, `enriching-codegraph-proposals`, `deep-pr-review`, and `caveman-commit`.
 
 `implementation` handles bounded work, limited inspection, and ready plan-node execution, including dependency checks, relevant verification, and task/diagram alignment through the ARCS CLI. New behavior and bug fixes may add `test-driven-development`; incidents add `systematic-debugging`; material design uncertainty may use `brainstorming` before `writing-plans`. No skill introduces a mandatory review or gate loop. There are no automatic git actions; add, commit, and push require an explicit current-turn user request.
 

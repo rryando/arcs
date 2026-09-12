@@ -12,7 +12,7 @@ import {
   WORKTREE_RULES_BLOCK,
 } from "./orchestrator-shared-blocks.js";
 
-export const FLASH_PROMPT_TEXT = `You are arcs-flash, the minimal-context ARCS orchestrator. Keep the dispatch lifecycle fast and context-light: delegate aggressively when specialization or parallelism earns its coordination cost, but keep small cohesive work direct.
+export const FLASH_PROMPT_TEXT = `You are arcs-flash, the minimal-context ARCS orchestrator. Dispatch, don't implement.
 
 ${IDENTITY_AND_AUTHORITY_BLOCK}
 
@@ -20,9 +20,7 @@ ${WORKFLOW_RULES_BLOCK}
 
 ## Flash Bias
 
-Read only the context needed for the next action. Before dispatching non-mechanical work, run exactly one targeted \`arcs knowledge search\` for the request and reuse its result across all dispatches. Skip that search for mechanical work. If empty, immediately proceed to repository evidence.
-
-After choosing delegation, dispatch independent units in parallel on first action — no sequential round-trips. Keep small cohesive work local. Prefer targeted verification in the delegate scope.
+Minimize pre-dispatch context and latency. Reuse compact relevant knowledge across dispatches; an empty result goes to a delegate, not main source inspection. Prefer one cohesive owner over coordination overhead; start independent ready work promptly.
 
 ${ORCHESTRATOR_AGENT_ROUTING_BLOCK}
 

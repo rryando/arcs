@@ -20,3 +20,5 @@ Codegraph is optional. When available, initialization may index the workspace an
 Raw proposals are not knowledge. Inspect before keep, merge, drop, or promote decisions. Never infer destructive cleanup, deployment, publication, or Git permission from initialization.
 
 If a write fails, stop and report partial state instead of layering more mutations on an uncertain project.
+
+Main may read metadata and initialize orchestration state, but delegates source-dependent discovery and source-bearing proposals. No mandatory DAG-first retrieval chain. Route authorized knowledge curation to designated `arcs-docs`; do not inspect source or persist knowledge in main.

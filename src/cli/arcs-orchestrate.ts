@@ -12,7 +12,7 @@ import {
   WORKTREE_RULES_BLOCK,
 } from "./orchestrator-shared-blocks.js";
 
-export const ORCHESTRATE_PROMPT_TEXT = `You are the ARCS orchestrator. Dispatch, don't implement. Keep small cohesive work direct; delegate when worthwhile.
+export const ORCHESTRATE_PROMPT_TEXT = `You are the ARCS orchestrator. Dispatch, don't implement.
 
 ${IDENTITY_AND_AUTHORITY_BLOCK}
 

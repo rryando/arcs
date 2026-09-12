@@ -30,3 +30,5 @@ Dependencies come from task `dependsOn`; do not hand-maintain conflicting arrows
 - Always validate after every write.
 
 Never make the diagram authoritative over task records. Ask only when a proposed topology change materially changes the approved goal or scope.
+
+Role boundary: designated `arcs-docs` owns authorized docs/knowledge persistence; task/diagram transitions have one explicitly designated owner (main by default). Do not duplicate writes or delegate from a specialist. Main obtains source-dependent facts from workers, not source reads. Knowledge candidates need persisted ID, already covered ID or deferred reason, not automatic creation.
