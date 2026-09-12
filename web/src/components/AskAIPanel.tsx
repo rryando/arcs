@@ -21,8 +21,8 @@
  * design carries no mode/scope control, so there is none anywhere in the panel.
  */
 
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
   createContext,
   type ReactNode,
@@ -32,18 +32,31 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, type RunChange, type RunnerId, type SessionReference } from "../api/client";
-import { useRunners, useSendAskTurn } from "../api/hooks";
+import {
+  type AskContext,
+  api,
+  type KnowledgeMeta,
+  type PlanMeta,
+  type ProposalDocDetail,
+  type RunChange,
+  type RunnerId,
+  type SessionReference,
+} from "../api/client";
+import { qk, useRunners, useSendAskTurn } from "../api/hooks";
 import { type RunStreamState, runStreamText, useRunStream } from "../api/sse";
+import { deriveAskContext, describeAskContext } from "../lib/ask-context";
+import { presetsForContext } from "../lib/ask-presets";
 import {
   type AskStoredTurn,
   appendTurn,
   clearConversation,
   exportConversation,
   newTurnId,
+  setAskMode,
   setContinueSessionId,
   setSelectedRunner,
   setTurnReviewState,
+  useAskMode,
   useLocalTranscript,
   useSelectedRunner,
 } from "../lib/ask-store";
@@ -181,6 +194,36 @@ const RUN_STREAM_LABEL: Record<RunStreamState["status"], string> = {
   failed: "stream unavailable",
 };
 
+/**
+ * The view currently open in the main pane — derived from the route, with a
+ * detail entity's title pulled from whatever the detail route already cached
+ * (a list query or the detail query itself). Best-effort: a cold cache sends
+ * the id alone, which is still enough for the agent to resolve live state
+ * through the CLI. This is what makes the panel aware of the open content.
+ */
+function deriveOpenContext(pathname: string, slug: string, queryClient: QueryClient): AskContext {
+  const derived = deriveAskContext(pathname, slug);
+  if (derived.id === undefined) return derived;
+  let title: string | undefined;
+  if (derived.area === "plans") {
+    title =
+      queryClient.getQueryData<{ meta: PlanMeta }>(qk.plan(slug, derived.id))?.meta.title ??
+      queryClient
+        .getQueryData<{ plans: PlanMeta[] }>(qk.plans(slug))
+        ?.plans.find((p) => p.normalizedId === derived.id)?.title;
+  } else if (derived.area === "knowledge") {
+    title =
+      queryClient.getQueryData<{ meta: KnowledgeMeta }>(qk.knowledgeEntry(slug, derived.id))?.meta
+        .title ??
+      queryClient
+        .getQueryData<{ entries: KnowledgeMeta[] }>(qk.knowledge(slug))
+        ?.entries.find((e) => e.normalizedId === derived.id)?.title;
+  } else if (derived.area === "proposal-docs") {
+    title = queryClient.getQueryData<ProposalDocDetail>(qk.proposalDoc(slug, derived.id))?.title;
+  }
+  return title !== undefined ? { ...derived, title } : derived;
+}
+
 export function AskAIPanel() {
   const { slug } = useParams({ strict: false }) as { slug: string };
   const { pendingRef, openWithRef, clearRef, close } = useAskAIPanel();
@@ -192,6 +235,18 @@ export function AskAIPanel() {
   const [message, setMessage] = useState("");
   /** When the watched run was dispatched — the elapsed clock's zero. */
   const [watchedRun, setWatchedRun] = useState<(WatchedRun & { startedAt: number }) | null>(null);
+
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const queryClient = useQueryClient();
+  const askMode = useAskMode();
+
+  // Recomputed on every render rather than memoized: its only volatile input is
+  // the react-query cache, which is not a render dependency and would otherwise
+  // freeze the title at first paint.
+  const openContext = deriveOpenContext(pathname, slug, queryClient);
+  const [includeContext, setIncludeContext] = useState(true);
+  const presets = presetsForContext(openContext);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   // The conversation shown is the WATCHED run's runner while one is in flight
   // (its user turn lives there); otherwise the currently selected one.
@@ -265,7 +320,12 @@ export function AskAIPanel() {
     clearComposer: boolean,
   ) => {
     sendTurn.mutate(
-      { message: messageText, ...(ref !== undefined && { refs: [ref] }) },
+      {
+        message: messageText,
+        mode: askMode,
+        ...(includeContext && { context: openContext }),
+        ...(ref !== undefined && { refs: [ref] }),
+      },
       {
         onSuccess: (result) => {
           // Watch the run the 202 named — the stream the server built
@@ -298,6 +358,15 @@ export function AskAIPanel() {
   const retryTurn = (turn: AskStoredTurn) => {
     if (runLive) return;
     sendNow(turn.text, turn.ref, false);
+  };
+
+  /** Drop an audit preset's prompt into the composer for review before send. */
+  const applyPreset = (presetId: string) => {
+    const preset = presets.find((p) => p.id === presetId);
+    if (preset === undefined) return;
+    setMessage(preset.build(slug, openContext));
+    setIncludeContext(true);
+    composerRef.current?.focus();
   };
 
   /** Stop the watched run: DELETE settles it `interrupted`. Only a SUCCESSFUL
@@ -457,6 +526,24 @@ export function AskAIPanel() {
           ))}
         </select>
         <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setAskMode(askMode === "arcs" ? "chat" : "arcs")}
+          aria-pressed={askMode === "arcs"}
+          title={
+            askMode === "arcs"
+              ? "arcs data-manager mode — the agent reads and updates project data via the arcs CLI. click for plain chat."
+              : "plain chat — click to enable arcs data-manager mode"
+          }
+          className={cx(
+            "border px-1.5 py-0.5 text-[10px] font-bold",
+            askMode === "arcs"
+              ? "border-term-green/60 text-term-green"
+              : "border-term-border text-term-dim hover:text-term-fg",
+          )}
+        >
+          {askMode === "arcs" ? "◇ arcs" : "chat"}
+        </button>
         <Badge color={RUNNER_COLORS[runner]}>{runnerLabel}</Badge>
         <button
           type="button"
@@ -537,6 +624,45 @@ export function AskAIPanel() {
 
       {/* composer + pending reference — pinned at the bottom */}
       <div className="border-t border-term-border p-2">
+        {/* what the assistant will consider: the open view (toggleable) and the
+            one-click audit presets. */}
+        <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
+          <span className="text-term-dim">context</span>
+          <button
+            type="button"
+            onClick={() => setIncludeContext((v) => !v)}
+            aria-pressed={includeContext}
+            title={
+              includeContext
+                ? "the open view is sent with each turn — click to stop sending it"
+                : "the open view is NOT sent — click to include it"
+            }
+            className={cx(
+              "max-w-[12rem] truncate border px-1",
+              includeContext
+                ? "border-term-cyan/50 text-term-cyan"
+                : "border-term-border text-term-dim line-through",
+            )}
+          >
+            {describeAskContext(openContext)}
+          </button>
+          <span className="flex-1" />
+          <select
+            value=""
+            onChange={(e) => applyPreset(e.target.value)}
+            disabled={sendTurn.isPending}
+            title="drop a preset audit prompt into the composer"
+            className="border border-term-border bg-term-inset px-1 py-0.5 text-[10px] text-term-dim outline-none hover:text-term-fg focus:border-term-green/60 disabled:opacity-50"
+          >
+            <option value="">audit…</option>
+            {presets.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {pendingRef && (
           <div className="mb-2 border border-term-cyan/40 bg-term-inset">
             <div className="flex items-center gap-2 border-b border-term-border/60 px-2 py-0.5">
@@ -560,6 +686,7 @@ export function AskAIPanel() {
         )}
 
         <textarea
+          ref={composerRef}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => {

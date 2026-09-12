@@ -270,6 +270,31 @@ export interface WorkspaceFile {
   headRev: string | null;
 }
 
+/** Which prompt tier a turn uses. "arcs" prepends the ARCS data-manager
+ *  instructions (role + CLI surface + audit discipline); "chat" is the bare
+ *  message. Mirrors the server's ask schema; an omitted value means "chat". */
+export type AskMode = "chat" | "arcs";
+
+/** The web views the panel can report as currently open. Mirrors the server's
+ *  ask-context schema and `ASK_CONTEXT_AREAS`. */
+export type AskContextArea =
+  | "project"
+  | "overview"
+  | "proposal-docs"
+  | "plans"
+  | "tasks"
+  | "knowledge"
+  | "graph";
+
+/** What the user is looking at when a turn is sent. Advisory only — the agent
+ *  still resolves live state through the CLI. `id`/`title` are present on
+ *  detail views; list/board views report the area alone. */
+export interface AskContext {
+  area: AskContextArea;
+  id?: string;
+  title?: string;
+}
+
 /** Payload for POST /api/p/:slug/ask — one turn of a stateless headless
  *  conversation. There is no thread record anywhere: the client owns the
  *  transcript (localStorage) and sends a bounded `history` tail plus the
@@ -280,6 +305,11 @@ export interface WorkspaceFile {
 export interface AskTurnInput {
   runner?: RunnerId;
   message: string;
+  /** Prompt tier; the web panel sends "arcs" unless the user turns off the
+   *  data-manager mode. */
+  mode?: AskMode;
+  /** The view currently open in the SPA, rendered as an advisory block. */
+  context?: AskContext;
   refs?: SessionReference[];
   /** Bounded, oldest-first transcript tail (user/assistant only). */
   history?: { role: "user" | "assistant"; text: string }[];
@@ -400,10 +430,9 @@ export interface Proposal {
   suggestedDedupCandidates: Array<{ id: string; overlap: string[] }>;
 }
 
-/** A proposal document in the data dir's proposals/ plane. Listings carry
- *  pending docs only — accepted ones surface via their plan — so status is
- *  "pending" in every list row; the detail endpoint's pending → accepted
- *  fallback is where "accepted" appears (read-only). */
+/** A proposal document in the data dir's proposals/ plane. Listings carry both
+ *  states: pending drafts and accepted (promoted) docs, the latter read-only.
+ *  The detail endpoint's pending → accepted fallback agrees with the suffix. */
 export interface ProposalDoc {
   id: string;
   title: string;
@@ -522,6 +551,8 @@ export const api = {
       body: JSON.stringify({
         ...(input.runner !== undefined && { runner: input.runner }),
         message: input.message,
+        ...(input.mode !== undefined && { mode: input.mode }),
+        ...(input.context !== undefined && { context: input.context }),
         ...(input.refs?.length && { refs: input.refs }),
         ...(input.history?.length && { history: input.history }),
         ...(input.continueSessionId && { continueSessionId: input.continueSessionId }),

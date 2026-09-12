@@ -323,6 +323,51 @@ describe("POST /api/p/:slug/ask — prompt rendering", () => {
     });
   });
 
+  it("renders the arcs data-manager tier and the current context when requested", async () => {
+    await withAskCtx(async ({ base }) => {
+      const { status } = await postAsk(base, {
+        message: "what should I fix?",
+        mode: "arcs",
+        context: { area: "plans", id: "my-plan", title: "My Plan" },
+      });
+      expect(status).toBe(202);
+
+      const prompt = promptOf(capturedJobs[0] as ClaudeJobInput);
+      expect(prompt).toContain("## ARCS DATA MANAGER");
+      expect(prompt).toContain("project `demo`");
+      expect(prompt).toContain("arcs task transition");
+      expect(prompt).toContain("## CURRENT CONTEXT");
+      expect(prompt).toContain("plans view");
+      expect(prompt).toContain("my-plan");
+      expect(prompt).toContain("My Plan");
+      // The manager tier leads; the user's message governs the turn and follows.
+      expect(prompt.indexOf("## ARCS DATA MANAGER")).toBeLessThan(
+        prompt.indexOf("what should I fix?"),
+      );
+      expect(prompt.indexOf("## CURRENT CONTEXT")).toBeLessThan(
+        prompt.indexOf("what should I fix?"),
+      );
+    });
+  });
+
+  it("renders context without the manager tier in chat mode", async () => {
+    await withAskCtx(async ({ base }) => {
+      await postAsk(base, { message: "hi", context: { area: "tasks" } });
+      const prompt = promptOf(capturedJobs[0] as ClaudeJobInput);
+      expect(prompt.startsWith("## CURRENT CONTEXT")).toBe(true);
+      expect(prompt).not.toContain("## ARCS DATA MANAGER");
+      expect(prompt).toContain("tasks view");
+    });
+  });
+
+  it("refuses an unknown context area with INVALID_BODY", async () => {
+    await withAskCtx(async ({ base }) => {
+      const bad = await postAsk(base, { message: "hi", context: { area: "bogus" } });
+      expect(bad.status).toBe(400);
+      expect(bad.data.code).toBe("INVALID_BODY");
+    });
+  });
+
   it("renders the bounded history tail oldest-first, capped at the last 20 turns", async () => {
     await withAskCtx(async ({ base }) => {
       const history = Array.from({ length: 25 }, (_, i) => ({

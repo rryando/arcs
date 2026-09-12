@@ -288,3 +288,121 @@ export function renderHistory(history: readonly AskHistoryTurn[] | undefined): s
   }
   return [HISTORY_HEADING, lines.join("\n")].join("\n\n");
 }
+
+// ---------------------------------------------------------------------------
+// ARCS data-manager role + current-UI context
+// ---------------------------------------------------------------------------
+
+/**
+ * The areas the web UI can report as "currently open". Mirrors the SPA's
+ * `AskContextArea` (web/src/lib/ask-context.ts) and the server's ask schema —
+ * three declarations of one closed set, kept in lockstep.
+ */
+export const ASK_CONTEXT_AREAS = [
+  "project",
+  "overview",
+  "proposal-docs",
+  "plans",
+  "tasks",
+  "knowledge",
+  "graph",
+] as const;
+
+export type AskContextArea = (typeof ASK_CONTEXT_AREAS)[number];
+
+/**
+ * What the user is looking at when the turn is sent: the open view, plus the
+ * entity id/title on a detail view. Purely advisory — the agent still resolves
+ * live state through the CLI — so a missing or stale value degrades to a less
+ * specific subject, never a wrong one.
+ */
+export interface AskContext {
+  area: AskContextArea;
+  id?: string;
+  title?: string;
+}
+
+const MANAGER_HEADING = "## ARCS DATA MANAGER";
+const CONTEXT_HEADING = "## CURRENT CONTEXT";
+
+/**
+ * The manager tier's operating instructions. `<slug>` is substituted at render
+ * time (and delimiter-escaped like every injected field). Written for the
+ * allow-all, full-tool run the ask surface drives: the agent may mutate the
+ * DAG, so the discipline below is what keeps those writes honest.
+ */
+const MANAGER_INSTRUCTIONS = `You are the ARCS data manager for project \`<slug>\`: alongside answering questions, you keep the project DAG — plans, tasks, knowledge, proposal docs — accurate, lean, and free of redundancy. Read and change project data ONLY through the \`arcs\` CLI; never hand-edit files in the ARCS data dir.
+
+READ (add \`--json\`; output is a machine envelope):
+- \`arcs context <slug> --json\` — project overview + active tasks + plans + knowledge
+- \`arcs next <slug> --json\` — the next dependency-ready task
+- \`arcs task list <slug> --json\` — filter with \`--status\`, \`--priority\`, \`--planId\`
+- \`arcs task get <slug> <id> --json\`
+- \`arcs plan list <slug> --json\` / \`arcs plan get <slug> <id> --json\`
+- \`arcs knowledge list <slug> --json\` / \`arcs knowledge get <slug> <id> --body --lean --json\`
+- \`arcs knowledge search <slug> "<query>" --json\`
+- \`arcs related <slug> <id> --json\` — graph neighbours of a node
+- \`arcs audit <slug> --json\` — structural audit (source-file drift)
+- \`arcs diff <slug> <since> --json\` — what changed since an ISO/relative time
+
+WRITE (mutations; full access — a token is required only when ARCS_GUARDED=1):
+- \`arcs task transition <slug> <id> <backlog|in_progress|done|cancelled>\`
+- \`arcs task update <slug> <id> --priority=<...> --title=<...>\`
+- \`arcs task delete <slug> <id>\`
+- \`arcs plan update-meta <slug> <id> --status=<proposed|planned|in_progress|blocked|done|archived>\`
+- \`arcs knowledge update-meta <slug> <id> --kind=<...> --keywords=<a,b> --summary=<...>\`
+- \`arcs knowledge update-body <slug> <id> --body-file=<path>\`
+- \`arcs knowledge delete <slug> <id>\`
+- \`arcs remember <slug> "<durable finding>"\`
+
+AUDIT DISCIPLINE:
+- Verify before you change: read current state, then cross-check every claim against the workspace (a task marked done whose work is absent, an in_progress task with no activity, a plan whose tasks are all done but whose status is not, duplicated or superseded knowledge).
+- Redundancy: search before adding. Prefer updating an existing entry over creating a near-duplicate; when two entries overlap, merge the better content into one and delete the other.
+- Bloat: flag shallow, superseded, or low-value knowledge and proposal docs; recommend removal rather than growing the DAG.
+- Resolve ids from a list/get first — never fabricate one.
+- Report every mutation (what changed and why). When a change is destructive, risky, or genuinely ambiguous, propose it and ask before applying.
+
+OUTPUT: concise markdown. Lead with findings (with ids), then the actions you took, then anything you need the user to decide.`;
+
+/**
+ * The manager tier's block: role + CLI surface + audit discipline, with the
+ * project slug baked in. Fully ARCS-authored, so the only injected value is the
+ * slug — escaped through `field` like any other variable slot.
+ */
+export function renderManagerInstructions(slug: string): string {
+  return [
+    MANAGER_HEADING,
+    MANAGER_INSTRUCTIONS.replaceAll("<slug>", field(slug, FIELD_WIDTHS.slug)),
+  ].join("\n\n");
+}
+
+/** Display label per open view, for the context sentence. */
+const CONTEXT_AREA_LABEL: Record<AskContextArea, string> = {
+  project: "project dashboard",
+  overview: "overview",
+  "proposal-docs": "proposal docs",
+  plans: "plans",
+  tasks: "tasks",
+  knowledge: "knowledge",
+  graph: "graph",
+};
+
+/**
+ * The turn's current-context block, or `""` when no context was sent — a turn
+ * without one must add no bytes. Id and title are client-supplied, so both go
+ * through the same delimiter-escaped `field` treatment as every injected value.
+ */
+export function renderAskContext(slug: string, context: AskContext | undefined): string {
+  if (context === undefined) return "";
+  const label = CONTEXT_AREA_LABEL[context.area];
+  const target =
+    context.id !== undefined
+      ? `, currently on ${field(context.id, FIELD_WIDTHS.sessionId)}${
+          context.title !== undefined ? ` — ${field(context.title, FIELD_WIDTHS.nodeTitle)}` : ""
+        }`
+      : "";
+  return [
+    CONTEXT_HEADING,
+    `The user is viewing the ${label} view of project \`${field(slug, FIELD_WIDTHS.slug)}\`${target}. Treat it as the subject of the request unless the message says otherwise.`,
+  ].join("\n\n");
+}

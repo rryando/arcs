@@ -76,7 +76,7 @@ export async function countPendingProposalDocs(projectDir: string): Promise<numb
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/p/:slug/proposal-docs — pending docs + pending/accepted counts
+// GET /api/p/:slug/proposal-docs — pending AND accepted docs + counts
 // ---------------------------------------------------------------------------
 
 interface ProposalDocSummary {
@@ -87,39 +87,63 @@ interface ProposalDocSummary {
   updatedAt: string | null;
 }
 
+/**
+ * One proposals/ file as a list summary. State comes from the filename suffix,
+ * the title from the body's first H1, `updatedAt` from the file mtime — the
+ * same derivation the detail route uses, so list and detail never disagree.
+ */
+async function summarizeDoc(
+  projectDir: string,
+  id: string,
+  status: "pending" | "accepted",
+  file: string,
+): Promise<ProposalDocSummary> {
+  const filePath =
+    status === "pending"
+      ? proposalDocPendingPath(projectDir, id)
+      : proposalDocAcceptedPath(projectDir, id);
+  const [body, updatedAt] = await Promise.all([
+    readFile(filePath, "utf-8").catch(() => ""),
+    stat(filePath)
+      .then((s) => s.mtime.toISOString())
+      .catch(() => null),
+  ]);
+  return { id, title: deriveTitle(body, id), status, path: `proposals/${file}`, updatedAt };
+}
+
 proposalDocsRoute.get("/api/p/:slug/proposal-docs", async (c) =>
   respond(c, async () => {
     const projectDir = requireProjectDir(c.req.param("slug"));
     const files = (await readdirProposalFiles(projectDir)).sort();
-    const acceptedCount = files.filter((f) => f.endsWith(".accepted.md")).length;
+    const pendingFiles = files.filter((f) => f.endsWith(".proposal.md"));
+    const acceptedFiles = files.filter((f) => f.endsWith(".accepted.md"));
 
-    // Accepted docs are promoted — visible via their plan — so only pending
-    // docs are listed; accepted ones surface as a count.
-    const proposalDocs: ProposalDocSummary[] = await Promise.all(
-      files
-        .filter((f) => f.endsWith(".proposal.md"))
-        .map(async (file) => {
-          const id = basename(file, ".proposal.md");
-          const filePath = proposalDocPendingPath(projectDir, id);
-          const [body, updatedAt] = await Promise.all([
-            readFile(filePath, "utf-8").catch(() => ""),
-            stat(filePath)
-              .then((s) => s.mtime.toISOString())
-              .catch(() => null),
-          ]);
-          return {
-            id,
-            title: deriveTitle(body, id),
-            status: "pending" as const,
-            path: `proposals/${file}`,
-            updatedAt,
-          };
-        }),
-    );
+    // Both states are listed: the tab is the proposal-doc lifecycle, so a
+    // promoted doc stays visible (read-only) instead of vanishing into a
+    // count. A doc id is only ever in one state (promote renames), but the
+    // Map keeps the list duplicate-free if both files somehow exist — pending
+    // wins, matching the detail route's pending → accepted fallback.
+    const byId = new Map<string, { summary: ProposalDocSummary; index: number }>();
+    let index = 0;
+    for (const file of pendingFiles) {
+      const id = basename(file, ".proposal.md");
+      byId.set(id, {
+        summary: await summarizeDoc(projectDir, id, "pending", file),
+        index: index++,
+      });
+    }
+    for (const file of acceptedFiles) {
+      const id = basename(file, ".accepted.md");
+      if (byId.has(id)) continue;
+      byId.set(id, {
+        summary: await summarizeDoc(projectDir, id, "accepted", file),
+        index: index++,
+      });
+    }
 
     return {
-      proposalDocs,
-      counts: { pending: proposalDocs.length, accepted: acceptedCount },
+      proposalDocs: [...byId.values()].map((entry) => entry.summary),
+      counts: { pending: pendingFiles.length, accepted: acceptedFiles.length },
     };
   }),
 );

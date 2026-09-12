@@ -114,7 +114,7 @@ describe("GET /api/p/:slug/proposal-docs", () => {
     });
   });
 
-  it("lists pending docs with derived titles and hides accepted docs from the list", async () => {
+  it("lists pending and accepted docs with derived titles and status", async () => {
     await withRouteCtx(async ({ base, proposalsDir }) => {
       seedDoc(proposalsDir, "alpha-plan.proposal.md", DOC_BODY);
       seedDoc(proposalsDir, "older-plan.accepted.md", "# Older Plan\n");
@@ -133,14 +133,24 @@ describe("GET /api/p/:slug/proposal-docs", () => {
         }[];
         counts: { pending: number; accepted: number };
       };
-      expect(data.proposalDocs).toHaveLength(1);
-      expect(data.proposalDocs[0]).toMatchObject({
-        id: "alpha-plan",
+      expect(data.proposalDocs).toHaveLength(2);
+      const pending = data.proposalDocs.find((d) => d.id === "alpha-plan");
+      expect(pending).toMatchObject({
         title: "Big Redesign",
         status: "pending",
         path: "proposals/alpha-plan.proposal.md",
       });
-      expect(typeof data.proposalDocs[0]?.updatedAt).toBe("string");
+      expect(typeof pending?.updatedAt).toBe("string");
+
+      // Accepted docs are listed too — the tab is the full lifecycle, not a
+      // pending-only queue.
+      const accepted = data.proposalDocs.find((d) => d.id === "older-plan");
+      expect(accepted).toMatchObject({
+        title: "Older Plan",
+        status: "accepted",
+        path: "proposals/older-plan.accepted.md",
+      });
+      expect(typeof accepted?.updatedAt).toBe("string");
       expect(data.counts).toEqual({ pending: 1, accepted: 1 });
     });
   });

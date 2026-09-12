@@ -24,7 +24,7 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { RunnerId, SessionReference } from "../api/client";
+import type { AskMode, RunnerId, SessionReference } from "../api/client";
 
 // ---------------------------------------------------------------------------
 // Keys + shape
@@ -291,6 +291,34 @@ export function setSelectedRunner(runner: RunnerId): void {
   if (!isRunnerId(runner)) return;
   safeWrite(SELECTION_KEY, runner);
   bump();
+}
+
+// ---------------------------------------------------------------------------
+// Manager mode
+// ---------------------------------------------------------------------------
+
+const MODE_KEY = "arcs:askai:mode";
+
+/**
+ * The prompt tier the panel sends by default: the ARCS data-manager mode. The
+ * stored value is only ever "chat" or "arcs"; anything unreadable falls back
+ * to "arcs", which is the panel's reason for existing in an ARCS project. The
+ * toggle in the panel header is the escape hatch for plain questions.
+ */
+export function getAskMode(): AskMode {
+  return safeRead(MODE_KEY) === "chat" ? "chat" : "arcs";
+}
+
+/** Persists the manager-mode toggle. */
+export function setAskMode(mode: AskMode): void {
+  safeWrite(MODE_KEY, mode);
+  bump();
+}
+
+/** The manager mode, re-read on store writes. */
+export function useAskMode(): AskMode {
+  useSyncExternalStore(subscribeAskStore, getAskStoreVersion);
+  return getAskMode();
 }
 
 // ---------------------------------------------------------------------------

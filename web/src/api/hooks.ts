@@ -5,7 +5,14 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { appendTurn, getConversation, historyForSend, newTurnId } from "../lib/ask-store";
-import { type AskTurnResult, api, type RunnerId, type SessionReference } from "./client";
+import {
+  type AskContext,
+  type AskMode,
+  type AskTurnResult,
+  api,
+  type RunnerId,
+  type SessionReference,
+} from "./client";
 
 export const qk = {
   projects: ["projects"] as const,
@@ -217,6 +224,10 @@ export function useDeleteTask(slug: string) {
 export interface SendAskInput {
   message: string;
   refs?: SessionReference[];
+  /** Prompt tier; the panel sends its current manager-mode toggle. */
+  mode?: AskMode;
+  /** The view currently open in the SPA. */
+  context?: AskContext;
 }
 
 /**
@@ -236,6 +247,8 @@ export function useSendAskTurn(slug: string, runner: RunnerId) {
       return api.askTurn(slug, {
         runner,
         message: input.message,
+        ...(input.mode !== undefined && { mode: input.mode }),
+        ...(input.context !== undefined && { context: input.context }),
         ...(input.refs?.length && { refs: input.refs }),
         ...(history.length > 0 && { history }),
         ...(conversation.continueSessionId !== undefined && {

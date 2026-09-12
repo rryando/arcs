@@ -20,6 +20,8 @@ import {
   runStreamText,
 } from "../web/src/api/sse.js";
 import { composeTurnList } from "../web/src/components/AskAIPanel.js";
+import { deriveAskContext, describeAskContext } from "../web/src/lib/ask-context.js";
+import { ASK_PRESETS, presetsForContext } from "../web/src/lib/ask-presets.js";
 import { formatFileRefs, parseFileRefs } from "../web/src/lib/file-refs.js";
 import { extractHeadings, extractSections } from "../web/src/lib/markdown-headings.js";
 import { resolveReference } from "../web/src/lib/reference-resolver.js";
@@ -263,6 +265,77 @@ describe("resolveReference", () => {
     expect(
       resolveReference({ slug: "arcs", kind: "plan", id: "my-plan", sectionId: "tasks" }),
     ).toEqual({ path: "/p/arcs/plans/my-plan", hash: "#tasks" });
+  });
+});
+
+/**
+ * The Ask-AI panel's "currently open" context: the route → view mapping that
+ * feeds the ask transport, and the preset audit prompts built from it.
+ */
+describe("ask-ai open context", () => {
+  it("maps project routes to the view they show", () => {
+    expect(deriveAskContext("/p/arcs", "arcs")).toEqual({ area: "overview" });
+    expect(deriveAskContext("/p/arcs/", "arcs")).toEqual({ area: "overview" });
+    expect(deriveAskContext("/p/arcs/tasks", "arcs")).toEqual({ area: "tasks" });
+    expect(deriveAskContext("/p/arcs/plans", "arcs")).toEqual({ area: "plans" });
+    expect(deriveAskContext("/p/arcs/proposal-docs", "arcs")).toEqual({ area: "proposal-docs" });
+    expect(deriveAskContext("/p/arcs/graph", "arcs")).toEqual({ area: "graph" });
+  });
+
+  it("contributes the entity id only on detail routes", () => {
+    expect(deriveAskContext("/p/arcs/plans/my-plan", "arcs")).toEqual({
+      area: "plans",
+      id: "my-plan",
+    });
+    expect(deriveAskContext("/p/arcs/knowledge/k-1", "arcs")).toEqual({
+      area: "knowledge",
+      id: "k-1",
+    });
+    expect(deriveAskContext("/p/arcs/proposal-docs/prop-1", "arcs")).toEqual({
+      area: "proposal-docs",
+      id: "prop-1",
+    });
+    // A trailing segment beyond the id never leaks into the id.
+    expect(deriveAskContext("/p/arcs/plans/my-plan/extra", "arcs")).toEqual({
+      area: "plans",
+      id: "my-plan",
+    });
+  });
+
+  it("falls back to the project dashboard off project routes", () => {
+    expect(deriveAskContext("/", "arcs")).toEqual({ area: "project" });
+    expect(deriveAskContext("/p/other/plans", "arcs")).toEqual({ area: "project" });
+  });
+
+  it("describes the context for the panel strip", () => {
+    expect(describeAskContext({ area: "tasks" })).toBe("tasks");
+    expect(describeAskContext({ area: "plans", id: "my-plan" })).toBe("plans · my-plan");
+    expect(describeAskContext({ area: "plans", id: "my-plan", title: "My Plan" })).toBe(
+      "plans · My Plan",
+    );
+  });
+});
+
+describe("ask-ai audit presets", () => {
+  it("hides the context-scoped preset when no entity is open", () => {
+    const list = presetsForContext({ area: "tasks" });
+    expect(list.map((p) => p.id)).not.toContain("audit-current");
+    expect(list).toHaveLength(ASK_PRESETS.length - 1);
+  });
+
+  it("offers the context-scoped preset on a detail view", () => {
+    expect(presetsForContext({ area: "plans", id: "my-plan" }).map((p) => p.id)).toContain(
+      "audit-current",
+    );
+  });
+
+  it("builds prompts that name the project and the target", () => {
+    const knowledge = ASK_PRESETS.find((p) => p.id === "audit-knowledge");
+    expect(knowledge?.build("arcs", { area: "knowledge" })).toContain(
+      "arcs knowledge list arcs --json",
+    );
+    const current = ASK_PRESETS.find((p) => p.id === "audit-current");
+    expect(current?.build("arcs", { area: "plans", id: "my-plan" })).toContain("`my-plan`");
   });
 });
 

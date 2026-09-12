@@ -35,7 +35,14 @@ import { DagError } from "../../utils/errors.js";
 import { readJsonSafe } from "../../utils/json.js";
 import type { SessionReference } from "../../utils/run-transcript.js";
 import { SESSION_RUNTIME_TYPES, type SessionRuntimeType } from "../../utils/storage-utils.js";
-import { renderHistory, renderReferences } from "../ask-prompt.js";
+import {
+  ASK_CONTEXT_AREAS,
+  type AskContext,
+  renderAskContext,
+  renderHistory,
+  renderManagerInstructions,
+  renderReferences,
+} from "../ask-prompt.js";
 import {
   type ClaudeRunRecord,
   liveRunPid,
@@ -153,6 +160,12 @@ const sessionReferenceSchema = z
  * is refused with 400 UNKNOWN_RUNNER — that is a real gap in this server, not
  * a client typo.
  *
+ * `mode` selects the prompt tier: "arcs" prepends the ARCS data-manager
+ * instructions (the web panel's default), "chat" is the bare message. Default
+ * "chat" keeps a raw API caller byte-identical to the pre-manager surface.
+ * `context` is the SPA's currently-open view; it renders as a small advisory
+ * block regardless of mode and adds no bytes when absent.
+ *
  * `history` is the client's local transcript tail, rendered into the prompt;
  * `continueSessionId` is the runtime-native session id a previous run's end
  * frame carried — its presence makes this turn a CONTINUATION of that thread.
@@ -168,6 +181,14 @@ const askSchema = z.object({
     )
     .default("pi"),
   message: z.string().min(1),
+  mode: z.enum(["chat", "arcs"]).default("chat"),
+  context: z
+    .object({
+      area: z.enum(ASK_CONTEXT_AREAS),
+      id: z.string().min(1).optional(),
+      title: z.string().optional(),
+    })
+    .optional(),
   refs: z.array(sessionReferenceSchema).optional(),
   history: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string() })).optional(),
   continueSessionId: z.string().min(1).optional(),
@@ -179,16 +200,24 @@ const askSchema = z.object({
 
 /**
  * The turn's prompt: the message, then its rendered reference block, then the
- * bounded history block. References and history ride the PROMPT — the turn's
- * own tier — never a system tier, which is what keeps a later stable tier
- * byte-identical across turns.
+ * bounded history block — preceded by the manager tier when `mode` is "arcs"
+ * and the advisory current-context block when the client sent one. References
+ * and history ride the PROMPT — the turn's own tier — never a system tier,
+ * which is what keeps a later stable tier byte-identical across turns.
  */
 function askPrompt(
+  slug: string,
   message: string,
   refs: SessionReference[] | undefined,
   history: { role: "user" | "assistant"; text: string }[] | undefined,
+  mode: "chat" | "arcs",
+  context: AskContext | undefined,
 ): string {
-  const parts = [message];
+  const parts: string[] = [];
+  if (mode === "arcs") parts.push(renderManagerInstructions(slug));
+  const contextBlock = renderAskContext(slug, context);
+  if (contextBlock !== "") parts.push(contextBlock);
+  parts.push(message);
   const refsBlock = renderReferences(refs ?? []);
   if (refsBlock !== "") parts.push(refsBlock);
   const historyBlock = renderHistory(history);
@@ -358,7 +387,7 @@ askRoute.post("/api/p/:slug/ask", async (c) =>
       const slug = c.req.param("slug");
       const projectDir = requireProjectDir(slug);
       const input = await parseBody(c, askSchema);
-      const { runner, message, refs, history, continueSessionId } = input;
+      const { runner, message, mode, context, refs, history, continueSessionId } = input;
 
       const driver = getRunDriver(runner);
       if (driver === undefined) {
@@ -395,7 +424,7 @@ askRoute.post("/api/p/:slug/ask", async (c) =>
 
       const continued = typeof continueSessionId === "string" && continueSessionId.trim() !== "";
       const argv = driver.buildArgv({
-        message: askPrompt(message, refs, history),
+        message: askPrompt(slug, message, refs, history, mode, context),
         ...(continued && {
           runtimeSessionId: continueSessionId,
           // An adapter without a session-dir flag ignores this; pi keys its

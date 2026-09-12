@@ -1,7 +1,8 @@
 /**
- * Proposal docs — pending design documents from the data dir's proposals/
- * plane, with edit (PUT) and promote-to-plan. Creation stays CLI/skill-driven;
- * accepted docs are read-only and reachable only via direct navigation.
+ * Proposal docs — the full design-document lifecycle from the data dir's
+ * proposals/ plane: pending drafts (editable, promotable) and accepted docs
+ * (read-only, kept visible instead of hidden behind a count). Creation stays
+ * CLI/skill-driven; accepted docs are reached through the same detail route.
  */
 
 import { useNavigate, useParams } from "@tanstack/react-router";
@@ -21,20 +22,21 @@ import { MarkdownViewer } from "../components/MarkdownViewer";
 import { Panel } from "../components/Panel";
 import { useToaster } from "../components/Toaster";
 import { useShortcuts } from "../hooks/useShortcuts";
-import { relativeTime } from "../lib/format";
+import { cx, relativeTime } from "../lib/format";
+
+const STATUS_FILTERS = ["pending", "accepted"] as const;
 
 export function ProposalDocsList() {
   const { slug } = useParams({ strict: false }) as { slug: string };
   const navigate = useNavigate();
   const { data, isLoading } = useProposalDocs(slug);
+  const [statusFilter, setStatusFilter] = useState<(typeof STATUS_FILTERS)[number] | null>(null);
 
-  const docs = useMemo(
-    () =>
-      [...(data?.proposalDocs ?? [])].sort((a, b) =>
-        (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""),
-      ),
-    [data],
-  );
+  const docs = useMemo(() => {
+    const list = data?.proposalDocs ?? [];
+    const filtered = statusFilter ? list.filter((d) => d.status === statusFilter) : list;
+    return [...filtered].sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+  }, [data, statusFilter]);
 
   const columns = useMemo<Column<ProposalDoc>[]>(
     () => [
@@ -69,6 +71,23 @@ export function ProposalDocsList() {
           data ? `${data.counts.pending} pending · ${data.counts.accepted} accepted` : undefined
         }
       >
+        <div className="flex items-center gap-1 border-b border-term-border px-2 py-1 text-[11px]">
+          <StatusChip
+            active={statusFilter === null}
+            onClick={() => setStatusFilter(null)}
+            label={`all ${(data?.proposalDocs ?? []).length}`}
+          />
+          {STATUS_FILTERS.map((s) => (
+            <StatusChip
+              key={s}
+              active={statusFilter === s}
+              onClick={() => setStatusFilter(statusFilter === s ? null : s)}
+              label={`${s} ${data?.counts[s] ?? 0}`}
+            />
+          ))}
+          <span className="flex-1" />
+          <span className="text-term-dim">accepted docs open read-only</span>
+        </div>
         {isLoading ? (
           <div className="px-3 py-4 text-term-dim">loading…</div>
         ) : (
@@ -79,11 +98,39 @@ export function ProposalDocsList() {
             onOpen={(d) =>
               navigate({ to: "/p/$slug/proposal-docs/$id", params: { slug, id: d.id } })
             }
-            emptyMessage="no pending proposal docs — drafts start with arcs proposal-doc create"
+            emptyMessage={
+              statusFilter
+                ? `no ${statusFilter} proposal docs`
+                : "no proposal docs yet — drafts start with arcs proposal-doc create"
+            }
           />
         )}
       </Panel>
     </div>
+  );
+}
+
+/** Status filter pill, mirroring the tasks view's chip row. */
+function StatusChip({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(
+        "px-1.5 py-0.5",
+        active ? "bg-term-green font-bold text-term-bg" : "text-term-dim hover:text-term-fg",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
