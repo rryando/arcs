@@ -19,7 +19,7 @@ import { getProjectDir } from "../../utils/paths.js";
 import {
   createKnowledgeEntry,
   type KnowledgeKind,
-  resolveWorkspaceRoot,
+  resolveCodeRefRoot,
   updateKnowledgeEntry,
 } from "../../utils/project-memory.js";
 import {
@@ -77,10 +77,12 @@ function parseSourceFiles(raw: string): Array<{ path: string; anchor?: string }>
 /**
  * Deterministically capture a chunk for every proposal source file that names
  * a line range. A file that carries only a free-text `anchor` (or no range at
- * all) is left out — the CLI never guesses a range from an anchor. Ranges that
- * do not resolve against the registered workspace (missing file, past EOF) are
- * skipped rather than failing the promote, since proposal promotion predates
- * chunk capture and must stay robust to a stale queue.
+ * all) is left out — the CLI never guesses a range from an anchor. Each ranged
+ * file resolves through {@link resolveCodeRefRoot}, so a range is read from the
+ * git-work-tree CWD when the file lives there and otherwise from the registered
+ * workspace. Ranges that resolve nowhere (or fall past EOF) are skipped rather
+ * than failing the promote, since proposal promotion predates chunk capture and
+ * must stay robust to a stale queue.
  */
 async function captureProposalChunks(
   projectDir: string,
@@ -95,20 +97,27 @@ async function captureProposalChunks(
   );
   if (ranged.length === 0) return [];
 
-  const workspaceRoot = await resolveWorkspaceRoot(projectDir);
-  if (!workspaceRoot) return [];
+  const headRevs = new Map<string, string | undefined>();
+  const headRevFor = async (root: string): Promise<string | undefined> => {
+    if (!headRevs.has(root)) {
+      headRevs.set(root, (await getHeadCommitAsync(root)) ?? undefined);
+    }
+    return headRevs.get(root);
+  };
 
-  const headRev = (await getHeadCommitAsync(workspaceRoot)) ?? undefined;
   const chunks: CodeChunk[] = [];
   for (const f of ranged) {
+    const resolution = await resolveCodeRefRoot(projectDir, f.path);
+    if (resolution.root === null) continue;
     const ref: CodeRef = {
       path: f.path,
       startLine: f.startLine as number,
       endLine: f.endLine as number,
     };
     if (f.anchor !== undefined) ref.anchor = f.anchor;
+    const headRev = await headRevFor(resolution.root);
     const chunk = await readCodeChunk(
-      workspaceRoot,
+      resolution.root,
       ref,
       headRev !== undefined ? { headRev } : undefined,
     );

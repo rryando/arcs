@@ -129,6 +129,67 @@ describe("arcs report get", () => {
     });
   });
 
+  it("carries dirty and untracked through the JSON envelope", async () => {
+    await withTempDataDir(async (dir) => {
+      seedProject(dir, [taskWithReport()]);
+      writeReceipt(dir, SLUG, makeReceipt({ dirty: true, untracked: ["new.txt", "extra.txt"] }), {
+        taskId: "t1",
+      });
+
+      const result = await runCommand("report get", [SLUG, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const receipt = (result.data as Record<string, unknown>).receipt as Record<string, unknown>;
+      expect(receipt.dirty).toBe(true);
+      expect(receipt.untracked).toEqual(["new.txt", "extra.txt"]);
+    });
+  });
+
+  it("marks a dirty receipt in markdown but leaves a clean one unchanged", async () => {
+    await withTempDataDir(async (dir) => {
+      seedProject(dir, [taskWithReport()]);
+      writeReceipt(dir, SLUG, makeReceipt({ dirty: true, untracked: ["new.txt"] }), {
+        taskId: "t1",
+      });
+      writeReceipt(dir, SLUG, makeReceipt({ taskId: "clean", dirty: false, untracked: [] }), {
+        taskId: "clean",
+      });
+
+      const dirtyResult = await runCommand("report get", [SLUG, "t1", "--json"]);
+      expect(dirtyResult.ok).toBe(true);
+      if (!dirtyResult.ok) return;
+      const dirtyMd = renderMarkdown("report get", dirtyResult.data);
+      expect(dirtyMd).toContain("(uncommitted working tree)");
+
+      const cleanResult = await runCommand("report get", [SLUG, "clean", "--json"]);
+      expect(cleanResult.ok).toBe(true);
+      if (!cleanResult.ok) return;
+      const cleanMd = renderMarkdown("report get", cleanResult.data);
+      expect(cleanMd).not.toContain("uncommitted working tree");
+      expect(cleanMd).toContain("## Receipt: clean");
+    });
+  });
+
+  it("reads and renders a legacy receipt without dirty/untracked", async () => {
+    await withTempDataDir(async (dir) => {
+      seedProject(dir, [taskWithReport()]);
+      // Legacy-shaped receipt: no dirty/untracked keys at all.
+      writeReceipt(dir, SLUG, makeReceipt(), { taskId: "t1" });
+
+      const result = await runCommand("report get", [SLUG, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const receipt = (result.data as Record<string, unknown>).receipt as Record<string, unknown>;
+      expect(receipt.dirty).toBeUndefined();
+      expect(receipt.untracked).toBeUndefined();
+
+      const md = renderMarkdown("report get", result.data);
+      expect(md).toContain("## Receipt: t1");
+      expect(md).toContain("Diffstat:");
+      expect(md).not.toContain("uncommitted working tree");
+    });
+  });
+
   it("returns a structured not-found failure for an unknown id", async () => {
     await withTempDataDir(async (dir) => {
       seedProject(dir, []);

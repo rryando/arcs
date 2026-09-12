@@ -71,7 +71,10 @@ function formatDone(d: Rec): string {
     const del = typeof report.deletions === "number" ? report.deletions : 0;
     const noun = files === 1 ? "file" : "files";
     const truncated = report.truncated === true ? " (diff truncated)" : "";
-    lines.push(`Diffstat: ${files} ${noun} changed, +${ins}/-${del}${truncated}`);
+    // A snapshot over an uncommitted working tree is marked distinctly; a
+    // clean receipt (or a legacy pointer without the flag) renders as before.
+    const dirty = report.dirty === true ? " (uncommitted working tree)" : "";
+    lines.push(`Diffstat: ${files} ${noun} changed, +${ins}/-${del}${truncated}${dirty}`);
   } else if (typeof d.reportSkipped === "string" && d.reportSkipped !== "") {
     lines.push(`Report: not captured (${d.reportSkipped})`);
   }
@@ -114,8 +117,9 @@ function formatReportGet(d: Rec): string {
   const files = typeof receipt.filesChanged === "number" ? receipt.filesChanged : 0;
   const noun = files === 1 ? "file" : "files";
   const truncated = receipt.truncated === true ? " (diff truncated)" : "";
+  const dirty = receipt.dirty === true ? " (uncommitted working tree)" : "";
   lines.push(
-    `Diffstat: ${files} ${noun} changed, +${receipt.insertions ?? 0}/-${receipt.deletions ?? 0}${truncated}`,
+    `Diffstat: ${files} ${noun} changed, +${receipt.insertions ?? 0}/-${receipt.deletions ?? 0}${truncated}${dirty}`,
   );
   if (receipt.capturedAt) lines.push(`Captured: ${receipt.capturedAt}`);
   if (typeof d.diff === "string") {

@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -266,6 +266,31 @@ describe("plan completion receipt", () => {
       const receipt = readReceipt(dataDir, slug, "p1");
       expect(receipt?.baseSha).toBe(t1.startHead);
       expect(receipt?.baseSha).toBe(base);
+    });
+  });
+
+  it("captures a working-tree snapshot for a plan with uncommitted work", async () => {
+    await withTempDataDir(async (dataDir) => {
+      const slug = "snapshot-plan";
+      const { repo, base } = await runTwoTaskPlan(dataDir, slug);
+
+      // Leave uncommitted work in the worktree before the plan's last task
+      // completes — the whole point of snapshot capture.
+      writeFileSync(resolve(repo, "uncommitted.txt"), "DISTINCTIVE_PLAN_UNCOMMITTED\n");
+      const a = readFileSync(resolve(repo, "a.txt"), "utf-8");
+      writeFileSync(resolve(repo, "a.txt"), `${a}UNCOMMITTED_EDIT\n`);
+
+      const done = await runCommand("done", [slug, "t2", "--json"]);
+      expect(done.ok).toBe(true);
+
+      const receipt = readReceipt(dataDir, slug, "p1");
+      expect(receipt).not.toBeNull();
+      expect(receipt?.baseSha).toBe(base);
+      expect(receipt?.dirty).toBe(true);
+      expect(receipt?.untracked).toEqual(["uncommitted.txt"]);
+      expect(receipt?.diff).toContain("DISTINCTIVE_PLAN_UNCOMMITTED");
+      expect(receipt?.diff).toContain("UNCOMMITTED_EDIT");
+      expect(receipt?.diff).toContain("@@");
     });
   });
 

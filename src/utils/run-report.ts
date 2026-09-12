@@ -23,6 +23,8 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { closeSync, lstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +47,14 @@ export interface TaskReportRef {
   diffFile?: string;
   truncated: boolean;
   capturedAt: string;
+  /**
+   * Working-tree snapshot marker, copied from the receipt. Absent on legacy
+   * pointers written before snapshot capture existed. `true` means the receipt
+   * was taken over a dirty working tree (uncommitted/staged/untracked content).
+   */
+  dirty?: boolean;
+  /** Repo-relative, sorted untracked paths included in the snapshot body. */
+  untracked?: string[];
 }
 
 /** A captured completion receipt. */
@@ -65,6 +75,19 @@ export interface Receipt {
   diff: string;
   diffTruncated: boolean;
   capturedAt: string;
+  /**
+   * True when the working tree differed from HEAD at capture time (staged,
+   * unstaged, or untracked content present). This describes the REPOSITORY at
+   * capture, not the receipt body: a head-pinned receipt is a committed range
+   * yet still reports the repo state. Absent on legacy receipts.
+   */
+  dirty?: boolean;
+  /**
+   * Repo-relative, sorted untracked paths folded into the snapshot body. Empty
+   * for a head-pinned (committed-range) receipt — untracked content is never
+   * part of a committed range. Absent on legacy receipts.
+   */
+  untracked?: string[];
 }
 
 /** Fail-closed capture result: `ok` discriminates a receipt from a reason. */
@@ -96,13 +119,17 @@ interface GitResult {
  */
 function runGit(root: string, args: string[], timeoutMs: number): GitResult {
   try {
-    const proc = spawnSync("git", ["-C", root, ...args], {
-      encoding: "utf-8",
-      timeout: timeoutMs,
-      killSignal: "SIGKILL",
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const proc = spawnSync(
+      "git",
+      ["-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false", "-C", root, ...args],
+      {
+        encoding: "utf-8",
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     return {
       failed: proc.error !== undefined || proc.status !== 0,
       stdout: typeof proc.stdout === "string" ? proc.stdout : "",
@@ -202,14 +229,22 @@ export async function getRemoteUrl(cwd: string): Promise<string | null> {
 // Diff caps
 // ---------------------------------------------------------------------------
 
-/** First RUN_REPORT_DIFF_MAX_LINES lines, then at most RUN_REPORT_DIFF_MAX_BYTES bytes. */
+/**
+ * First RUN_REPORT_DIFF_MAX_LINES lines, then at most RUN_REPORT_DIFF_MAX_BYTES
+ * UTF-8 bytes. The byte cut lands on a byte boundary and any partial trailing
+ * code point the decoder replaced is trimmed, so a multibyte body cannot slip
+ * past the byte cap. ASCII bodies are cut exactly as before.
+ */
 function capDiff(text: string): string {
   const lines = text.split("\n");
   const kept =
     lines.length > RUN_REPORT_DIFF_MAX_LINES ? lines.slice(0, RUN_REPORT_DIFF_MAX_LINES) : lines;
   let out = kept.join("\n");
   if (Buffer.byteLength(out, "utf-8") > RUN_REPORT_DIFF_MAX_BYTES) {
-    out = out.slice(0, RUN_REPORT_DIFF_MAX_BYTES);
+    out = Buffer.from(out, "utf-8").subarray(0, RUN_REPORT_DIFF_MAX_BYTES).toString("utf-8");
+    while (Buffer.byteLength(out, "utf-8") > RUN_REPORT_DIFF_MAX_BYTES) {
+      out = out.slice(0, -1);
+    }
   }
   return out;
 }
@@ -217,6 +252,124 @@ function capDiff(text: string): string {
 function isTruncated(text: string): boolean {
   if (text.split("\n").length > RUN_REPORT_DIFF_MAX_LINES) return true;
   return Buffer.byteLength(text, "utf-8") > RUN_REPORT_DIFF_MAX_BYTES;
+}
+
+// ---------------------------------------------------------------------------
+// Untracked files — synthesized new-file diffs (git has no baseline for them)
+// ---------------------------------------------------------------------------
+
+/** Bytes of an untracked file inspected for a NUL byte before it is classed binary. */
+const UNTRACKED_BINARY_SNIFF_BYTES = 8_000;
+
+interface UntrackedFileRead {
+  /** False when the file is missing/unreadable/not a regular file. */
+  ok: boolean;
+  /** True when a NUL byte appears in the sniffed prefix. */
+  binary: boolean;
+  /** UTF-8 text of the bytes read (empty when binary or unreadable). */
+  text: string;
+  /** True when the file is larger than the read budget. */
+  truncated: boolean;
+}
+
+/**
+ * Read up to `maxBytes` of an untracked file without ever throwing. Bounded so
+ * a huge untracked file cannot exhaust memory; a missing file, a directory, a
+ * symlink, or a permission error all degrade to `{ ok: false }`.
+ *
+ * `lstat` (not `stat`) deliberately refuses symlinks: following one could read
+ * a file OUTSIDE the repo into the receipt, and `run-diff.ts` walks with the
+ * same "never step outside the root" rule. A refused path is still enumerated
+ * in `untracked`; it simply contributes no diff entry.
+ */
+function readUntrackedFile(absPath: string, maxBytes: number): UntrackedFileRead {
+  let fd: number | undefined;
+  try {
+    const info = lstatSync(absPath);
+    if (!info.isFile()) return { ok: false, binary: false, text: "", truncated: false };
+    if (info.size === 0) return { ok: true, binary: false, text: "", truncated: false };
+
+    const toRead = Math.min(info.size, maxBytes + 1);
+    fd = openSync(absPath, "r");
+    const buf = Buffer.allocUnsafe(toRead);
+    let total = 0;
+    while (total < toRead) {
+      const n = readSync(fd, buf, total, toRead - total, total);
+      if (n <= 0) break;
+      total += n;
+    }
+    const slice = buf.subarray(0, total);
+    const sniff = slice.subarray(0, Math.min(total, UNTRACKED_BINARY_SNIFF_BYTES));
+    if (sniff.includes(0)) return { ok: true, binary: true, text: "", truncated: false };
+    return { ok: true, binary: false, text: slice.toString("utf-8"), truncated: info.size > total };
+  } catch {
+    return { ok: false, binary: false, text: "", truncated: false };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed — nothing to do.
+      }
+    }
+  }
+}
+
+/**
+ * Quote a path for the `a/<path> b/<path>` diff header when it contains
+ * whitespace or quoting characters — the same C-quoting shape git uses and
+ * `parseDiffFileRanges` unquotes. Plain paths are returned verbatim.
+ */
+function quoteGitPath(path: string): string {
+  if (!/[ \t"\\]/.test(path)) return path;
+  return `"${path.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+interface UntrackedDiffBlock {
+  text: string;
+  insertions: number;
+  truncated: boolean;
+}
+
+/**
+ * Synthesize a `new file mode` unified-diff block for one untracked file. The
+ * `@@ -0,0 +1,N @@` header is computed from the lines actually emitted, so a
+ * capped file stays a self-consistent hunk. Binary files emit git's
+ * `Binary files ... differ` line and contribute zero insertions; the whole
+ * block is bounded by the same per-file line/byte budgets as tracked diffs.
+ */
+function buildUntrackedDiff(path: string, read: UntrackedFileRead): UntrackedDiffBlock {
+  const token = quoteGitPath(path);
+  if (read.binary) {
+    return {
+      text:
+        `diff --git a/${token} b/${token}\n` +
+        "new file mode 100644\n" +
+        `Binary files /dev/null and b/${token} differ\n`,
+      insertions: 0,
+      truncated: false,
+    };
+  }
+
+  let lines = read.text.split("\n");
+  // A trailing newline yields a trailing empty element that is not a file line.
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  let truncated = read.truncated;
+  if (lines.length > RUN_REPORT_DIFF_MAX_LINES) {
+    lines = lines.slice(0, RUN_REPORT_DIFF_MAX_LINES);
+    truncated = true;
+  }
+
+  const header = `diff --git a/${token} b/${token}\nnew file mode 100644\n`;
+  if (lines.length === 0) return { text: header, insertions: 0, truncated };
+
+  const hunk = `@@ -0,0 +1,${lines.length} @@\n`;
+  const body = `${lines.map((line) => `+${line}`).join("\n")}\n`;
+  return {
+    text: `${header}--- /dev/null\n+++ b/${token}\n${hunk}${body}`,
+    insertions: lines.length,
+    truncated,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +400,29 @@ export interface CaptureOptions {
  *
  * Base-ref precedence: `opts.baseRef` > `opts.sinceRef` > `opts.fallbackRef` >
  * `HEAD~1`. Head defaults to `HEAD`.
+ *
+ * TWO receipt shapes, selected by whether the caller pins a head:
+ *
+ *  - SNAPSHOT (no `opts.headRef`): the body is `git diff <baseSha>` — the
+ *    committed-since-base changes PLUS staged PLUS unstaged edits to tracked
+ *    files — and every untracked file is synthesized as a new-file diff and
+ *    folded in. This is what makes a plan worktree full of uncommitted work
+ *    produce real evidence instead of an empty diff.
+ *  - COMMITTED RANGE (`opts.headRef` pinned, e.g. `--commit <sha>`): the body
+ *    is `git diff <baseSha> <headSha>` and the working tree contributes
+ *    NOTHING — no untracked files either. `untracked` is `[]` in this mode.
+ *
+ * `dirty`/`untracked` describe the REPOSITORY, computed independently of the
+ * shape: `dirty` is true whenever the working tree differs from HEAD at
+ * capture time (even for a committed-range receipt), while `untracked` is the
+ * sorted set of untracked paths actually folded into the SNAPSHOT body (empty
+ * for a committed range). This one rule is deliberate and coherent: the range
+ * is history, the flags are the tree's state.
+ *
+ * Every untracked read is bounded (RUN_REPORT_DIFF_MAX_BYTES) and the whole
+ * body still passes through the same line/byte caps as before; a file deleted
+ * between the `git ls-files` listing and the read, an unreadable path, and a
+ * git timeout all degrade instead of throwing or hanging.
  */
 export async function captureReceipt(
   cwd: string,
@@ -291,11 +467,35 @@ export async function captureReceipt(
   const remoteUrl = await getRemoteUrl(repoRoot);
   const url = commitUrl(remoteUrl, headSha);
 
-  const nameOnly = runGit(repoRoot, ["diff", "--name-only", baseSha, headSha], timeoutMs);
-  if (nameOnly.failed) return { ok: false, reason: "git diff --name-only failed" };
-  const filesChanged = nameOnly.stdout.split("\n").filter((line) => line !== "").length;
+  // Repo state at capture, independent of the receipt shape: any tracked edit
+  // (staged or unstaged) or untracked file makes the tree dirty. A failed
+  // status call degrades to "not dirty" rather than failing the capture.
+  const statusRes = runGit(repoRoot, ["status", "--porcelain"], timeoutMs);
+  const dirty = !statusRes.failed && statusRes.stdout.trim() !== "";
 
-  const numstat = runGit(repoRoot, ["diff", "--numstat", baseSha, headSha], timeoutMs);
+  // Untracked enumeration only applies to the SNAPSHOT shape. A pinned head is
+  // a committed range, so its `untracked` is always the empty list.
+  const pinnedHead = opts.headRef !== undefined;
+  let untracked: string[] = [];
+  if (!pinnedHead) {
+    const others = runGit(repoRoot, ["ls-files", "--others", "--exclude-standard"], timeoutMs);
+    if (!others.failed) {
+      untracked = others.stdout
+        .split("\n")
+        .filter((line) => line !== "")
+        .sort();
+    }
+  }
+
+  // SNAPSHOT: `git diff <base>` = committed-since-base + staged + unstaged.
+  // COMMITTED RANGE: `git diff <base> <head>` = history only.
+  const rangeArgs = pinnedHead ? [baseSha, headSha] : [baseSha];
+
+  const nameOnly = runGit(repoRoot, ["diff", "--name-only", ...rangeArgs], timeoutMs);
+  if (nameOnly.failed) return { ok: false, reason: "git diff --name-only failed" };
+  let filesChanged = nameOnly.stdout.split("\n").filter((line) => line !== "").length;
+
+  const numstat = runGit(repoRoot, ["diff", "--numstat", ...rangeArgs], timeoutMs);
   if (numstat.failed) return { ok: false, reason: "git diff --numstat failed" };
   let insertions = 0;
   let deletions = 0;
@@ -306,9 +506,25 @@ export async function captureReceipt(
     if (/^\d+$/.test(removed ?? "")) deletions += Number(removed);
   }
 
-  const full = runGit(repoRoot, ["diff", baseSha, headSha], timeoutMs);
+  const full = runGit(repoRoot, ["diff", ...rangeArgs], timeoutMs);
   if (full.failed) return { ok: false, reason: "git diff failed" };
-  const diffTruncated = isTruncated(full.stdout);
+
+  // Fold each untracked file into the body as a synthesized new-file diff. A
+  // path that vanished between listing and read is skipped (not counted); a
+  // per-file cap keeps one huge file from consuming the whole budget.
+  let diffText = full.stdout;
+  let untrackedTruncated = false;
+  for (const path of untracked) {
+    const read = readUntrackedFile(join(repoRoot, path), RUN_REPORT_DIFF_MAX_BYTES);
+    if (!read.ok) continue;
+    const block = buildUntrackedDiff(path, read);
+    diffText += block.text;
+    insertions += block.insertions;
+    if (block.truncated) untrackedTruncated = true;
+    filesChanged += 1;
+  }
+
+  const diffTruncated = isTruncated(diffText) || untrackedTruncated;
 
   return {
     ok: true,
@@ -325,9 +541,11 @@ export async function captureReceipt(
       filesChanged,
       insertions,
       deletions,
-      diff: capDiff(full.stdout),
+      diff: capDiff(diffText),
       diffTruncated,
       capturedAt: opts.capturedAt ?? new Date().toISOString(),
+      dirty,
+      untracked,
     },
   };
 }

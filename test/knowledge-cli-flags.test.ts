@@ -5,6 +5,7 @@
 //   - update-meta --source-files, --audience
 // ---------------------------------------------------------------------------
 
+import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -515,6 +516,195 @@ describe("code chunk backward compatibility", () => {
       // The legacy meta file must not be rewritten by the read path.
       const onDisk = readFileSync(resolve(knowledgeDir, "legacy-entry.meta.json"), "utf-8");
       expect(JSON.parse(onDisk)).toEqual(legacyMeta);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Relative --code resolution: git-work-tree CWD first, workspace paths fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * A temp dir that is a real git work tree, so `isGitRepo(cwd)` is true for it.
+ * No commit is required — `git rev-parse --is-inside-work-tree` only needs the
+ * repo metadata to exist.
+ */
+function makeTempGitRepo(prefix: string): string {
+  const dir = mkdtempSync(resolve(tmpdir(), prefix));
+  execSync("git init", { cwd: dir, stdio: "pipe" });
+  return dir;
+}
+
+/** Mirrors `isGitRepo` in src/utils/git.ts for asserting a test premise. */
+function isGitRepoProbe(dir: string): boolean {
+  try {
+    return (
+      execSync("git rev-parse --is-inside-work-tree", { cwd: dir, stdio: "pipe" })
+        .toString()
+        .trim() === "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Run `run` with the process cwd moved into `dir` (restored afterwards). */
+async function withCwd(dir: string, run: () => Promise<void>): Promise<void> {
+  const previous = process.cwd();
+  process.chdir(dir);
+  try {
+    await run();
+  } finally {
+    process.chdir(previous);
+  }
+}
+
+/** Seed a project whose registered workspace paths are exactly `workspacePaths`. */
+function seedProjectAt(dir: string, slug: string, workspacePaths: string[]): string {
+  const rootMeta = {
+    version: "1.0",
+    projects: [{ id: slug, name: "Test Project", status: "active", dependsOn: [] }],
+  };
+  writeFileSync(resolve(dir, "meta.json"), JSON.stringify(rootMeta), "utf-8");
+  const projDir = resolve(dir, "projects", slug);
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    resolve(projDir, "meta.json"),
+    JSON.stringify({ id: slug, name: "Test Project", workspacePaths }),
+    "utf-8",
+  );
+  const knowledgeDir = resolve(projDir, "knowledge");
+  mkdirSync(knowledgeDir, { recursive: true });
+  writeFileSync(resolve(knowledgeDir, "index.json"), JSON.stringify({ entries: [] }), "utf-8");
+  return knowledgeDir;
+}
+
+describe("relative --code resolution", () => {
+  it("prefers the git-work-tree CWD over the registered workspace (exact repro)", async () => {
+    await withTempDataDir(async (dir) => {
+      const cwdRepo = makeTempGitRepo("arcs-code-cwd-");
+      mkdirSync(resolve(cwdRepo, "src", "utils"), { recursive: true });
+      const cwdSnippet = "line one\nline two\nline three";
+      writeFileSync(resolve(cwdRepo, "src", "utils", "run-report.ts"), `${cwdSnippet}\n`, "utf-8");
+
+      // A different registered workspace that does NOT contain the file.
+      const otherWs = mkdtempSync(resolve(tmpdir(), "arcs-code-otherws-"));
+      const kdir = seedProjectAt(dir, "kcode-cwd", [otherWs]);
+
+      await withCwd(cwdRepo, async () => {
+        const result = await runCommand("knowledge create", [
+          "kcode-cwd",
+          "Cwd Wins",
+          "--kind=module",
+          "--code=src/utils/run-report.ts:1-3",
+        ]);
+        expect(result.ok).toBe(true);
+      });
+
+      const meta = readMeta(kdir, "cwd-wins");
+      expect(meta.codeChunks).toHaveLength(1);
+      // path stays exactly as the caller wrote it (relative stays relative)
+      expect(meta.codeChunks[0].path).toBe("src/utils/run-report.ts");
+      expect(meta.codeChunks[0].snippet).toBe(cwdSnippet);
+    });
+  });
+
+  it("skips a non-git CWD even when it holds the file, using the registered workspace", async () => {
+    await withTempDataDir(async (dir) => {
+      const { knowledgeDir } = seedWorkspaceProject(dir, "kcode-fallback");
+
+      // A CWD that is not a git work tree but DOES contain the ref path with
+      // different content. If the git guard were missing, this tree would win.
+      const nonGitCwd = mkdtempSync(resolve(tmpdir(), "arcs-code-nongit-"));
+      mkdirSync(resolve(nonGitCwd, "src"), { recursive: true });
+      writeFileSync(resolve(nonGitCwd, "src", "x.ts"), "wrong tree\n", "utf-8");
+      expect(isGitRepoProbe(nonGitCwd)).toBe(false);
+
+      await withCwd(nonGitCwd, async () => {
+        const result = await runCommand("knowledge create", [
+          "kcode-fallback",
+          "Fallback",
+          "--kind=module",
+          "--code=src/x.ts:1-3",
+        ]);
+        expect(result.ok).toBe(true);
+      });
+
+      const meta = readMeta(knowledgeDir, "fallback");
+      expect(meta.codeChunks[0].path).toBe("src/x.ts");
+      expect(meta.codeChunks[0].snippet).toBe(X_SNIPPET_1_3);
+    });
+  });
+
+  it("names every tried root and writes nothing when no root has the file", async () => {
+    await withTempDataDir(async (dir) => {
+      const cwdRepo = makeTempGitRepo("arcs-code-cwd2-");
+      const ws = mkdtempSync(resolve(tmpdir(), "arcs-code-ws2-"));
+      const kdir = seedProjectAt(dir, "kcode-neither", [ws]);
+
+      await withCwd(cwdRepo, async () => {
+        const result = await runCommand("knowledge create", [
+          "kcode-neither",
+          "Neither",
+          "--kind=module",
+          "--code=src/gone.ts:1-3",
+        ]);
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.code).toBe("code_chunk_unreadable");
+        expect(result.message).toContain('"src/gone.ts:1-3"');
+        expect(result.message).toContain("not found under");
+        expect(result.message).toContain(cwdRepo);
+        expect(result.message).toContain(ws);
+      });
+      expect(entriesIn(kdir)).toEqual([]);
+    });
+  });
+
+  it("takes the first existing file even when its range is past EOF (no fall-through)", async () => {
+    await withTempDataDir(async (dir) => {
+      const cwdRepo = makeTempGitRepo("arcs-code-eofcwd-");
+      mkdirSync(resolve(cwdRepo, "src"), { recursive: true });
+      writeFileSync(resolve(cwdRepo, "src", "x.ts"), "only one line\n", "utf-8");
+
+      // The registered workspace has the same path with a valid 1-3 range.
+      const ws = mkdtempSync(resolve(tmpdir(), "arcs-code-eofws-"));
+      mkdirSync(resolve(ws, "src"), { recursive: true });
+      writeFileSync(resolve(ws, "src", "x.ts"), `${X_FILE}\n`, "utf-8");
+      const kdir = seedProjectAt(dir, "kcode-eofcwd", [ws]);
+
+      await withCwd(cwdRepo, async () => {
+        const result = await runCommand("knowledge create", [
+          "kcode-eofcwd",
+          "Eof Cwd",
+          "--kind=module",
+          "--code=src/x.ts:1-3",
+        ]);
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.code).toBe("code_chunk_unreadable");
+        expect(result.message).toContain("past EOF");
+      });
+      expect(entriesIn(kdir)).toEqual([]);
+    });
+  });
+
+  it("resolves an absolute ref directly against the registered workspace", async () => {
+    await withTempDataDir(async (dir) => {
+      const { knowledgeDir, workspaceDir } = seedWorkspaceProject(dir, "kcode-abs");
+      const absPath = resolve(workspaceDir, "src", "x.ts");
+
+      const result = await runCommand("knowledge create", [
+        "kcode-abs",
+        "Absolute Ref",
+        "--kind=module",
+        `--code=${absPath}:1-3`,
+      ]);
+      expect(result.ok).toBe(true);
+
+      const meta = readMeta(knowledgeDir, "absolute-ref");
+      expect(meta.codeChunks[0].path).toBe(absPath);
+      expect(meta.codeChunks[0].snippet).toBe(X_SNIPPET_1_3);
     });
   });
 });

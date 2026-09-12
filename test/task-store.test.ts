@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createTask, updateTask } from "../src/utils/task-store.js";
+import { upsertWorktreeEntry } from "../src/utils/worktree-store.js";
 
 const tempDirs: string[] = [];
 
@@ -45,6 +46,20 @@ function commitFile(dir: string, name: string, content: string): string {
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", `add ${name}`]);
   return git(dir, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * A real linked git worktree of `mainRepo`, created through `git worktree add`
+ * (git ignores the atime-only stale-metadata trick, so the registry is seeded
+ * with a genuinely git-backed path). The target path is removed after mkdtemp
+ * so `git worktree add` may create it itself.
+ */
+function addWorktree(mainRepo: string, name: string, branch: string): string {
+  const path = mkdtempSync(resolve(tmpdir(), `arcs-task-store-wt-${name}-`));
+  rmSync(path, { recursive: true, force: true });
+  tempDirs.push(path);
+  git(mainRepo, ["worktree", "add", "-q", path, "-b", branch]);
+  return path;
 }
 
 /** Write the project meta a store-side startHead capture reads for its workspace. */
@@ -468,5 +483,105 @@ describe("task-store: startHead capture and report ref", () => {
     expect(fetched.startHead).toBeUndefined();
     expect(fetched.report).toBeUndefined();
     await expect(listTasks(dir)).resolves.toHaveLength(1);
+  });
+});
+
+describe("task-store: startHead resolves the plan worktree", () => {
+  it("records startHead from the registered plan worktree, not the main workspace", async () => {
+    const a = makeRepo();
+    const b = addWorktree(a, "b", "arcs/p1");
+    const aHead = commitFile(a, "a-only.txt", "a\n");
+    const bHead = commitFile(b, "b-only.txt", "b\n");
+    expect(bHead).not.toBe(aHead);
+
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [a]);
+    await upsertWorktreeEntry(dir, { planId: "p1", path: b, branch: "arcs/p1" });
+
+    const task = await createTask(dir, { title: "Plan Work", planId: "p1" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.startHead).toBe(bHead);
+    expect(updated.startHead).not.toBe(aHead);
+  });
+
+  it("records startHead from the main workspace when the task has no planId", async () => {
+    const a = makeRepo();
+    const b = addWorktree(a, "b", "arcs/p1");
+    commitFile(b, "b-only.txt", "b\n");
+    const aHead = commitFile(a, "a-only.txt", "a\n");
+
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [a]);
+    await upsertWorktreeEntry(dir, { planId: "p1", path: b, branch: "arcs/p1" });
+
+    const task = await createTask(dir, { title: "No Plan" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.startHead).toBe(aHead);
+  });
+
+  it("falls back to the main workspace when the worktree path was deleted", async () => {
+    const a = makeRepo();
+    const b = addWorktree(a, "b", "arcs/p1");
+    commitFile(b, "b-only.txt", "b\n");
+    const aHead = commitFile(a, "a-only.txt", "a\n");
+
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [a]);
+    await upsertWorktreeEntry(dir, { planId: "p1", path: b, branch: "arcs/p1" });
+    rmSync(b, { recursive: true, force: true });
+
+    const task = await createTask(dir, { title: "Stale Worktree", planId: "p1" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.status).toBe("in_progress");
+    expect(updated.startHead).toBe(aHead);
+  });
+
+  it("falls back to the main workspace when the worktree path is not a git repo", async () => {
+    const a = makeRepo();
+    const aHead = commitFile(a, "a-only.txt", "a\n");
+    const plain = mkdtempSync(resolve(tmpdir(), "arcs-task-store-wt-plain-"));
+    tempDirs.push(plain);
+
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [a]);
+    await upsertWorktreeEntry(dir, { planId: "p1", path: plain, branch: "arcs/p1" });
+
+    const task = await createTask(dir, { title: "Non-git Worktree", planId: "p1" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.status).toBe("in_progress");
+    expect(updated.startHead).toBe(aHead);
+  });
+
+  it("leaves startHead absent when neither the worktree nor the workspace is a git repo", async () => {
+    const plainWorkspace = mkdtempSync(resolve(tmpdir(), "arcs-task-store-plain-ws-"));
+    const plainWorktree = mkdtempSync(resolve(tmpdir(), "arcs-task-store-plain-wt-"));
+    tempDirs.push(plainWorkspace, plainWorktree);
+
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [plainWorkspace]);
+    await upsertWorktreeEntry(dir, { planId: "p1", path: plainWorktree, branch: "arcs/p1" });
+
+    const task = await createTask(dir, { title: "All Plain", planId: "p1" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.status).toBe("in_progress");
+    expect(updated.startHead).toBeUndefined();
+  });
+
+  it("falls back to the workspace when the task's planId has no registry row", async () => {
+    const a = makeRepo();
+    const aHead = commitFile(a, "a-only.txt", "a\n");
+
+    const dir = makeProjectDir();
+    writeProjectMeta(dir, [a]);
+
+    const task = await createTask(dir, { title: "Unregistered Plan", planId: "p9" });
+    const updated = await updateTask(dir, { id: task.normalizedId, status: "in_progress" });
+
+    expect(updated.startHead).toBe(aHead);
   });
 });

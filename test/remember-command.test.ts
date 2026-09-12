@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -162,5 +163,49 @@ describe("arcs remember --code", () => {
     expect(parsed.ok).toBe(false);
     expect(parsed.message).toContain("src/x.ts");
     expect(existsSync(join(rememberKnowledgeDir(), "bad-code-ref.meta.json"))).toBe(false);
+  });
+});
+
+describe("arcs remember --code resolves a relative ref against a git-work-tree CWD", () => {
+  it("captures from the CWD tree when the registered workspace lacks the file (exact repro)", async () => {
+    // The CWD is a distinct git work tree that HAS the file; the project's
+    // workspacePaths[0] points elsewhere and does not.
+    const cwdRepo = mkdtempSync(join(tmpdir(), "arcs-remember-cwd-"));
+    execSync("git init", { cwd: cwdRepo, stdio: "pipe" });
+    mkdirSync(join(cwdRepo, "src", "utils"), { recursive: true });
+    const snippet = "line 124\nline 125\nline 126";
+    writeFileSync(join(cwdRepo, "src", "utils", "run-report.ts"), `${snippet}\n`, "utf-8");
+
+    const otherWs = mkdtempSync(join(tmpdir(), "arcs-remember-ws-"));
+    writeFileSync(
+      join(dataDir, "projects", "test-proj", "meta.json"),
+      JSON.stringify({ id: "test-proj", name: "Test Project", workspacePaths: [otherWs] }),
+      "utf-8",
+    );
+
+    const previous = process.cwd();
+    process.chdir(cwdRepo);
+    try {
+      await handleDagCommand("remember", [
+        "test-proj",
+        "diff.mnemonicPrefix probe",
+        "--code=src/utils/run-report.ts:1-3",
+        "--json",
+      ]);
+    } finally {
+      process.chdir(previous);
+    }
+
+    const parsed = JSON.parse(stdout[0]);
+    expect(parsed.id).toBeTruthy();
+    const meta = JSON.parse(
+      readFileSync(
+        join(dataDir, "projects", "test-proj", "knowledge", `${parsed.id}.meta.json`),
+        "utf-8",
+      ),
+    );
+    expect(meta.codeChunks).toHaveLength(1);
+    expect(meta.codeChunks[0].path).toBe("src/utils/run-report.ts");
+    expect(meta.codeChunks[0].snippet).toBe(snippet);
   });
 });

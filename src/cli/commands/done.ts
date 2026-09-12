@@ -20,6 +20,7 @@ import { type PlanTaskAttribution, readReceipt, writeReceipt } from "../../utils
 import { captureReceipt, type Receipt, type TaskReportRef } from "../../utils/run-report.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
 import type { FileRef } from "../../utils/storage-utils.js";
+import { resolveTaskRepoRoot } from "../../utils/task-store.js";
 import { findWorktreeByPlan } from "../../utils/worktree-store.js";
 import {
   type CLIResult,
@@ -127,7 +128,7 @@ async function handleDone(
   const resolved = await resolveProject(rawSlug);
   if (!resolved.ok) return resolved.result;
 
-  const { slug, projectDir, workspacePath } = resolved;
+  const { slug, projectDir } = resolved;
 
   // Validate project directory exists
   if (!existsSync(projectDir)) {
@@ -155,6 +156,13 @@ async function handleDone(
     return failure(ERROR_CODES.ENTITY_NOT_FOUND, err instanceof Error ? err.message : String(err));
   }
 
+  // Resolve the repository the work actually happened in: the task's
+  // registered plan worktree when one is usable, else `workspacePaths[0]`
+  // (fail-soft — see resolveTaskRepoRoot). This is the tree both the task AND
+  // plan receipts describe, so a receipt for worktree work is not taken
+  // against the unrelated main checkout.
+  const repoRoot = await resolveTaskRepoRoot(projectDir, effectivePlanId);
+
   // Capture a deterministic completion receipt. This NEVER fails the command:
   // outside a git repo, with --no-report, or on a capture error the task still
   // completes and the outcome (when notable) is reported instead.
@@ -163,11 +171,11 @@ async function handleDone(
   // Kept only so `--learn` can derive code chunks from the receipt's own diff.
   let learnReceipt: Receipt | undefined;
   if (!noReport) {
-    if (workspacePath === "" || !isGitRepo(workspacePath)) {
+    if (repoRoot === "" || !isGitRepo(repoRoot)) {
       // Workspace-less or non-git project: succeed exactly as before, silently.
     } else {
       try {
-        const capture = await captureReceipt(workspacePath, {
+        const capture = await captureReceipt(repoRoot, {
           ...(commitRef ? { headRef: commitRef } : {}),
           ...(sinceRef ? { sinceRef } : {}),
           ...(taskStartHead ? { fallbackRef: taskStartHead } : {}),
@@ -235,7 +243,7 @@ async function handleDone(
     );
 
     if (planTasks.length > 0 && otherOpen.length === 0) {
-      if (workspacePath === "" || !isGitRepo(workspacePath)) {
+      if (repoRoot === "" || !isGitRepo(repoRoot)) {
         // Non-git / workspace-less: succeed exactly as before, silently.
       } else {
         try {
@@ -257,7 +265,7 @@ async function handleDone(
             planBaseRef = startHead ?? reportRef?.baseRef;
           }
 
-          const capture = await captureReceipt(workspacePath, {
+          const capture = await captureReceipt(repoRoot, {
             ...(planBaseRef ? { baseRef: planBaseRef } : {}),
             ...(commitRef ? { headRef: commitRef } : {}),
             planId: effectivePlanId,

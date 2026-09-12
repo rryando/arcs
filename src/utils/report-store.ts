@@ -100,6 +100,11 @@ export function writeReceipt(
     diffFile: relative(dataRoot, diffPath),
     truncated: receipt.diffTruncated,
     capturedAt: receipt.capturedAt,
+    // Additive: pointers written by older versions omit these, and so do
+    // legacy-shaped receipts handed in by callers/tests. Copy them through
+    // only when the receipt actually carries them.
+    ...(receipt.dirty !== undefined && { dirty: receipt.dirty }),
+    ...(receipt.untracked !== undefined && { untracked: receipt.untracked }),
   };
 }
 

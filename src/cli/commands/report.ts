@@ -102,6 +102,10 @@ async function handleReportGet(
       deletions: receipt.deletions,
       truncated: receipt.diffTruncated,
       capturedAt: receipt.capturedAt,
+      // Snapshot markers, copied through unchanged. Omitted for legacy
+      // receipts captured before working-tree snapshots existed.
+      ...(receipt.dirty !== undefined ? { dirty: receipt.dirty } : {}),
+      ...(receipt.untracked !== undefined ? { untracked: receipt.untracked } : {}),
     },
     // The stored diff is already capped by captureReceipt; still only emitted
     // on request so the default envelope stays small.
@@ -151,6 +155,8 @@ async function handleReportList(
       deletions: r.deletions,
       truncated: r.diffTruncated,
       capturedAt: r.capturedAt,
+      ...(r.dirty !== undefined ? { dirty: r.dirty } : {}),
+      ...(r.untracked !== undefined ? { untracked: r.untracked } : {}),
     };
   });
 

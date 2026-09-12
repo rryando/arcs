@@ -3,12 +3,22 @@
 // ---------------------------------------------------------------------------
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { renderMarkdown } from "../src/cli/md-renderer.js";
 import { deriveDiffCodeRanges, parseDiffFileRanges } from "../src/utils/code-snippet.js";
+import { readReceipt } from "../src/utils/report-store.js";
 import { getTask } from "../src/utils/task-store.js";
+import { upsertWorktreeEntry } from "../src/utils/worktree-store.js";
 import { runCommand } from "./helpers/cli-runner.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
 
@@ -204,6 +214,16 @@ function commitFile(dir: string, name: string, content: string): string {
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", `add ${name}`]);
   return git(dir, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * A real linked git worktree of `mainRepo`, created under the test data dir so
+ * `withTempDataDir` cleans it up. `git worktree add` creates the path itself.
+ */
+function addWorktree(mainRepo: string, baseDir: string, name: string, branch: string): string {
+  const path = resolve(baseDir, `wt-${name}`);
+  git(mainRepo, ["worktree", "add", "-q", path, "-b", branch]);
+  return path;
 }
 
 function makeTask(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -781,9 +801,11 @@ describe("arcs done --learn — chunks derived from the receipt diff", () => {
           git(repo, ["add", "-A"]);
           git(repo, ["commit", "-q", "-m", "add and edit"]);
 
-          // Delete the newly added file from the working tree WITHOUT committing:
-          // the receipt diff still references it, but the path is gone on disk.
+          // Replace the committed file with a symlink to a missing target
+          // WITHOUT committing: the snapshot diff still references added.ts
+          // (base had no such path), but reading it fails at learn time.
           rmSync(resolve(repo, "added.ts"), { force: true });
+          symlinkSync("missing-target", resolve(repo, "added.ts"));
 
           const result = await runCommand("done", [
             slug,
@@ -839,6 +861,158 @@ describe("arcs done --learn — chunk-derivation degradation", () => {
           expect(String(data.learnedChunksSkipped)).toContain("could not attach code chunks");
         },
       );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Receipts resolve to the task's plan worktree, not the main checkout
+// ---------------------------------------------------------------------------
+
+/**
+ * Temp project whose `workspacePaths[0]` is repo A and whose worktree registry
+ * maps plan `p1` to a REAL linked worktree B of A (`git worktree add`), seeded
+ * through the worktree-store write path. Returns the fixture paths; the caller
+ * drives the transition and the diverging commits.
+ */
+async function seedWorktreeProject(
+  dir: string,
+  slug: string,
+  task: Record<string, unknown>,
+): Promise<{ a: string; b: string; base: string }> {
+  const a = mkdtempSync(resolve(dir, "repo-a-"));
+  initRepo(a);
+  const base = commitFile(a, "a.txt", "one\n");
+  const b = addWorktree(a, dir, slug, "arcs/p1");
+  seedProjectAt(dir, slug, a, [task]);
+  const projDir = resolve(dir, "projects", slug);
+  await upsertWorktreeEntry(projDir, { planId: "p1", path: b, branch: "arcs/p1" });
+  return { a, b, base };
+}
+
+describe("arcs done — receipts resolve to the plan worktree", () => {
+  it("captures the task receipt from the worktree (repoRoot and diff are B's)", async () => {
+    await withTempDataDir(async (dir) => {
+      const slug = "wt-rcpt";
+      const { a, b, base } = await seedWorktreeProject(dir, slug, makeTask("t1", { planId: "p1" }));
+
+      const transition = await runCommand("task transition", [slug, "t1", "in_progress", "--json"]);
+      expect(transition.ok).toBe(true);
+
+      // A and B diverge: each gets its own commit, so a receipt taken against
+      // the wrong tree would carry the other file (and the other HEAD).
+      commitFile(a, "a-only.txt", "a\n");
+      const bHead = commitFile(b, "b-only.txt", "b\n");
+
+      const result = await runCommand("done", [slug, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = readReceipt(dir, slug, "t1");
+      expect(stored).not.toBeNull();
+      expect(stored?.repoRoot).toBe(b);
+      expect(stored?.headSha).toBe(bHead);
+      expect(stored?.baseRef).toBe(base);
+      expect(stored?.diff).toContain("b-only.txt");
+      expect(stored?.diff).not.toContain("a-only.txt");
+    });
+  });
+
+  it("captures the receipt from workspacePaths[0] when the task has no planId", async () => {
+    await withTempDataDir(async (dir) => {
+      const slug = "wt-noplan";
+      // Registry still maps p1→B; the task deliberately carries no planId.
+      const { a, b, base } = await seedWorktreeProject(dir, slug, makeTask("t1"));
+
+      const transition = await runCommand("task transition", [slug, "t1", "in_progress", "--json"]);
+      expect(transition.ok).toBe(true);
+
+      const aHead = commitFile(a, "a-only.txt", "a\n");
+      commitFile(b, "b-only.txt", "b\n");
+
+      const result = await runCommand("done", [slug, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = readReceipt(dir, slug, "t1");
+      expect(stored).not.toBeNull();
+      expect(stored?.repoRoot).toBe(a);
+      expect(stored?.headSha).toBe(aHead);
+      expect(stored?.baseRef).toBe(base);
+      expect(stored?.diff).toContain("a-only.txt");
+      expect(stored?.diff).not.toContain("b-only.txt");
+    });
+  });
+
+  it("falls back to the workspace and still succeeds when the worktree path was deleted", async () => {
+    await withTempDataDir(async (dir) => {
+      const slug = "wt-stale";
+      const { a, b } = await seedWorktreeProject(dir, slug, makeTask("t1", { planId: "p1" }));
+      rmSync(b, { recursive: true, force: true });
+
+      const transition = await runCommand("task transition", [slug, "t1", "in_progress", "--json"]);
+      expect(transition.ok).toBe(true);
+
+      const aHead = commitFile(a, "a-only.txt", "a\n");
+      const result = await runCommand("done", [slug, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = readReceipt(dir, slug, "t1");
+      expect(stored?.repoRoot ?? a).toBe(a);
+      expect(stored?.headSha).toBe(aHead);
+    });
+  });
+
+  it("falls back to the workspace when the registered worktree is not a git repo", async () => {
+    await withTempDataDir(async (dir) => {
+      const slug = "wt-nongit";
+      const a = mkdtempSync(resolve(dir, "repo-a-"));
+      initRepo(a);
+      const base = commitFile(a, "a.txt", "one\n");
+      const plain = mkdtempSync(resolve(dir, "plain-wt-"));
+      seedProjectAt(dir, slug, a, [makeTask("t1", { planId: "p1" })]);
+      await upsertWorktreeEntry(resolve(dir, "projects", slug), {
+        planId: "p1",
+        path: plain,
+        branch: "arcs/p1",
+      });
+
+      const transition = await runCommand("task transition", [slug, "t1", "in_progress", "--json"]);
+      expect(transition.ok).toBe(true);
+      const aHead = commitFile(a, "a-only.txt", "a\n");
+
+      const result = await runCommand("done", [slug, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = readReceipt(dir, slug, "t1");
+      expect(stored?.repoRoot).toBe(a);
+      expect(stored?.headSha).toBe(aHead);
+      expect(stored?.baseRef).toBe(base);
+    });
+  });
+
+  it("uses the workspace when the task has a planId but no worktree is registered", async () => {
+    await withTempDataDir(async (dir) => {
+      const slug = "wt-noreg";
+      const a = mkdtempSync(resolve(dir, "repo-a-"));
+      initRepo(a);
+      const base = commitFile(a, "a.txt", "one\n");
+      seedProjectAt(dir, slug, a, [makeTask("t1", { planId: "p1" })]);
+
+      const transition = await runCommand("task transition", [slug, "t1", "in_progress", "--json"]);
+      expect(transition.ok).toBe(true);
+      const aHead = commitFile(a, "a-only.txt", "a\n");
+
+      const result = await runCommand("done", [slug, "t1", "--json"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = readReceipt(dir, slug, "t1");
+      expect(stored?.repoRoot).toBe(a);
+      expect(stored?.headSha).toBe(aHead);
+      expect(stored?.baseRef).toBe(base);
     });
   });
 });

@@ -6,6 +6,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { invalidateGraphCache } from "../retrieval/graph-invalidate.js";
@@ -16,6 +17,7 @@ import {
   taskDependencyNotFound,
 } from "./errors.js";
 import { withLock } from "./file-lock.js";
+import { isGitRepo } from "./git.js";
 import { readJsonSafe } from "./json.js";
 import type { TaskReportRef } from "./run-report.js";
 import { normalizeIdentifier } from "./slug.js";
@@ -30,6 +32,7 @@ import {
   writeTextAtomic,
 } from "./storage-utils.js";
 import { detectCycle } from "./toposort.js";
+import { findWorktreeByPlan } from "./worktree-store.js";
 
 // ---------------------------------------------------------------------------
 // Re-export types used by consumers
@@ -198,6 +201,35 @@ async function resolveWorkspacePath(projectDir: string): Promise<string> {
   const first = paths.find((p): p is string => typeof p === "string" && p.length > 0);
   if (first === undefined) return "";
   return first.startsWith("~") ? resolvePath(homedir(), first.slice(2)) : resolvePath(first);
+}
+
+/**
+ * Resolve the repository a task's work happens in — the base for `startHead`
+ * capture and for completion receipts, shared by the store and `arcs done`.
+ *
+ * Fallback order (first usable wins; read-only and fail-soft):
+ *   1. the task's registered plan worktree — only when the task has a
+ *      `planId`, the worktree registry (`worktrees.json`) has a row for it,
+ *      that path still exists on disk, and it is a git repository;
+ *   2. `meta.json`'s first workspace path (the historical behaviour);
+ *   3. `""` when neither is usable (workspace-less or non-git project).
+ *
+ * A stale registry row (deleted worktree), an unreadable registry, or a
+ * non-git worktree path falls through silently to the workspace path:
+ * repository resolution never throws and never fails a task transition or a
+ * receipt capture.
+ */
+export async function resolveTaskRepoRoot(
+  projectDir: string,
+  planId: string | undefined,
+): Promise<string> {
+  if (planId !== undefined && planId !== "") {
+    const worktree = await findWorktreeByPlan(projectDir, planId);
+    if (worktree !== null && existsSync(worktree.path) && isGitRepo(worktree.path)) {
+      return worktree.path;
+    }
+  }
+  return resolveWorkspacePath(projectDir);
 }
 
 /**
@@ -484,7 +516,7 @@ async function updateTaskUnlocked(projectDir: string, input: UpdateTaskInput): P
   // Record the task's start commit when it enters in_progress. Fail-soft: a
   // non-git workspace leaves startHead absent rather than failing the write.
   if (input.status === "in_progress" && shouldCaptureStartHead(previousStatus, task)) {
-    const workspace = await resolveWorkspacePath(projectDir);
+    const workspace = await resolveTaskRepoRoot(projectDir, task.planId);
     if (workspace !== "") {
       const sha = readHeadSha(workspace);
       if (sha !== undefined) task.startHead = sha;

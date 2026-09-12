@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -225,6 +233,226 @@ describe("captureReceipt", () => {
     expect(Buffer.byteLength(result.report.diff, "utf-8")).toBeLessThanOrEqual(
       RUN_REPORT_DIFF_MAX_BYTES,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Working-tree snapshot capture
+//
+// The regression this whole change exists for: a plan worktree full of
+// uncommitted work must produce a real diff, not `filesChanged: 0`.
+// ---------------------------------------------------------------------------
+
+describe("captureReceipt — working-tree snapshot", () => {
+  it("counts staged, unstaged, and untracked changes and captures a real diff", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\ntwo\n");
+    write(dir, "b.txt", "keep\n");
+    const base = commit(dir, "base");
+
+    // One staged tracked edit.
+    write(dir, "a.txt", "one\nTWO-staged\n");
+    git(dir, ["add", "a.txt"]);
+    // One unstaged tracked edit.
+    write(dir, "b.txt", "keep\nUNSTAGED-keep\n");
+    // One untracked file.
+    write(dir, "c.txt", "new1\nnew2\n");
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const receipt = result.report;
+    expect(receipt.filesChanged).toBe(3);
+    expect(receipt.insertions).toBe(4); // 1 staged + 1 unstaged + 2 untracked
+    expect(receipt.deletions).toBe(1);
+    expect(receipt.dirty).toBe(true);
+    expect(receipt.untracked).toEqual(["c.txt"]);
+    expect(receipt.diff).toContain("@@");
+    expect(receipt.diff).toContain("+TWO-staged");
+    expect(receipt.diff).toContain("+UNSTAGED-keep");
+    // The untracked file is synthesized as a new-file diff.
+    expect(receipt.diff).toContain("diff --git a/c.txt b/c.txt");
+    expect(receipt.diff).toContain("new file mode 100644");
+    expect(receipt.diff).toContain("--- /dev/null");
+    expect(receipt.diff).toContain("+++ b/c.txt");
+    expect(receipt.diff).toContain("@@ -0,0 +1,2 @@");
+    expect(receipt.diff).toContain("+new1");
+    expect(receipt.diffTruncated).toBe(false);
+  });
+
+  it("reports a clean worktree as not dirty and diffs the committed range", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    write(dir, "a.txt", "two\nthree\n");
+    write(dir, "b.txt", "x\n");
+    const head = commit(dir, "head");
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const receipt = result.report;
+    expect(receipt.dirty).toBe(false);
+    expect(receipt.untracked).toEqual([]);
+    expect(receipt.headSha).toBe(head);
+    expect(receipt.filesChanged).toBe(2);
+    // The clean snapshot equals the old committed-range result.
+    expect(receipt.diff.trim()).toBe(git(dir, ["diff", base, head]));
+  });
+
+  it("mines an added-but-uncommitted line (the done --learn regression)", async () => {
+    const dir = makeRepo();
+    write(dir, "a.ts", "const a = 1;\n");
+    const base = commit(dir, "base");
+
+    // Change WITHOUT committing — the exact worktree state ARCS agents leave.
+    write(dir, "a.ts", "const a = 1;\nconst DISTINCTIVE_UNCOMMITTED = 42;\n");
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.report.dirty).toBe(true);
+    expect(result.report.insertions).toBe(1);
+    expect(result.report.diff).toContain("DISTINCTIVE_UNCOMMITTED");
+    expect(result.report.diff).toContain("@@");
+  });
+
+  it("treats a pinned headRef as a committed range with no working-tree contribution", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    write(dir, "a.txt", "two\n");
+    const head = commit(dir, "head");
+
+    // Dirty the tree AFTER the pinned commit; it must not leak into the range.
+    write(dir, "a.txt", "three\n");
+    write(dir, "untracked.txt", "u\n");
+
+    const result = await captureReceipt(dir, { baseRef: base, headRef: head });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const receipt = result.report;
+    expect(receipt.headSha).toBe(head);
+    expect(receipt.filesChanged).toBe(1);
+    expect(receipt.insertions).toBe(1);
+    expect(receipt.diff).toContain("+two");
+    expect(receipt.diff).not.toContain("+three");
+    expect(receipt.diff).not.toContain("untracked.txt");
+    // Coherent rule: untracked is empty for a committed range, but `dirty`
+    // still describes the repository state at capture.
+    expect(receipt.untracked).toEqual([]);
+    expect(receipt.dirty).toBe(true);
+  });
+
+  it("truncates an oversized untracked file and bounds its insertions", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    const body = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join("\n");
+    write(dir, "huge.txt", `${body}\n`);
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const receipt = result.report;
+    expect(receipt.diffTruncated).toBe(true);
+    expect(receipt.diff.split("\n").length).toBeLessThanOrEqual(RUN_REPORT_DIFF_MAX_LINES);
+    expect(Buffer.byteLength(receipt.diff, "utf-8")).toBeLessThanOrEqual(RUN_REPORT_DIFF_MAX_BYTES);
+    // Bounded by the per-file line cap, not the 2000 real lines.
+    expect(receipt.insertions).toBeLessThanOrEqual(RUN_REPORT_DIFF_MAX_LINES);
+    expect(receipt.filesChanged).toBe(1);
+  });
+
+  it("keeps a multibyte untracked body within the byte cap", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    const line = "€".repeat(100); // 300 UTF-8 bytes per line
+    write(dir, "wide.txt", `${Array.from({ length: 200 }, () => line).join("\n")}\n`);
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.report.diffTruncated).toBe(true);
+    expect(Buffer.byteLength(result.report.diff, "utf-8")).toBeLessThanOrEqual(
+      RUN_REPORT_DIFF_MAX_BYTES,
+    );
+    expect(result.report.diff.split("\n").length).toBeLessThanOrEqual(RUN_REPORT_DIFF_MAX_LINES);
+  });
+
+  it("handles a NUL byte in an untracked file without corrupting the diff", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    writeFileSync(join(dir, "bin.dat"), Buffer.from([0x00, 0x01, 0x02, 0x00, 0xff]));
+    write(dir, "text.txt", "hello\n");
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const receipt = result.report;
+    expect(receipt.filesChanged).toBe(2);
+    expect(receipt.untracked).toEqual(["bin.dat", "text.txt"]);
+    expect(receipt.diff).toContain("Binary files");
+    expect(receipt.diff).toContain("+hello");
+    expect(receipt.insertions).toBe(1); // binary bytes are not insertions
+    expect(receipt.diff.includes("\u0000")).toBe(false);
+  });
+
+  it("skips an unreadable untracked file instead of failing", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    symlinkSync("does-not-exist", join(dir, "broken-link"));
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const receipt = result.report;
+    // Enumerated, but with no readable content it contributes no diff entry.
+    expect(receipt.untracked).toEqual(["broken-link"]);
+    expect(receipt.filesChanged).toBe(0);
+    expect(receipt.insertions).toBe(0);
+    expect(receipt.dirty).toBe(true);
+  });
+
+  it("refuses to follow an untracked symlink (no out-of-repo content in the diff)", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    const outside = mkdtempSync(join(tmpdir(), "arcs-run-report-outside-"));
+    tempDirs.push(outside);
+    writeFileSync(join(outside, "secret.txt"), "TOP_SECRET_CONTENT\n");
+    symlinkSync(join(outside, "secret.txt"), join(dir, "leak.txt"));
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.report.untracked).toEqual(["leak.txt"]);
+    expect(result.report.diff).not.toContain("TOP_SECRET_CONTENT");
+    expect(result.report.filesChanged).toBe(0);
+  });
+
+  it("orders untracked files deterministically", async () => {
+    const dir = makeRepo();
+    write(dir, "a.txt", "one\n");
+    const base = commit(dir, "base");
+    write(dir, "z.txt", "z\n");
+    write(dir, "m.txt", "m\n");
+    write(dir, "a-new.txt", "a\n");
+
+    const result = await captureReceipt(dir, { baseRef: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.report.untracked).toEqual(["a-new.txt", "m.txt", "z.txt"]);
+    expect(result.report.filesChanged).toBe(3);
   });
 });
 

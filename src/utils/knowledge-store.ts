@@ -5,8 +5,9 @@
  * entries, with automatic index maintenance and rebuild-on-read resilience.
  */
 
-import { readdir, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { constants } from "node:fs";
+import { access, readdir, readFile, stat } from "node:fs/promises";
+import { basename, isAbsolute, join } from "node:path";
 import { invalidateGraphCache } from "../retrieval/graph-invalidate.js";
 import { parseCodeRef, readCodeChunk } from "./code-snippet.js";
 import {
@@ -16,7 +17,7 @@ import {
   normalizedIdCollision,
 } from "./errors.js";
 import { withLock } from "./file-lock.js";
-import { getHeadCommitAsync } from "./git.js";
+import { getHeadCommitAsync, isGitRepo } from "./git.js";
 import { readJsonSafe } from "./json.js";
 import { knowledgeMetaSchema } from "./json-schemas.js";
 import { normalizeIdentifier } from "./slug.js";
@@ -180,18 +181,116 @@ export function splitCodeRefs(raw: string | undefined | string[]): string[] {
 }
 
 /**
+ * Read every non-empty registered workspace path from `meta.json`, in order.
+ * Whitespace-only entries (the shape a cleared path takes) are skipped rather
+ * than treated as the filesystem root.
+ */
+async function readWorkspacePaths(projectDir: string): Promise<string[]> {
+  const raw = await readJsonSafe<{ workspacePaths?: unknown }>(join(projectDir, "meta.json"));
+  const paths = Array.isArray(raw?.workspacePaths) ? raw?.workspacePaths : [];
+  const out: string[] = [];
+  for (const candidate of paths) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) out.push(candidate);
+  }
+  return out;
+}
+
+/**
  * Resolve the project's workspace root, following the same convention as
  * `git-log`/`sync-agents-md`: read the first non-empty entry of
  * `workspacePaths` from the project's `meta.json`. Returns `null` when nothing
  * usable is registered — callers must not guess the CWD.
+ *
+ * For `--code` refs specifically, use {@link resolveCodeRefRoot} instead: it
+ * adds the git-work-tree CWD as a first candidate so a plan worktree captures
+ * the file it is actually editing.
  */
 export async function resolveWorkspaceRoot(projectDir: string): Promise<string | null> {
-  const raw = await readJsonSafe<{ workspacePaths?: unknown }>(join(projectDir, "meta.json"));
-  const paths = Array.isArray(raw?.workspacePaths) ? raw?.workspacePaths : [];
-  for (const candidate of paths) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
+  const paths = await readWorkspacePaths(projectDir);
+  return paths[0] ?? null;
+}
+
+/**
+ * Ordered roots a relative `--code` ref is resolved against. The current
+ * working directory is a candidate only when it is inside a git work tree, so
+ * a stray CWD (a home directory, `/`, a scratch dir that happens to share a
+ * relative path) can never shadow the project's registered workspace; outside
+ * a repo, only registered paths apply. Exact duplicates are collapsed while
+ * preserving order.
+ */
+async function codeRefRootCandidates(projectDir: string): Promise<string[]> {
+  const roots: string[] = [];
+  let cwd: string | null = null;
+  try {
+    cwd = process.cwd();
+  } catch {
+    cwd = null;
   }
-  return null;
+  if (cwd !== null && isGitRepo(cwd)) roots.push(cwd);
+  for (const ws of await readWorkspacePaths(projectDir)) roots.push(ws);
+  return [...new Set(roots)];
+}
+
+/**
+ * True when `path` exists and is a readable regular file. Every probe failure
+ * (ENOENT, EACCES, a directory, a stalled or unreadable mount) is a soft `false`
+ * so one bad candidate root never aborts resolution or throws.
+ */
+async function isReadableCodeFile(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    const info = await stat(path);
+    return info.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Result of resolving a `--code` ref to the root that should read it. */
+export interface CodeRefRootResolution {
+  /** The first root whose `<root>/<refPath>` exists as a readable file, or `null`. */
+  root: string | null;
+  /** Every root that was tried, in order — used to report a clear failure. */
+  tried: string[];
+}
+
+/**
+ * Resolve a `--code` ref to the root that owns its file.
+ *
+ * Relative refs are tried in this documented order, stopping at the FIRST root
+ * whose `<root>/<refPath>` exists as a readable file:
+ *   1. the current working directory, but only when it is inside a git work
+ *      tree (`isGitRepo(cwd)`);
+ *   2. each registered `workspacePaths` entry from `meta.json`, in order.
+ * The CWD is skipped outright outside a git work tree (and when
+ * `process.cwd()` itself is unavailable). The registry fallback still applies
+ * when the CWD is not a repo, so the git probe is a preference, not a hard
+ * requirement.
+ *
+ * FILE-EXISTENCE RULE: root selection keys off the file existing, not off the
+ * requested line range fitting. The first root that has the file wins even when
+ * the range is past EOF there; capture then fails closed in `readCodeChunk`
+ * rather than silently capturing a different revision from a later root.
+ *
+ * Absolute refs bypass resolution entirely and are handed to `readCodeChunk`
+ * against the registered workspace root, exactly as before; `readCodeChunk`'s
+ * in-root guard still applies.
+ *
+ * Never throws: a missing git CWD or an unreadable candidate root is skipped.
+ */
+export async function resolveCodeRefRoot(
+  projectDir: string,
+  refPath: string,
+): Promise<CodeRefRootResolution> {
+  if (isAbsolute(refPath)) {
+    const registered = await resolveWorkspaceRoot(projectDir);
+    return { root: registered, tried: registered === null ? [] : [registered] };
+  }
+  const tried = await codeRefRootCandidates(projectDir);
+  for (const root of tried) {
+    if (await isReadableCodeFile(join(root, refPath))) return { root, tried };
+  }
+  return { root: null, tried };
 }
 
 /** Discriminated result for deterministic chunk capture. */
@@ -202,9 +301,14 @@ export type CodeChunkCaptureResult =
 /**
  * Capture one chunk per `path:start-end` ref, deterministically and offline.
  *
- * Fails closed: any malformed ref, an unregistered workspace path, or a ref
- * whose file/range cannot be read aborts the whole capture with a message that
- * names the offending value. On success the caller persists `chunks` verbatim.
+ * Fails closed: any malformed ref, a ref no candidate root contains, or a ref
+ * whose range cannot be read aborts the whole capture with a message that names
+ * the offending value (and, when the file was not found, every root tried). On
+ * success the caller persists `chunks` verbatim. Nothing is written before the
+ * whole ref list captures successfully.
+ *
+ * A chunk's `path` is copied through from the caller's ref verbatim — a
+ * relative ref stays relative, an absolute ref stays absolute.
  */
 export async function captureCodeChunks(
   projectDir: string,
@@ -212,18 +316,15 @@ export async function captureCodeChunks(
 ): Promise<CodeChunkCaptureResult> {
   if (refs.length === 0) return { ok: true, chunks: [] };
 
-  const workspaceRoot = await resolveWorkspaceRoot(projectDir);
-  if (!workspaceRoot) {
-    return {
-      ok: false,
-      code: "no_workspace_path",
-      message:
-        "Cannot capture --code chunks: project has no registered workspace path. " +
-        "Register one with 'arcs project edit <slug> --workspace=<path>'.",
-    };
-  }
+  const registeredCount = (await readWorkspacePaths(projectDir)).length;
+  const headRevs = new Map<string, string | undefined>();
+  const headRevFor = async (root: string): Promise<string | undefined> => {
+    if (!headRevs.has(root)) {
+      headRevs.set(root, (await getHeadCommitAsync(root)) ?? undefined);
+    }
+    return headRevs.get(root);
+  };
 
-  const headRev = (await getHeadCommitAsync(workspaceRoot)) ?? undefined;
   const chunks: CodeChunk[] = [];
   for (const raw of refs) {
     const ref = parseCodeRef(raw);
@@ -234,8 +335,31 @@ export async function captureCodeChunks(
         message: `Invalid --code value "${raw}": expected "path:start-end" (e.g. src/x.ts:10-25).`,
       };
     }
+
+    const resolution = await resolveCodeRefRoot(projectDir, ref.path);
+    if (resolution.root === null) {
+      // No candidate root has the file. With nothing registered to fall back
+      // on, keep the established "register a workspace" guidance; otherwise name
+      // every root that was tried so the caller can see where it looked.
+      if (registeredCount === 0) {
+        return {
+          ok: false,
+          code: "no_workspace_path",
+          message:
+            "Cannot capture --code chunks: project has no registered workspace path. " +
+            "Register one with 'arcs project edit <slug> --workspace=<path>'.",
+        };
+      }
+      return {
+        ok: false,
+        code: "code_chunk_unreadable",
+        message: `Cannot capture --code "${raw}": not found under ${resolution.tried.join(", ")}.`,
+      };
+    }
+
+    const headRev = await headRevFor(resolution.root);
     const chunk = await readCodeChunk(
-      workspaceRoot,
+      resolution.root,
       ref,
       headRev !== undefined ? { headRev } : undefined,
     );

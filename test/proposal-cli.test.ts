@@ -4,6 +4,7 @@
 // (human-in-the-loop proposal docs in the project data dir)
 // ---------------------------------------------------------------------------
 
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -99,6 +100,24 @@ function makeFile(proposals: Proposal[]): ProposalsFile {
     graphFingerprint: "deadbeef",
     proposals,
   };
+}
+
+/** A temp dir that is a real git work tree (no commit needed). */
+function makeTempGitRepo(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  execSync("git init", { cwd: dir, stdio: "pipe" });
+  return dir;
+}
+
+/** Run `run` with the process cwd moved into `dir` (restored afterwards). */
+async function withCwd(dir: string, run: () => Promise<void>): Promise<void> {
+  const previous = process.cwd();
+  process.chdir(dir);
+  try {
+    await run();
+  } finally {
+    process.chdir(previous);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +463,41 @@ describe("proposal promote code chunks", () => {
         await readFile(resolve(projectDir, "knowledge", "merge-target.meta.json"), "utf-8"),
       );
       expect(meta.codeChunks).toHaveLength(1);
+      expect(meta.codeChunks[0].snippet).toBe(snippet);
+    });
+  });
+
+  it("captures a ranged source file that exists only in the git-work-tree CWD", async () => {
+    await withTempDataDir(async () => {
+      const projectDir = seedProject();
+      const { workspace } = seedWorkspace();
+      registerWorkspace(projectDir, workspace);
+
+      // A git CWD that holds the proposal's ranged source file, while the
+      // registered workspace does not.
+      const cwdRepo = makeTempGitRepo("arcs-promote-cwd-");
+      mkdirSync(join(cwdRepo, "src", "utils"), { recursive: true });
+      const snippet = "const only = 1;\nconst here = 2;\nconst now = 3;";
+      writeFileSync(join(cwdRepo, "src", "utils", "only-here.ts"), `${snippet}\n`, "utf-8");
+      seedProposals(projectDir, [{ path: "src/utils/only-here.ts", startLine: 1, endLine: 3 }]);
+
+      await withCwd(cwdRepo, async () => {
+        const result = await runCommand("proposal promote", [
+          SLUG,
+          "graphify-cluster-src-utils",
+          "--title=Cwd Promote",
+          "--kind=architecture",
+          "--summary=summary",
+          "--body=body",
+        ]);
+        expect(result.ok).toBe(true);
+      });
+
+      const meta = JSON.parse(
+        await readFile(resolve(projectDir, "knowledge", "cwd-promote.meta.json"), "utf-8"),
+      );
+      expect(meta.codeChunks).toHaveLength(1);
+      expect(meta.codeChunks[0].path).toBe("src/utils/only-here.ts");
       expect(meta.codeChunks[0].snippet).toBe(snippet);
     });
   });
