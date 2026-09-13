@@ -489,4 +489,57 @@ describe("bundle linter", () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("rejects a manifest agent declaring a thinking level the shipped model refuses", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-thinking-invalid-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({
+          agents: [],
+          skills: {},
+          plugin: [],
+          preservedFiles: ["manifest.json", "bundle-runtime.json"],
+        }),
+      );
+      writeFile(bundleRoot, "prompts/software-engineer.txt", "prompt body");
+
+      // `minimal` (and `off`) are valid pi levels in general but rejected by
+      // the shipped commandcode/deepseek tier, so a manifest declaring them
+      // would deploy a broken agent — lint must fail it.
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({
+          agents: [registryAgent({ kind: "primary", pi: { thinking: "minimal" } })],
+          config: { requiredMerges: [] },
+        }),
+      );
+      const rejected = runLint(bundleRoot);
+      const rejectedResult = JSON.parse(rejected.stdout) as LintResult;
+      expect(rejectedResult.issues).toContainEqual(
+        expect.objectContaining({ severity: "error", kind: "invalid-agent-registry" }),
+      );
+      expect(rejected.status).toBe(1);
+
+      // Declaring nothing stays valid — such an agent inherits the parent.
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({
+          agents: [registryAgent({ kind: "primary" })],
+          config: { requiredMerges: [] },
+        }),
+      );
+      const accepted = runLint(bundleRoot);
+      const acceptedResult = JSON.parse(accepted.stdout) as LintResult;
+      expect(acceptedResult.issues).toEqual([]);
+      expect(accepted.status).toBe(0);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

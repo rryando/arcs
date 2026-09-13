@@ -392,6 +392,50 @@ describe("deploy-pi-bundle", () => {
     }
   });
 
+  it("never emits a thinking level the shipped model rejects, and documents the fallback", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-thinking-reject-"));
+
+    try {
+      const bundleRoot = setupBundleRoot(tempRoot);
+
+      // `minimal` and `off` are valid pi levels in general, but the shipped
+      // commandcode/deepseek tier rejects them (`reasoning_effort` accepts only
+      // low|medium|high|xhigh|max). Supplying one must NOT silently produce a
+      // broken agent: the tier config is ignored as a whole (the existing
+      // unknown-value semantics) and no `thinking:` frontmatter is emitted, so
+      // the agent inherits the parent session.
+      for (const rejected of ["minimal", "off"]) {
+        const configRoot = resolve(tempRoot, `pi-home-${rejected}`);
+        const proc = runDeploy({
+          DEPLOY_BUNDLE_ROOT: bundleRoot,
+          DEPLOY_CONFIG_ROOT: configRoot,
+          DEPLOY_DRY_RUN: "false",
+          DEPLOY_THINKING_HEAVY: "xhigh",
+          DEPLOY_THINKING_STANDARD: "medium",
+          DEPLOY_THINKING_LIGHT: rejected,
+        });
+
+        expect(proc.status).toBe(0);
+        const result = JSON.parse(proc.stdout) as DeployResult & { thinkingConfig?: unknown };
+        // The whole tier config is dropped, so none is advertised.
+        expect(result.thinkingConfig).toBeUndefined();
+
+        for (const fileName of [
+          "software-engineer.md",
+          "devil-advocate.md",
+          "arcs-orchestrate.md",
+        ]) {
+          const content = readFileSync(resolve(configRoot, "agent/agents", fileName), "utf-8");
+          // No invalid level, and no thinking field at all (inherit fallback).
+          expect(content).not.toMatch(/^thinking:\s*(minimal|off)\s*$/m);
+          expect(content).not.toMatch(/^thinking:/m);
+        }
+      }
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("writes compiled files under projectRoot/.pi/agents/ when DEPLOY_SCOPE is project", () => {
     const tempRoot = mkdtempSync(resolve(tmpdir(), "pi-deploy-project-"));
     const projectRoot = resolve(tempRoot, "project");

@@ -196,7 +196,7 @@
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
-        "thinking": "off",
+        "thinking": "low",
         "extensions": ["pi-mcp-adapter"],
         "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
       },

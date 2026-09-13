@@ -48,7 +48,10 @@
 //                          source skips the extension step without failing)
 //   DEPLOY_DRY_RUN      — "false" to actually write; anything else = dry-run (default: dry-run)
 //   DEPLOY_MODEL_HEAVY/STANDARD/LIGHT — 3-tier model overrides (default: "inherit")
-//   DEPLOY_THINKING_HEAVY/STANDARD/LIGHT — optional pi thinking levels
+//   DEPLOY_THINKING_HEAVY/STANDARD/LIGHT — optional pi thinking levels; each
+//     must be one of low|medium|high|xhigh|max (the shipped model tier rejects
+//     `off`/`minimal`). If any value is missing or rejected, the whole tier
+//     config is ignored and `thinking:` is omitted so agents inherit the parent.
 //
 // settings.json is merged in the selected scope. Only the `model` field of
 // active ARCS primary profiles is changed; all other user settings are kept.
@@ -145,12 +148,21 @@ const tierModels = {
   standard: process.env.DEPLOY_MODEL_STANDARD || "inherit",
   light: process.env.DEPLOY_MODEL_LIGHT || "inherit",
 };
-const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+// `off` and `minimal` are valid pi thinking levels in general, but the model
+// tier ARCS ships (commandcode/deepseek) rejects them: its `reasoning_effort`
+// only accepts low|medium|high|xhigh|max. Emitting a rejected level in agent
+// frontmatter fails EVERY dispatch of that subagent at runtime (400
+// invalid_request_error), so ARCS must never deploy one.
+const thinkingLevels = ["low", "medium", "high", "xhigh", "max"];
 const thinkingValues = {
   heavy: process.env.DEPLOY_THINKING_HEAVY,
   standard: process.env.DEPLOY_THINKING_STANDARD,
   light: process.env.DEPLOY_THINKING_LIGHT,
 };
+// Fallback semantics (unchanged for unknown values): if ANY supplied tier
+// level is missing or rejected, the whole tier config is ignored and no
+// `thinking:` frontmatter is emitted — the agent inherits the parent session.
+// A rejected DEPLOY_THINKING_* value therefore never yields a broken agent.
 const tierThinking = Object.values(thinkingValues).every((value) => thinkingLevels.includes(value))
   ? thinkingValues
   : undefined;

@@ -67,7 +67,12 @@ function isPromptPath(value) {
   );
 }
 
-const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+// `off` and `minimal` are valid pi thinking levels in general, but the model
+// tier ARCS ships (commandcode/deepseek) rejects them (`reasoning_effort`
+// accepts low|medium|high|xhigh|max only). A manifest declaring them would
+// deploy agent frontmatter that fails every dispatch, so lint rejects them
+// here too. An omitted `pi.thinking` is fine and inherits the parent session.
+const thinkingLevels = ["low", "medium", "high", "xhigh", "max"];
 
 function isAgentRegistryRecord(agent) {
   return (

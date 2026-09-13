@@ -4,6 +4,15 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
+// --- Label pattern ---
+// Node declarations are emitted with a quoted label (ID["label"]:::status) or,
+// in legacy diagrams, a bare label (ID[label]:::status). A quoted label may
+// embed ']', '[', '-->', ':::status', and backslash-escaped quotes, so the
+// label group must be quote-aware to avoid truncating at the first ']'. The
+// bare alternative keeps legacy files working. The optional ':::class' suffix
+// is always matched separately, so it is never folded into the label text.
+const LABEL_SRC = '"(?:[^"\\\\]|\\\\.)*"|[^\\]]+';
+
 // --- Safe file read ---
 
 function safeReadFile(filePath) {
@@ -20,7 +29,7 @@ function parseNodes(graphLines) {
   const nodes = [];
   const seen = new Set();
   // Match node declarations: ID[label]:::status or ID[label] (no status)
-  const nodeRe = /\b(T\d{3,})\[([^\]]+)\](?::::(\w+))?/g;
+  const nodeRe = new RegExp(`\\b(T\\d{3,})\\[(${LABEL_SRC})\\](?::::(\\w+))?`, "g");
   for (const line of graphLines) {
     for (const match of line.matchAll(nodeRe)) {
       const [, id, label, status] = match;
@@ -35,7 +44,10 @@ function parseNodes(graphLines) {
 
 function parseEdges(graphLines) {
   const edges = [];
-  const edgeRe = /\b(T\d{3,})(?:\[[^\]]*\](?::::\w+)?)?\s*-->\s*(T\d{3,})/g;
+  const edgeRe = new RegExp(
+    `\\b(T\\d{3,})(?:\\[${LABEL_SRC}\\](?::::\\w+)?)?\\s*-->\\s*(T\\d{3,})`,
+    "g",
+  );
   for (const line of graphLines) {
     for (const match of line.matchAll(edgeRe)) {
       edges.push({ from: match[1], to: match[2] });
@@ -297,7 +309,7 @@ function validate(filePath, metadataPath) {
 
   // Duplicate node IDs in graph
   const nodeIds = [];
-  const nodeRe = /\b(T\d{3,})\[([^\]]+)\](?::::(\w+))?/g;
+  const nodeRe = new RegExp(`\\b(T\\d{3,})\\[(${LABEL_SRC})\\](?::::(\\w+))?`, "g");
   for (const line of graphLines) {
     for (const match of line.matchAll(nodeRe)) {
       nodeIds.push(match[1]);
@@ -724,7 +736,7 @@ function status(filePath, nodeId, newStatus) {
   const updatedGraphLines = graphLines.map((line) => {
     // Match node declaration: nodeId[label]:::status — anchored to avoid matching inside labels
     // Uses (?<![\\w]) negative lookbehind instead of \b to prevent matching T001 inside another node's label
-    const re = new RegExp(`(?<![\\w])(${nodeId}\\[[^\\]]+\\]):::\\w+`, "g");
+    const re = new RegExp(`(?<![\\w])(${nodeId}\\[(?:${LABEL_SRC})\\]):::\\w+`, "g");
     return line.replace(re, `$1:::${newStatus}`);
   });
 

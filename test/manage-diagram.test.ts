@@ -1182,4 +1182,242 @@ describe("manage-diagram.mjs", () => {
       expect(t002Idx).toBeLessThan(t003Idx);
     });
   });
+
+  // Regression coverage for a real defect: a node whose title contains ']'
+  // (e.g. "workspacePaths[0]") is emitted as a QUOTED label,
+  //   T002["...workspacePaths[0]"]:::backlog,
+  // and the old `[^\]]+` label group truncated at the first ']'. That broke
+  // `status` ("no :::class suffix") and desynced labels of later nodes.
+  describe("quoted labels with embedded metacharacters", () => {
+    const BRACKETED_DIAGRAM = `%% plan: bracket-plan
+%% status: T001=done, T002=backlog, T003=backlog
+%% ready: T002, T003
+%% next-action: Start T002
+
+%% node: T001
+%% title: First
+%% status: done
+%% skill: s
+%% scope: a/
+%% acceptance: A
+%% verify: t
+
+%% node: T002
+%% title: Resolve code capture relative to the working tree, not workspacePaths[0]
+%% status: backlog
+%% skill: s
+%% scope: b/
+%% acceptance: B
+%% verify: t
+
+%% node: T003
+%% title: Declared after the bracketed label
+%% status: backlog
+%% skill: s
+%% scope: c/
+%% acceptance: C
+%% verify: t
+
+flowchart TD
+    classDef done fill:#22c55e,color:#fff
+    classDef inProgress fill:#f59e0b,color:#fff
+    classDef blocked fill:#ef4444,color:#fff
+    classDef backlog fill:#94a3b8,color:#fff
+
+    T001["First"]:::done
+    T002["Resolve code capture relative to the working tree, not workspacePaths[0]"]:::backlog
+    T003["Declared after the bracketed label"]:::backlog
+    T001 --> T002
+`;
+
+    it("parses the full bracketed label and the correct status", () => {
+      writeFileSync(diagramPath, BRACKETED_DIAGRAM);
+
+      const result = run("inspect", diagramPath);
+      expect(result.status).toBe(0);
+
+      const output = JSON.parse(result.stdout);
+      expect(output.nodes).toEqual([
+        { id: "T001", label: '"First"', status: "done" },
+        {
+          id: "T002",
+          label: '"Resolve code capture relative to the working tree, not workspacePaths[0]"',
+          status: "backlog",
+        },
+        { id: "T003", label: '"Declared after the bracketed label"', status: "backlog" },
+      ]);
+
+      // Real edges still parse; the '[' inside T002's label creates none.
+      expect(output.edges).toEqual([{ from: "T001", to: "T002" }]);
+    });
+
+    it("updates a bracketed-label node without touching other nodes", () => {
+      writeFileSync(diagramPath, BRACKETED_DIAGRAM);
+
+      const result = run("status", diagramPath, "T002", "done");
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).updated).toBe(true);
+
+      const updated = readFileSync(diagramPath, "utf-8");
+      expect(updated).toContain(
+        'T002["Resolve code capture relative to the working tree, not workspacePaths[0]"]:::done',
+      );
+      expect(updated).not.toContain('workspacePaths[0]"]:::backlog');
+      // Nodes before and after are untouched.
+      expect(updated).toContain('T001["First"]:::done');
+      expect(updated).toContain('T003["Declared after the bracketed label"]:::backlog');
+    });
+
+    it("validates a diagram with a bracketed label", () => {
+      writeFileSync(diagramPath, BRACKETED_DIAGRAM);
+
+      const result = run("validate", diagramPath);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ ok: true, errors: [] });
+    });
+
+    const TRICKY_DIAGRAM = `%% plan: tricky-plan
+%% status: T001=backlog, T002=backlog, T003=backlog, T004=backlog
+%% ready: T001, T002, T003, T004
+%% next-action: Start T001
+
+%% node: T001
+%% title: has [a] bracket
+%% status: backlog
+%% skill: s
+%% scope: a/
+%% acceptance: A
+%% verify: t
+
+%% node: T002
+%% title: has "quoted" word
+%% status: backlog
+%% skill: s
+%% scope: b/
+%% acceptance: B
+%% verify: t
+
+%% node: T003
+%% title: has :::done inside
+%% status: backlog
+%% skill: s
+%% scope: c/
+%% acceptance: C
+%% verify: t
+
+%% node: T004
+%% title: has --> arrow
+%% status: backlog
+%% skill: s
+%% scope: d/
+%% acceptance: D
+%% verify: t
+
+flowchart TD
+    classDef backlog fill:#94a3b8,color:#fff
+
+    T001["has [a] bracket"]:::backlog
+    T002["has \\"quoted\\" word"]:::backlog
+    T003["has :::done inside"]:::backlog
+    T004["has --> arrow"]:::backlog
+`;
+
+    it("round-trips labels with brackets, quotes, :::text, and arrows", () => {
+      writeFileSync(diagramPath, TRICKY_DIAGRAM);
+
+      const inspected = JSON.parse(run("inspect", diagramPath).stdout);
+      expect(inspected.nodes).toEqual([
+        { id: "T001", label: '"has [a] bracket"', status: "backlog" },
+        { id: "T002", label: '"has \\"quoted\\" word"', status: "backlog" },
+        { id: "T003", label: '"has :::done inside"', status: "backlog" },
+        { id: "T004", label: '"has --> arrow"', status: "backlog" },
+      ]);
+      // A '-->' inside a label must never be parsed as an edge.
+      expect(inspected.edges).toEqual([]);
+
+      for (const id of ["T001", "T002", "T003", "T004"]) {
+        const result = run("status", diagramPath, id, "done");
+        expect(result.status).toBe(0);
+      }
+
+      const updated = readFileSync(diagramPath, "utf-8");
+      expect(updated).toContain('T001["has [a] bracket"]:::done');
+      expect(updated).toContain('T002["has \\"quoted\\" word"]:::done');
+      expect(updated).toContain('T003["has :::done inside"]:::done');
+      expect(updated).toContain('T004["has --> arrow"]:::done');
+      // Still no spurious edges after the updates.
+      expect(JSON.parse(run("inspect", diagramPath).stdout).edges).toEqual([]);
+    });
+
+    it("regression: status update on a generated label containing [0] (real repro)", () => {
+      const generated = generateDiagramFromTasks("repro-plan", [
+        {
+          id: "a-task",
+          normalizedId: "a-task",
+          title: "First task",
+          status: "done",
+          priority: "medium",
+          scope: "src/",
+          acceptance: "A",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+        {
+          id: "b-capture",
+          normalizedId: "b-capture",
+          title: "Resolve --code capture relative to the working tree, not workspacePaths[0]",
+          status: "backlog",
+          priority: "medium",
+          scope: "src/",
+          acceptance: "B",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+        {
+          id: "c-after",
+          normalizedId: "c-after",
+          title: "A task declared after the bracketed label",
+          status: "backlog",
+          priority: "medium",
+          scope: "src/",
+          acceptance: "C",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+      ]);
+      writeFileSync(diagramPath, generated.mmd);
+
+      expect(generated.mmd).toContain(
+        'T002["Resolve --code capture relative to the working tree, not workspacePaths[0]"]:::backlog',
+      );
+
+      const result = run("status", diagramPath, "T002", "done");
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        updated: true,
+        nodeId: "T002",
+        status: "done",
+        ready: ["T003"],
+      });
+
+      const updated = readFileSync(diagramPath, "utf-8");
+      expect(updated).toContain(
+        'T002["Resolve --code capture relative to the working tree, not workspacePaths[0]"]:::done',
+      );
+      // The node declared after the bracketed label is not desynced.
+      expect(updated).toContain('T003["A task declared after the bracketed label"]:::backlog');
+    });
+
+    it("bare (legacy) labels still parse and update", () => {
+      writeFileSync(diagramPath, VALID_DIAGRAM);
+
+      const inspected = JSON.parse(run("inspect", diagramPath).stdout);
+      expect(inspected.nodes[0]).toEqual({ id: "T001", label: "Design schema", status: "done" });
+
+      const result = run("status", diagramPath, "T003", "done");
+      expect(result.status).toBe(0);
+      const updated = readFileSync(diagramPath, "utf-8");
+      expect(updated).toContain("T003[Write tests]:::done");
+    });
+  });
 });
