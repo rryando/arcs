@@ -1,0 +1,3074 @@
+{
+ "_provenance": {
+  "generatedBy": "static TypeScript-compiler-API parse of src/cli/commands/*.ts defineCommand({...}) with top-level param refs/spreads resolved",
+  "target": "/home/rryando/Work/arcs @ a9e7e1b working tree",
+  "donor": "/home/rryando/Work/agent/cc-arcs @ b9c9f63",
+  "comparedFields": [
+   "params",
+   "description",
+   "mutation",
+   "errorCodes",
+   "supportsDryRun"
+  ],
+  "caveat": "declaration-level only; all 95 union rows verified by the extractor, behavioral equivalence NOT verified; t-dry is a file-level flags.dryRun scan heuristic",
+  "companion": "docs/audits/cc-arcs/cli-compatibility-inventory.md",
+  "note": "supportsDryRun is donor-only metadata; 22 shared changed rows differ only by it"
+ },
+ "summary": {
+  "targetCommit": "a9e7e1b",
+  "forkCommit": "b9c9f63",
+  "targetRegisteredCommands": 81,
+  "forkRegisteredCommands": 83,
+  "unionCommands": 95,
+  "sharedTotal": 69,
+  "sharedSameDecl": 34,
+  "sharedChangedDecl": 35,
+  "sharedChangedParams": 13,
+  "sharedChangedSupportsDryRunOnly": 22,
+  "targetOnly": [
+   "proposal-doc create",
+   "proposal-doc edit",
+   "proposal-doc get",
+   "proposal-doc list",
+   "proposal-doc promote",
+   "report get",
+   "report list",
+   "web",
+   "worktree ensure",
+   "worktree list",
+   "worktree prune",
+   "worktree validate"
+  ],
+  "forkOnly": [
+   "doc breakdown",
+   "doc create",
+   "doc delete",
+   "doc get",
+   "doc list",
+   "doc outline",
+   "doc promote",
+   "doc template",
+   "doc update-body",
+   "doc update-meta",
+   "plan changes",
+   "task brief",
+   "task changes",
+   "task record-change"
+  ],
+  "method": "static: TypeScript compiler API parse of src/cli/commands/*.ts defineCommand({...}); params identifier refs + spreads resolved to top-level object literals. Signature compared over {params, description, mutation, errorCodes, supportsDryRun}."
+ },
+ "families": [
+  {
+   "family": "agents-md",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "audit",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "batch",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "brief",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "codegraph-sync",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "context",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "dependency",
+   "targetCount": 2,
+   "forkCount": 2,
+   "sharedSame": 0,
+   "sharedChanged": 2,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "dependency add",
+    "dependency remove"
+   ]
+  },
+  {
+   "family": "deploy-claudecode-superpowers",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "deploy-claudecode-superpowers"
+   ]
+  },
+  {
+   "family": "deploy-pi-superpowers",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "deploy-pi-superpowers"
+   ]
+  },
+  {
+   "family": "deploy-superpowers",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "deploy-superpowers"
+   ]
+  },
+  {
+   "family": "diagram",
+   "targetCount": 7,
+   "forkCount": 7,
+   "sharedSame": 7,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "diff",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "doc",
+   "targetCount": 1,
+   "forkCount": 11,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [
+    "breakdown",
+    "create",
+    "delete",
+    "get",
+    "list",
+    "outline",
+    "promote",
+    "template",
+    "update-body",
+    "update-meta"
+   ],
+   "changed": [
+    "doc update"
+   ]
+  },
+  {
+   "family": "done",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "done"
+   ]
+  },
+  {
+   "family": "git-log",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "graph",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "knowledge",
+   "targetCount": 9,
+   "forkCount": 9,
+   "sharedSame": 4,
+   "sharedChanged": 5,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "knowledge create",
+    "knowledge delete",
+    "knowledge update-body",
+    "knowledge update-meta",
+    "knowledge upsert"
+   ]
+  },
+  {
+   "family": "lint-bundle",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "loop",
+   "targetCount": 4,
+   "forkCount": 4,
+   "sharedSame": 1,
+   "sharedChanged": 3,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "loop cancel",
+    "loop start",
+    "loop tick"
+   ]
+  },
+  {
+   "family": "next",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "next"
+   ]
+  },
+  {
+   "family": "paths",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "paths update"
+   ]
+  },
+  {
+   "family": "plan",
+   "targetCount": 6,
+   "forkCount": 7,
+   "sharedSame": 1,
+   "sharedChanged": 5,
+   "targetOnly": [],
+   "forkOnly": [
+    "changes"
+   ],
+   "changed": [
+    "plan create",
+    "plan delete",
+    "plan get",
+    "plan update-body",
+    "plan update-meta"
+   ]
+  },
+  {
+   "family": "project",
+   "targetCount": 8,
+   "forkCount": 8,
+   "sharedSame": 3,
+   "sharedChanged": 5,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "project init",
+    "project update-doc",
+    "project update-paths",
+    "project update-status",
+    "project write-checkpoint"
+   ]
+  },
+  {
+   "family": "proposal",
+   "targetCount": 4,
+   "forkCount": 4,
+   "sharedSame": 3,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "proposal backfill"
+   ]
+  },
+  {
+   "family": "proposal-doc",
+   "targetCount": 5,
+   "forkCount": 0,
+   "sharedSame": 0,
+   "sharedChanged": 0,
+   "targetOnly": [
+    "create",
+    "edit",
+    "get",
+    "list",
+    "promote"
+   ],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "related",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "remember",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "remember"
+   ]
+  },
+  {
+   "family": "report",
+   "targetCount": 2,
+   "forkCount": 0,
+   "sharedSame": 0,
+   "sharedChanged": 0,
+   "targetOnly": [
+    "get",
+    "list"
+   ],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "search",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "search"
+   ]
+  },
+  {
+   "family": "status",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "sync-agents-md",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 0,
+   "sharedChanged": 1,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": [
+    "sync-agents-md"
+   ]
+  },
+  {
+   "family": "task",
+   "targetCount": 6,
+   "forkCount": 9,
+   "sharedSame": 2,
+   "sharedChanged": 4,
+   "targetOnly": [],
+   "forkOnly": [
+    "brief",
+    "changes",
+    "record-change"
+   ],
+   "changed": [
+    "task create",
+    "task delete",
+    "task transition",
+    "task update"
+   ]
+  },
+  {
+   "family": "validate",
+   "targetCount": 1,
+   "forkCount": 1,
+   "sharedSame": 1,
+   "sharedChanged": 0,
+   "targetOnly": [],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "web",
+   "targetCount": 1,
+   "forkCount": 0,
+   "sharedSame": 0,
+   "sharedChanged": 0,
+   "targetOnly": [
+    ""
+   ],
+   "forkOnly": [],
+   "changed": []
+  },
+  {
+   "family": "worktree",
+   "targetCount": 4,
+   "forkCount": 0,
+   "sharedSame": 0,
+   "sharedChanged": 0,
+   "targetOnly": [
+    "ensure",
+    "list",
+    "prune",
+    "validate"
+   ],
+   "forkOnly": [],
+   "changed": []
+  }
+ ],
+ "commands": [
+  {
+   "path": "agents-md",
+   "family": "agents-md",
+   "class": "shared-same-decl",
+   "targetFile": "utility.ts",
+   "forkFile": "utility.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Read project's AGENTS.md content",
+   "forkDescription": "Read project's AGENTS.md content"
+  },
+  {
+   "path": "audit",
+   "family": "audit",
+   "class": "shared-same-decl",
+   "targetFile": "diagnostics.ts",
+   "forkFile": "diagnostics.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Run a structural audit of a project (alias for validate --checks=sourcefiles)",
+   "forkDescription": "Run a structural audit of a project (alias for validate --checks=sourcefiles)"
+  },
+  {
+   "path": "batch",
+   "family": "batch",
+   "class": "shared-same-decl",
+   "targetFile": "batch.ts",
+   "forkFile": "batch.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "file",
+    "stdin",
+    "list-ops",
+    "fail-fast"
+   ],
+   "forkParams": [
+    "file",
+    "stdin",
+    "list-ops",
+    "fail-fast"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Run batch operations from a JSON file",
+   "forkDescription": "Run batch operations from a JSON file"
+  },
+  {
+   "path": "brief",
+   "family": "brief",
+   "class": "shared-same-decl",
+   "targetFile": "brief.ts",
+   "forkFile": "brief.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "pathOrSlug",
+    "audience",
+    "full"
+   ],
+   "forkParams": [
+    "pathOrSlug",
+    "audience",
+    "full"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Tight T0 routing brief for orchestrator (slug, focus, counts, top knowledge)",
+   "forkDescription": "Tight T0 routing brief for orchestrator (slug, focus, counts, top knowledge)"
+  },
+  {
+   "path": "codegraph-sync",
+   "family": "codegraph-sync",
+   "class": "shared-same-decl",
+   "targetFile": "maintenance.ts",
+   "forkFile": "maintenance.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Re-index codebase via codegraph and ingest new structural knowledge proposals",
+   "forkDescription": "Re-index codebase via codegraph and ingest new structural knowledge proposals"
+  },
+  {
+   "path": "context",
+   "family": "context",
+   "class": "shared-same-decl",
+   "targetFile": "utility.ts",
+   "forkFile": "utility.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "pathOrSlug",
+    "audience",
+    "full",
+    "no-graph"
+   ],
+   "forkParams": [
+    "pathOrSlug",
+    "audience",
+    "full",
+    "no-graph"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Resolve project context for a workspace path or slug",
+   "forkDescription": "Resolve project context for a workspace path or slug"
+  },
+  {
+   "path": "dependency add",
+   "family": "dependency",
+   "class": "shared-changed-decl",
+   "targetFile": "dependency.ts",
+   "forkFile": "dependency.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "target"
+   ],
+   "forkParams": [
+    "slug",
+    "target"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Add a dependency between two projects",
+   "forkDescription": "Add a dependency between two projects"
+  },
+  {
+   "path": "dependency remove",
+   "family": "dependency",
+   "class": "shared-changed-decl",
+   "targetFile": "dependency.ts",
+   "forkFile": "dependency.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "target"
+   ],
+   "forkParams": [
+    "slug",
+    "target"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Remove a dependency between two projects",
+   "forkDescription": "Remove a dependency between two projects"
+  },
+  {
+   "path": "deploy-claudecode-superpowers",
+   "family": "deploy-claudecode-superpowers",
+   "class": "shared-changed-decl",
+   "targetFile": "bundle.ts",
+   "forkFile": "bundle.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "bundle-root",
+    "config-root",
+    "project-root",
+    "scope"
+   ],
+   "forkParams": [
+    "bundle-root",
+    "config-root",
+    "project-root",
+    "scope"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Deploy claudecode-bundle to ~/.claude or .claude",
+   "forkDescription": "Deploy claudecode-bundle to ~/.claude or .claude"
+  },
+  {
+   "path": "deploy-pi-superpowers",
+   "family": "deploy-pi-superpowers",
+   "class": "shared-changed-decl",
+   "targetFile": "bundle.ts",
+   "forkFile": "bundle.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "bundle-root",
+    "config-root",
+    "project-root",
+    "scope"
+   ],
+   "forkParams": [
+    "bundle-root",
+    "config-root"
+   ],
+   "paramDelta": [
+    "-project-root",
+    "-scope"
+   ],
+   "fieldDelta": [
+    "description",
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+description+supportsDryRun",
+   "targetDescription": "Deploy ARCS sub-agents to pi subagent types (~/.pi/agent/agents or .pi/agents)",
+   "forkDescription": "Deploy CC-ARCS agents and skills to ~/.pi/agent"
+  },
+  {
+   "path": "deploy-superpowers",
+   "family": "deploy-superpowers",
+   "class": "shared-changed-decl",
+   "targetFile": "bundle.ts",
+   "forkFile": "bundle.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "bundle-root",
+    "config-root"
+   ],
+   "forkParams": [
+    "bundle-root",
+    "config-root"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Deploy opencode-bundle to ~/.config/opencode",
+   "forkDescription": "Deploy opencode-bundle to ~/.config/opencode"
+  },
+  {
+   "path": "diagram init",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId",
+    "force"
+   ],
+   "forkParams": [
+    "slug",
+    "planId",
+    "force"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Generate skeleton .diagram.mmd for a plan from its existing tasks",
+   "forkDescription": "Generate skeleton .diagram.mmd for a plan from its existing tasks"
+  },
+  {
+   "path": "diagram inspect",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId"
+   ],
+   "forkParams": [
+    "slug",
+    "planId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Show diagram structure and metadata",
+   "forkDescription": "Show diagram structure and metadata"
+  },
+  {
+   "path": "diagram ready",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId"
+   ],
+   "forkParams": [
+    "slug",
+    "planId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Classify diagram nodes into ready/blocked/inProgress/done buckets",
+   "forkDescription": "Classify diagram nodes into ready/blocked/inProgress/done buckets"
+  },
+  {
+   "path": "diagram show",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "path"
+   ],
+   "forkParams": [
+    "path"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Render diagram in terminal",
+   "forkDescription": "Render diagram in terminal"
+  },
+  {
+   "path": "diagram sort-metadata",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId"
+   ],
+   "forkParams": [
+    "slug",
+    "planId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Sort metadata blocks in diagram file",
+   "forkDescription": "Sort metadata blocks in diagram file"
+  },
+  {
+   "path": "diagram status",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId",
+    "nodeId",
+    "status"
+   ],
+   "forkParams": [
+    "slug",
+    "planId",
+    "nodeId",
+    "status"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Update a diagram node's status",
+   "forkDescription": "Update a diagram node's status"
+  },
+  {
+   "path": "diagram validate",
+   "family": "diagram",
+   "class": "shared-same-decl",
+   "targetFile": "diagram.ts",
+   "forkFile": "diagram.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId"
+   ],
+   "forkParams": [
+    "slug",
+    "planId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Validate diagram integrity",
+   "forkDescription": "Validate diagram integrity"
+  },
+  {
+   "path": "diff",
+   "family": "diff",
+   "class": "shared-same-decl",
+   "targetFile": "diagnostics.ts",
+   "forkFile": "diagnostics.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "since"
+   ],
+   "forkParams": [
+    "slug",
+    "since"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Show what changed in a project since a given timestamp",
+   "forkDescription": "Show what changed in a project since a given timestamp"
+  },
+  {
+   "path": "doc breakdown",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Preview the tasks a doc's Task Breakdown section would promote into"
+  },
+  {
+   "path": "doc create",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": true,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": true,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "title",
+    "kind",
+    "status",
+    "summary",
+    "keywords",
+    "body",
+    "body-file",
+    "body-stdin",
+    "from-template",
+    "source-files",
+    "supersedes",
+    "allow-thin"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Create a new design doc or tech doc"
+  },
+  {
+   "path": "doc delete",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": true,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": true,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId",
+    "cascade"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Delete a doc"
+  },
+  {
+   "path": "doc get",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId",
+    "body",
+    "section",
+    "revision"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Get a doc by ID, optionally one or more sections of it"
+  },
+  {
+   "path": "doc list",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "kind",
+    "status",
+    "keywords",
+    "fields"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "List design docs and tech docs for a project"
+  },
+  {
+   "path": "doc outline",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId",
+    "revision"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "List a doc's headings with slug, depth, size and file-ref count"
+  },
+  {
+   "path": "doc promote",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": true,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": true,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId",
+    "plan-title",
+    "plan-summary",
+    "tasks-file"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Promote an accepted doc into an execution plan plus its tasks"
+  },
+  {
+   "path": "doc template",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "kind"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Emit the fillable body skeleton for a doc kind"
+  },
+  {
+   "path": "doc update",
+   "family": "doc",
+   "class": "shared-changed-decl",
+   "targetFile": "dependency.ts",
+   "forkFile": "dependency.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "doc",
+    "body-file"
+   ],
+   "forkParams": [
+    "slug",
+    "doc",
+    "body-file"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update a project document (alias for project update-doc)",
+   "forkDescription": "Update a project document (alias for project update-doc)"
+  },
+  {
+   "path": "doc update-body",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": true,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": true,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId",
+    "body",
+    "body-file",
+    "body-stdin",
+    "allow-thin"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Update the body content of a doc"
+  },
+  {
+   "path": "doc update-meta",
+   "family": "doc",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "doc.ts",
+   "targetMutation": null,
+   "forkMutation": true,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": true,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "docId",
+    "title",
+    "kind",
+    "status",
+    "summary",
+    "keywords",
+    "source-files",
+    "supersedes"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Update doc metadata, including its lifecycle status"
+  },
+  {
+   "path": "done",
+   "family": "done",
+   "class": "shared-changed-decl",
+   "targetFile": "done.ts",
+   "forkFile": "done.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "taskId",
+    "planId",
+    "diagramNodeId",
+    "learn",
+    "no-report",
+    "since",
+    "commit"
+   ],
+   "forkParams": [
+    "slug",
+    "taskId",
+    "planId",
+    "diagramNodeId",
+    "learn",
+    "no-ledger"
+   ],
+   "paramDelta": [
+    "-no-report",
+    "-since",
+    "-commit",
+    "+no-ledger"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Mark a task as done and show the next task",
+   "forkDescription": "Mark a task as done and show the next task"
+  },
+  {
+   "path": "git-log",
+   "family": "git-log",
+   "class": "shared-same-decl",
+   "targetFile": "maintenance.ts",
+   "forkFile": "maintenance.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "since",
+    "limit"
+   ],
+   "forkParams": [
+    "slug",
+    "since",
+    "limit"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Show git commit history for a project workspace",
+   "forkDescription": "Show git commit history for a project workspace"
+  },
+  {
+   "path": "graph inspect",
+   "family": "graph",
+   "class": "shared-same-decl",
+   "targetFile": "graph.ts",
+   "forkFile": "graph.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Show knowledge graph index statistics for a project",
+   "forkDescription": "Show knowledge graph index statistics for a project"
+  },
+  {
+   "path": "knowledge create",
+   "family": "knowledge",
+   "class": "shared-changed-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "title",
+    "kind",
+    "summary",
+    "keywords",
+    "body",
+    "body-file",
+    "source-files",
+    "audience",
+    "code",
+    "allow-thin"
+   ],
+   "forkParams": [
+    "slug",
+    "title",
+    "kind",
+    "summary",
+    "keywords",
+    "body",
+    "body-file",
+    "body-stdin",
+    "source-files",
+    "audience",
+    "commits",
+    "allow-thin"
+   ],
+   "paramDelta": [
+    "-code",
+    "+body-stdin",
+    "+commits"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Create a new knowledge entry",
+   "forkDescription": "Create a new knowledge entry"
+  },
+  {
+   "path": "knowledge delete",
+   "family": "knowledge",
+   "class": "shared-changed-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "entryId"
+   ],
+   "forkParams": [
+    "slug",
+    "entryId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Delete a knowledge entry",
+   "forkDescription": "Delete a knowledge entry"
+  },
+  {
+   "path": "knowledge get",
+   "family": "knowledge",
+   "class": "shared-same-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "entryId",
+    "body"
+   ],
+   "forkParams": [
+    "slug",
+    "entryId",
+    "body"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Get a knowledge entry by ID",
+   "forkDescription": "Get a knowledge entry by ID"
+  },
+  {
+   "path": "knowledge list",
+   "family": "knowledge",
+   "class": "shared-same-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "kind",
+    "keywords",
+    "fields"
+   ],
+   "forkParams": [
+    "slug",
+    "kind",
+    "keywords",
+    "fields"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List knowledge entries for a project",
+   "forkDescription": "List knowledge entries for a project"
+  },
+  {
+   "path": "knowledge search",
+   "family": "knowledge",
+   "class": "shared-same-decl",
+   "targetFile": "knowledge-search.ts",
+   "forkFile": "knowledge-search.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "query",
+    "kind"
+   ],
+   "forkParams": [
+    "slug",
+    "query",
+    "kind"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Search knowledge entries using BM25 scoring",
+   "forkDescription": "Search knowledge entries using BM25 scoring"
+  },
+  {
+   "path": "knowledge template",
+   "family": "knowledge",
+   "class": "shared-same-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "kind"
+   ],
+   "forkParams": [
+    "kind"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Emit the fillable body skeleton for a knowledge kind",
+   "forkDescription": "Emit the fillable body skeleton for a knowledge kind"
+  },
+  {
+   "path": "knowledge update-body",
+   "family": "knowledge",
+   "class": "shared-changed-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "entryId",
+    "body",
+    "body-file",
+    "body-stdin",
+    "allow-thin"
+   ],
+   "forkParams": [
+    "slug",
+    "entryId",
+    "body",
+    "body-file",
+    "body-stdin",
+    "allow-thin"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update the body content of a knowledge entry",
+   "forkDescription": "Update the body content of a knowledge entry"
+  },
+  {
+   "path": "knowledge update-meta",
+   "family": "knowledge",
+   "class": "shared-changed-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "entryId",
+    "title",
+    "kind",
+    "summary",
+    "keywords",
+    "source-files",
+    "audience",
+    "code"
+   ],
+   "forkParams": [
+    "slug",
+    "entryId",
+    "title",
+    "kind",
+    "summary",
+    "keywords",
+    "source-files",
+    "audience",
+    "commits"
+   ],
+   "paramDelta": [
+    "-code",
+    "+commits"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Update metadata of a knowledge entry",
+   "forkDescription": "Update metadata of a knowledge entry"
+  },
+  {
+   "path": "knowledge upsert",
+   "family": "knowledge",
+   "class": "shared-changed-decl",
+   "targetFile": "knowledge.ts",
+   "forkFile": "knowledge.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "title",
+    "kind",
+    "summary",
+    "keywords",
+    "body",
+    "body-file",
+    "source-files",
+    "audience",
+    "code",
+    "allow-thin"
+   ],
+   "forkParams": [
+    "slug",
+    "title",
+    "kind",
+    "summary",
+    "keywords",
+    "body",
+    "body-file",
+    "body-stdin",
+    "source-files",
+    "audience",
+    "commits",
+    "allow-thin"
+   ],
+   "paramDelta": [
+    "-code",
+    "+body-stdin",
+    "+commits"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Create or update a knowledge entry by title (idempotent)",
+   "forkDescription": "Create or update a knowledge entry by title (idempotent)"
+  },
+  {
+   "path": "lint-bundle",
+   "family": "lint-bundle",
+   "class": "shared-same-decl",
+   "targetFile": "bundle.ts",
+   "forkFile": "bundle.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "bundle-root",
+    "config-root"
+   ],
+   "forkParams": [
+    "bundle-root",
+    "config-root"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Validate opencode-bundle manifest integrity",
+   "forkDescription": "Validate opencode-bundle manifest integrity"
+  },
+  {
+   "path": "loop cancel",
+   "family": "loop",
+   "class": "shared-changed-decl",
+   "targetFile": "loop.ts",
+   "forkFile": "loop.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "session"
+   ],
+   "forkParams": [
+    "slug",
+    "session"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Cancel an active loop for a project session",
+   "forkDescription": "Cancel an active loop for a project session"
+  },
+  {
+   "path": "loop start",
+   "family": "loop",
+   "class": "shared-changed-decl",
+   "targetFile": "loop.ts",
+   "forkFile": "loop.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "prompt",
+    "session",
+    "max-iterations",
+    "completion-promise",
+    "strategy"
+   ],
+   "forkParams": [
+    "slug",
+    "prompt",
+    "session",
+    "max-iterations",
+    "completion-promise",
+    "strategy"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Start an iterative loop for a project session",
+   "forkDescription": "Start an iterative loop for a project session"
+  },
+  {
+   "path": "loop status",
+   "family": "loop",
+   "class": "shared-same-decl",
+   "targetFile": "loop.ts",
+   "forkFile": "loop.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Show loop status for a project or find active loop globally",
+   "forkDescription": "Show loop status for a project or find active loop globally"
+  },
+  {
+   "path": "loop tick",
+   "family": "loop",
+   "class": "shared-changed-decl",
+   "targetFile": "loop.ts",
+   "forkFile": "loop.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "session"
+   ],
+   "forkParams": [
+    "slug",
+    "session"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Atomically increment loop iteration and return updated state",
+   "forkDescription": "Atomically increment loop iteration and return updated state"
+  },
+  {
+   "path": "next",
+   "family": "next",
+   "class": "shared-changed-decl",
+   "targetFile": "next.ts",
+   "forkFile": "next.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug",
+    "brief",
+    "full"
+   ],
+   "paramDelta": [
+    "+brief",
+    "+full"
+   ],
+   "fieldDelta": null,
+   "declChangeKind": "params",
+   "targetDescription": "Show the next task to work on with relevant context",
+   "forkDescription": "Show the next task to work on with relevant context"
+  },
+  {
+   "path": "paths update",
+   "family": "paths",
+   "class": "shared-changed-decl",
+   "targetFile": "dependency.ts",
+   "forkFile": "dependency.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "action",
+    "paths"
+   ],
+   "forkParams": [
+    "slug",
+    "action",
+    "paths"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update workspace paths for a project",
+   "forkDescription": "Update workspace paths for a project"
+  },
+  {
+   "path": "plan changes",
+   "family": "plan",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "changes.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "planId",
+    "patch",
+    "files",
+    "limit"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "List every change recorded under a plan's tasks"
+  },
+  {
+   "path": "plan create",
+   "family": "plan",
+   "class": "shared-changed-decl",
+   "targetFile": "plan.ts",
+   "forkFile": "plan.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "title",
+    "status",
+    "summary",
+    "keywords",
+    "body",
+    "body-file"
+   ],
+   "forkParams": [
+    "slug",
+    "title",
+    "status",
+    "summary",
+    "keywords",
+    "body",
+    "body-file",
+    "body-stdin"
+   ],
+   "paramDelta": [
+    "+body-stdin"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Create a new plan",
+   "forkDescription": "Create a new plan"
+  },
+  {
+   "path": "plan delete",
+   "family": "plan",
+   "class": "shared-changed-decl",
+   "targetFile": "plan.ts",
+   "forkFile": "plan.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "planId"
+   ],
+   "forkParams": [
+    "slug",
+    "planId",
+    "cascade"
+   ],
+   "paramDelta": [
+    "+cascade"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Delete a plan",
+   "forkDescription": "Delete a plan"
+  },
+  {
+   "path": "plan get",
+   "family": "plan",
+   "class": "shared-changed-decl",
+   "targetFile": "plan.ts",
+   "forkFile": "plan.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "planId",
+    "body",
+    "diff"
+   ],
+   "forkParams": [
+    "slug",
+    "planId",
+    "body"
+   ],
+   "paramDelta": [
+    "-diff"
+   ],
+   "fieldDelta": null,
+   "declChangeKind": "params",
+   "targetDescription": "Get plan details",
+   "forkDescription": "Get plan details"
+  },
+  {
+   "path": "plan list",
+   "family": "plan",
+   "class": "shared-same-decl",
+   "targetFile": "plan.ts",
+   "forkFile": "plan.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "status",
+    "keywords",
+    "fields"
+   ],
+   "forkParams": [
+    "slug",
+    "status",
+    "keywords",
+    "fields"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List plans for a project",
+   "forkDescription": "List plans for a project"
+  },
+  {
+   "path": "plan update-body",
+   "family": "plan",
+   "class": "shared-changed-decl",
+   "targetFile": "plan.ts",
+   "forkFile": "plan.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "planId",
+    "body",
+    "body-file",
+    "body-stdin"
+   ],
+   "forkParams": [
+    "slug",
+    "planId",
+    "body",
+    "body-file",
+    "body-stdin"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update plan body content",
+   "forkDescription": "Update plan body content"
+  },
+  {
+   "path": "plan update-meta",
+   "family": "plan",
+   "class": "shared-changed-decl",
+   "targetFile": "plan.ts",
+   "forkFile": "plan.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "planId",
+    "title",
+    "status",
+    "summary",
+    "keywords"
+   ],
+   "forkParams": [
+    "slug",
+    "planId",
+    "title",
+    "status",
+    "summary",
+    "keywords"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update plan metadata",
+   "forkDescription": "Update plan metadata"
+  },
+  {
+   "path": "project get",
+   "family": "project",
+   "class": "shared-same-decl",
+   "targetFile": "project.ts",
+   "forkFile": "project.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "doc"
+   ],
+   "forkParams": [
+    "slug",
+    "doc"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Get project metadata or a specific document",
+   "forkDescription": "Get project metadata or a specific document"
+  },
+  {
+   "path": "project init",
+   "family": "project",
+   "class": "shared-changed-decl",
+   "targetFile": "project.ts",
+   "forkFile": "project.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "name",
+    "description",
+    "path"
+   ],
+   "forkParams": [
+    "name",
+    "description",
+    "path"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Initialize a new project",
+   "forkDescription": "Initialize a new project"
+  },
+  {
+   "path": "project list",
+   "family": "project",
+   "class": "shared-same-decl",
+   "targetFile": "project.ts",
+   "forkFile": "project.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [],
+   "forkParams": [],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List all tracked projects",
+   "forkDescription": "List all tracked projects"
+  },
+  {
+   "path": "project update-doc",
+   "family": "project",
+   "class": "shared-changed-decl",
+   "targetFile": "project-updates.ts",
+   "forkFile": "project-updates.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "doc",
+    "body-file",
+    "body-stdin",
+    "content"
+   ],
+   "forkParams": [
+    "slug",
+    "doc",
+    "body-file",
+    "body-stdin",
+    "content"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update a project document",
+   "forkDescription": "Update a project document"
+  },
+  {
+   "path": "project update-paths",
+   "family": "project",
+   "class": "shared-changed-decl",
+   "targetFile": "project-updates.ts",
+   "forkFile": "project-updates.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "add",
+    "remove"
+   ],
+   "forkParams": [
+    "slug",
+    "add",
+    "remove"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Add or remove workspace paths for a project",
+   "forkDescription": "Add or remove workspace paths for a project"
+  },
+  {
+   "path": "project update-status",
+   "family": "project",
+   "class": "shared-changed-decl",
+   "targetFile": "project-updates.ts",
+   "forkFile": "project-updates.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "status"
+   ],
+   "forkParams": [
+    "slug",
+    "status"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Update a project's status",
+   "forkDescription": "Update a project's status"
+  },
+  {
+   "path": "project validate",
+   "family": "project",
+   "class": "shared-same-decl",
+   "targetFile": "project.ts",
+   "forkFile": "project.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Run structural health checks on a project",
+   "forkDescription": "Run structural health checks on a project"
+  },
+  {
+   "path": "project write-checkpoint",
+   "family": "project",
+   "class": "shared-changed-decl",
+   "targetFile": "project-updates.ts",
+   "forkFile": "project-updates.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "lastSyncedAt",
+    "lastSyncGitCommit",
+    "lastSyncStats"
+   ],
+   "forkParams": [
+    "slug",
+    "lastSyncedAt",
+    "lastSyncGitCommit",
+    "lastSyncStats"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Write sync checkpoint fields (lastSyncedAt, lastSyncGitCommit, lastSyncStats) to project meta.json",
+   "forkDescription": "Write sync checkpoint fields (lastSyncedAt, lastSyncGitCommit, lastSyncStats) to project meta.json"
+  },
+  {
+   "path": "proposal backfill",
+   "family": "proposal",
+   "class": "shared-changed-decl",
+   "targetFile": "proposal.ts",
+   "forkFile": "proposal.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "apply"
+   ],
+   "forkParams": [
+    "slug",
+    "apply"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Migrate legacy graphify-template knowledge entries back to proposals (dry-run by default; pass --apply to mutate)",
+   "forkDescription": "Migrate legacy graphify-template knowledge entries back to proposals (dry-run by default; pass --apply to mutate)"
+  },
+  {
+   "path": "proposal drop",
+   "family": "proposal",
+   "class": "shared-same-decl",
+   "targetFile": "proposal.ts",
+   "forkFile": "proposal.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "proposalId",
+    "reason"
+   ],
+   "forkParams": [
+    "slug",
+    "proposalId",
+    "reason"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Remove a codegraph proposal without promoting it",
+   "forkDescription": "Remove a codegraph proposal without promoting it"
+  },
+  {
+   "path": "proposal list",
+   "family": "proposal",
+   "class": "shared-same-decl",
+   "targetFile": "proposal.ts",
+   "forkFile": "proposal.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List pending codegraph proposals for a project",
+   "forkDescription": "List pending codegraph proposals for a project"
+  },
+  {
+   "path": "proposal promote",
+   "family": "proposal",
+   "class": "shared-same-decl",
+   "targetFile": "proposal.ts",
+   "forkFile": "proposal.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "proposalId",
+    "title",
+    "kind",
+    "summary",
+    "body",
+    "body-file",
+    "body-stdin",
+    "source-files",
+    "merge-with"
+   ],
+   "forkParams": [
+    "slug",
+    "proposalId",
+    "title",
+    "kind",
+    "summary",
+    "body",
+    "body-file",
+    "body-stdin",
+    "source-files",
+    "merge-with"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Promote a codegraph proposal into a knowledge entry (create or merge)",
+   "forkDescription": "Promote a codegraph proposal into a knowledge entry (create or merge)"
+  },
+  {
+   "path": "proposal-doc create",
+   "family": "proposal-doc",
+   "class": "target-only",
+   "targetFile": "proposal-doc.ts",
+   "forkFile": null,
+   "targetMutation": true,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "title",
+    "body",
+    "body-file",
+    "body-stdin"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Scaffold a new proposal document in the project data dir",
+   "forkDescription": null
+  },
+  {
+   "path": "proposal-doc edit",
+   "family": "proposal-doc",
+   "class": "target-only",
+   "targetFile": "proposal-doc.ts",
+   "forkFile": null,
+   "targetMutation": true,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "id",
+    "body",
+    "body-file",
+    "body-stdin"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Replace the body of a proposal document in the project data dir",
+   "forkDescription": null
+  },
+  {
+   "path": "proposal-doc get",
+   "family": "proposal-doc",
+   "class": "target-only",
+   "targetFile": "proposal-doc.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "id"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "View the body of a proposal document in the project data dir",
+   "forkDescription": null
+  },
+  {
+   "path": "proposal-doc list",
+   "family": "proposal-doc",
+   "class": "target-only",
+   "targetFile": "proposal-doc.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List pending proposal documents in the project data dir",
+   "forkDescription": null
+  },
+  {
+   "path": "proposal-doc promote",
+   "family": "proposal-doc",
+   "class": "target-only",
+   "targetFile": "proposal-doc.ts",
+   "forkFile": null,
+   "targetMutation": true,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "id"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Promote an approved proposal doc into an ARCS plan",
+   "forkDescription": null
+  },
+  {
+   "path": "related",
+   "family": "related",
+   "class": "shared-same-decl",
+   "targetFile": "graph.ts",
+   "forkFile": "graph.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "task",
+    "plan",
+    "knowledge",
+    "limit"
+   ],
+   "forkParams": [
+    "slug",
+    "task",
+    "plan",
+    "knowledge",
+    "limit"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Find entities related to a task, knowledge entry, or plan via the knowledge graph",
+   "forkDescription": "Find entities related to a task, knowledge entry, or plan via the knowledge graph"
+  },
+  {
+   "path": "remember",
+   "family": "remember",
+   "class": "shared-changed-decl",
+   "targetFile": "remember.ts",
+   "forkFile": "remember.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "text",
+    "code"
+   ],
+   "forkParams": [
+    "slug",
+    "text",
+    "task"
+   ],
+   "paramDelta": [
+    "-code",
+    "+task"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Capture a knowledge insight with zero ceremony",
+   "forkDescription": "Capture a knowledge insight with zero ceremony"
+  },
+  {
+   "path": "report get",
+   "family": "report",
+   "class": "target-only",
+   "targetFile": "report.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "taskId",
+    "planId",
+    "diff"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Show a stored completion receipt",
+   "forkDescription": null
+  },
+  {
+   "path": "report list",
+   "family": "report",
+   "class": "target-only",
+   "targetFile": "report.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List stored completion receipts for a project",
+   "forkDescription": null
+  },
+  {
+   "path": "search",
+   "family": "search",
+   "class": "shared-changed-decl",
+   "targetFile": "utility.ts",
+   "forkFile": "utility.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "query",
+    "kind",
+    "limit"
+   ],
+   "forkParams": [
+    "slug",
+    "query",
+    "kind",
+    "limit"
+   ],
+   "paramDelta": [
+    "~slug",
+    "~query"
+   ],
+   "fieldDelta": [
+    "description"
+   ],
+   "declChangeKind": "params+description",
+   "targetDescription": "BM25 search across all project entities",
+   "forkDescription": "BM25 search across a project's entities (slug optional inside a workspace)"
+  },
+  {
+   "path": "status",
+   "family": "status",
+   "class": "shared-same-decl",
+   "targetFile": "status.ts",
+   "forkFile": "status.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": [
+    "slug"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Quick progress overview for a project",
+   "forkDescription": "Quick progress overview for a project"
+  },
+  {
+   "path": "sync-agents-md",
+   "family": "sync-agents-md",
+   "class": "shared-changed-decl",
+   "targetFile": "maintenance.ts",
+   "forkFile": "maintenance.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "analysis-file"
+   ],
+   "forkParams": [
+    "slug",
+    "analysis-file"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Regenerate AGENTS.md from analysis data",
+   "forkDescription": "Regenerate AGENTS.md from analysis data"
+  },
+  {
+   "path": "task brief",
+   "family": "task",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "task.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "taskId",
+    "max-section-chars",
+    "full",
+    "audience"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Dispatch-ready brief for a task: cited doc sections, knowledge, predecessors' changes and a GOAL/SCOPE/CONTEXT/VERIFY/STOP block"
+  },
+  {
+   "path": "task changes",
+   "family": "task",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "changes.ts",
+   "targetMutation": null,
+   "forkMutation": false,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": false,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "taskId",
+    "patch",
+    "files",
+    "limit"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "List what a task changed: recorded commits, pending worktree state and PR links"
+  },
+  {
+   "path": "task create",
+   "family": "task",
+   "class": "shared-changed-decl",
+   "targetFile": "task.ts",
+   "forkFile": "task.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "title",
+    "planId",
+    "dependsOn",
+    "priority",
+    "status",
+    "source-files",
+    "scope",
+    "acceptance",
+    "verify",
+    "skill",
+    "workMode"
+   ],
+   "forkParams": [
+    "slug",
+    "title",
+    "planId",
+    "dependsOn",
+    "priority",
+    "status",
+    "source-files",
+    "scope",
+    "acceptance",
+    "verify",
+    "skill"
+   ],
+   "paramDelta": [
+    "-workMode"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Create a new task",
+   "forkDescription": "Create a new task"
+  },
+  {
+   "path": "task delete",
+   "family": "task",
+   "class": "shared-changed-decl",
+   "targetFile": "task.ts",
+   "forkFile": "task.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "taskId"
+   ],
+   "forkParams": [
+    "slug",
+    "taskId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Delete a task",
+   "forkDescription": "Delete a task"
+  },
+  {
+   "path": "task get",
+   "family": "task",
+   "class": "shared-same-decl",
+   "targetFile": "task.ts",
+   "forkFile": "task.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "taskId"
+   ],
+   "forkParams": [
+    "slug",
+    "taskId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Get task details",
+   "forkDescription": "Get task details"
+  },
+  {
+   "path": "task list",
+   "family": "task",
+   "class": "shared-same-decl",
+   "targetFile": "task.ts",
+   "forkFile": "task.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "status",
+    "priority",
+    "planId",
+    "fields"
+   ],
+   "forkParams": [
+    "slug",
+    "status",
+    "priority",
+    "planId",
+    "fields"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List tasks for a project",
+   "forkDescription": "List tasks for a project"
+  },
+  {
+   "path": "task record-change",
+   "family": "task",
+   "class": "fork-only",
+   "targetFile": null,
+   "forkFile": "changes.ts",
+   "targetMutation": null,
+   "forkMutation": true,
+   "targetDryRunHonored": null,
+   "forkSupportsDryRun": true,
+   "targetParams": null,
+   "forkParams": [
+    "slug",
+    "taskId",
+    "commits",
+    "range",
+    "pr",
+    "remove"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": null,
+   "forkDescription": "Record commits, a git range or a PR link in a task's change ledger, or retract a sha"
+  },
+  {
+   "path": "task transition",
+   "family": "task",
+   "class": "shared-changed-decl",
+   "targetFile": "task.ts",
+   "forkFile": "task.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "taskId",
+    "status",
+    "planId",
+    "diagramNodeId"
+   ],
+   "forkParams": [
+    "slug",
+    "taskId",
+    "status",
+    "planId",
+    "diagramNodeId"
+   ],
+   "paramDelta": null,
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "supportsDryRun",
+   "targetDescription": "Transition task status",
+   "forkDescription": "Transition task status"
+  },
+  {
+   "path": "task update",
+   "family": "task",
+   "class": "shared-changed-decl",
+   "targetFile": "task.ts",
+   "forkFile": "task.ts",
+   "targetMutation": true,
+   "forkMutation": true,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": true,
+   "targetParams": [
+    "slug",
+    "taskId",
+    "title",
+    "priority",
+    "planId",
+    "dependsOn",
+    "source-files",
+    "scope",
+    "acceptance",
+    "verify",
+    "skill",
+    "workMode"
+   ],
+   "forkParams": [
+    "slug",
+    "taskId",
+    "title",
+    "priority",
+    "planId",
+    "dependsOn",
+    "source-files",
+    "scope",
+    "acceptance",
+    "verify",
+    "skill"
+   ],
+   "paramDelta": [
+    "-workMode"
+   ],
+   "fieldDelta": [
+    "supportsDryRun"
+   ],
+   "declChangeKind": "params+supportsDryRun",
+   "targetDescription": "Update task metadata",
+   "forkDescription": "Update task metadata"
+  },
+  {
+   "path": "validate",
+   "family": "validate",
+   "class": "shared-same-decl",
+   "targetFile": "utility.ts",
+   "forkFile": "utility.ts",
+   "targetMutation": false,
+   "forkMutation": false,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": false,
+   "targetParams": [
+    "slug",
+    "checks"
+   ],
+   "forkParams": [
+    "slug",
+    "checks"
+   ],
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Run health checks on a project's DAG state",
+   "forkDescription": "Run health checks on a project's DAG state"
+  },
+  {
+   "path": "web",
+   "family": "web",
+   "class": "target-only",
+   "targetFile": "web.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": false,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "port",
+    "host",
+    "no-open"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Start the ARCS web UI (knowledge base visualizer and manager)",
+   "forkDescription": null
+  },
+  {
+   "path": "worktree ensure",
+   "family": "worktree",
+   "class": "target-only",
+   "targetFile": "worktree.ts",
+   "forkFile": null,
+   "targetMutation": true,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "planId",
+    "base",
+    "root"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Idempotently create and register a dedicated worktree for a plan",
+   "forkDescription": null
+  },
+  {
+   "path": "worktree list",
+   "family": "worktree",
+   "class": "target-only",
+   "targetFile": "worktree.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "List registered and on-disk plan worktrees with drift markers",
+   "forkDescription": null
+  },
+  {
+   "path": "worktree prune",
+   "family": "worktree",
+   "class": "target-only",
+   "targetFile": "worktree.ts",
+   "forkFile": null,
+   "targetMutation": true,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug",
+    "planId",
+    "force"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Remove plan worktrees (branches are never deleted)",
+   "forkDescription": null
+  },
+  {
+   "path": "worktree validate",
+   "family": "worktree",
+   "class": "target-only",
+   "targetFile": "worktree.ts",
+   "forkFile": null,
+   "targetMutation": false,
+   "forkMutation": null,
+   "targetDryRunHonored": true,
+   "forkSupportsDryRun": null,
+   "targetParams": [
+    "slug"
+   ],
+   "forkParams": null,
+   "paramDelta": null,
+   "fieldDelta": null,
+   "declChangeKind": null,
+   "targetDescription": "Cross-check worktree registry, plan statuses, and git worktree state",
+   "forkDescription": null
+  }
+ ]
+}

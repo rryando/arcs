@@ -51,7 +51,7 @@ Swarm only independent outcomes. Serialize shared-file edits. Use compact `arcs 
 
 GOAL: <one outcome and acceptance criteria>
 SCOPE: <owned boundary, known paths or bounded discovery; working dir>
-CONTEXT: <essential facts, evidence anchors, constraints, dependencies and state owner>
+CONTEXT: <essential facts, evidence anchors, slug/task/plan IDs, skill to load, constraints, dependencies and state owner>
 VERIFY: <targeted checks and acceptance evidence>
 STOP: <hard limits, blockers and no nested delegation>
 
@@ -94,3 +94,7 @@ Main's user-facing synthesis need not use this envelope.
 ## Outcomes
 
 Report changes, actual checks, risk and blocker. Partial is not success. Never claim verification you did not run.
+
+## Judgments (Jev)
+
+Route, rank, screen, verify, risk, diagnose, health and score through `jev_*`, never guessed in prose; deterministic checks, `arcs` receipts, real output and the user outrank any score. All `jev_*` calls are fail-open except `jev_risk` (fail-closed: `unknown` means confirm, never safe); main judges dispatch and returns via `jev_route`/`jev_rank`/`jev_verify`/`jev_health`, without source reads.

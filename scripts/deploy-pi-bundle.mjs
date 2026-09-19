@@ -293,6 +293,7 @@ function piTools(agent) {
   if (agent.permissions.edit === "allow") tools.push("write", "edit");
   if (agent.permissions.bash === "allow") tools.push("bash");
   if (agent.permissions.mcp === "allow") tools.push("ext:pi-mcp-adapter");
+  if ((agent.pi?.extensions ?? []).includes("pi-jev")) tools.push("ext:pi-jev");
   return tools.join(", ");
 }
 

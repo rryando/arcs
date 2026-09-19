@@ -42,4 +42,8 @@ An optional reviewer may check a risky or complex plan using `plan-document-revi
 - Do not perform Git actions unless requested.
 - Keep verification scoped to each task; broad verification belongs to the final integration task when needed.
 
+## Probabilistic Checks (Jev)
+
+Use `jev_judge` to check acceptance-criteria coverage before persisting a plan, and `jev_risk` to rank risky steps. Scores are inputs; cited evidence and CLI validation remain authoritative.
+
 Role boundary: designated `arcs-docs` owns authorized docs/knowledge persistence; task/diagram transitions have one explicitly designated owner (main by default). Do not duplicate writes or delegate from a specialist. Main obtains source-dependent facts from workers, not source reads. Knowledge candidates need persisted ID, already covered ID or deferred reason, not automatic creation.

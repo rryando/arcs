@@ -542,4 +542,71 @@ describe("bundle linter", () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("rejects pi extensions that are neither shipped nor declared external", () => {
+    const tempRoot = mkdtempSync(resolve(tmpdir(), "bundle-lint-extensions-"));
+    const bundleRoot = resolve(tempRoot, "bundle");
+
+    try {
+      writeFile(
+        bundleRoot,
+        "bundle-runtime.json",
+        JSON.stringify({
+          agents: [],
+          skills: {},
+          plugin: [],
+          preservedFiles: ["manifest.json", "bundle-runtime.json"],
+        }),
+      );
+      writeFile(bundleRoot, "prompts/software-engineer.txt", "prompt body");
+
+      // Declared external extensions are accepted.
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({
+          externalExtensions: ["pi-mcp-adapter", "pi-jev"],
+          agents: [
+            registryAgent({
+              kind: "primary",
+              pi: { extensions: ["pi-mcp-adapter", "pi-jev"], skills: [] },
+            }),
+          ],
+          config: { requiredMerges: [] },
+        }),
+      );
+      const declared = runLint(bundleRoot);
+      const declaredResult = JSON.parse(declared.stdout) as LintResult;
+      expect(declaredResult.issues).toEqual([]);
+      expect(declared.status).toBe(0);
+
+      // An undeclared, unshipped extension fails with both remedies named.
+      writeFile(
+        bundleRoot,
+        "manifest.json",
+        JSON.stringify({
+          externalExtensions: ["pi-mcp-adapter"],
+          agents: [
+            registryAgent({
+              kind: "primary",
+              pi: { extensions: ["pi-mcp-adapter", "mystery-ext"], skills: [] },
+            }),
+          ],
+          config: { requiredMerges: [] },
+        }),
+      );
+      const rejected = runLint(bundleRoot);
+      const rejectedResult = JSON.parse(rejected.stdout) as LintResult;
+      expect(rejectedResult.issues).toContainEqual(
+        expect.objectContaining({
+          severity: "error",
+          kind: "undeclared-extension",
+          message: expect.stringContaining("mystery-ext"),
+        }),
+      );
+      expect(rejected.status).toBe(1);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

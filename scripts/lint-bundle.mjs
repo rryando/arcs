@@ -335,6 +335,38 @@ if (existsSync(dashboardPkgPath)) {
 // ~/.config/opencode/ has been deleted; use `arcs deploy-superpowers --dry-run`
 // if you want to preview what would change in the deployment target.
 
+// --- Check 7: agent.pi.extensions must be declared external or shipped ---
+// Pi agents name the extensions they need at runtime. This repo ships only its
+// own extensions (web/extensions/*.ts); anything else is an external dependency
+// the host must have installed, so the package has to declare it. An agent
+// referencing an extension that is neither shipped nor declared breaks every
+// dispatch silently (the `ext:*` tool resolves to nothing), so lint fails it.
+const externalExtensions = new Set(
+  Array.isArray(sourceManifest.externalExtensions) ? sourceManifest.externalExtensions : [],
+);
+const shippedExtensionDir = resolve(repoRoot, "web/extensions");
+const shippedExtensions = new Set(
+  existsSync(shippedExtensionDir)
+    ? readdirSync(shippedExtensionDir)
+        .filter((name) => name.endsWith(".ts") || name.endsWith(".js"))
+        .map((name) => name.replace(/\.(ts|js)$/, ""))
+    : [],
+);
+
+for (const agent of registryAgents) {
+  if (!isAgentRegistryRecord(agent) || !Array.isArray(agent.pi?.extensions)) continue;
+  for (const extension of agent.pi.extensions) {
+    if (externalExtensions.has(extension) || shippedExtensions.has(extension)) continue;
+    addIssue(
+      "error",
+      "undeclared-extension",
+      `Agent ${agent.id} references pi extension "${extension}" that is neither shipped by the bundle nor declared in manifest.externalExtensions`,
+      "manifest.json",
+      `Add "${extension}" to manifest.json externalExtensions, or ship it as web/extensions/${extension}.ts`,
+    );
+  }
+}
+
 function output() {
   const errors = issues.filter((i) => i.severity === "error").length;
   const warnings = issues.filter((i) => i.severity === "warning").length;

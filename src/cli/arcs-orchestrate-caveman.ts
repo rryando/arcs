@@ -1,4 +1,5 @@
-import { ORCHESTRATE_PROMPT_TEXT } from "./arcs-orchestrate.js";
+import { ORCHESTRATE_PROMPT_BODY } from "./arcs-orchestrate.js";
+import { JEV_JUDGMENT_BLOCK_TERSE } from "./orchestrator-shared-blocks.js";
 
 /** Narration overlay only; the canonical prompt remains workflow authority. */
 export const CAVEMAN_PREAMBLE = `# Caveman Narration Overlay
@@ -9,4 +10,6 @@ This is a narration-only overlay with no workflow or mutation authority. Keep ch
 
 `;
 
-export const ORCHESTRATE_CAVEMAN_PROMPT_TEXT = CAVEMAN_PREAMBLE + ORCHESTRATE_PROMPT_TEXT;
+export const ORCHESTRATE_CAVEMAN_PROMPT_TEXT = `${CAVEMAN_PREAMBLE}${ORCHESTRATE_PROMPT_BODY}
+
+${JEV_JUDGMENT_BLOCK_TERSE}`;

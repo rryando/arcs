@@ -2,12 +2,16 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FLASH_PROMPT_TEXT } from "../src/cli/arcs-flash.js";
-import { ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
+import { ORCHESTRATE_PROMPT_BODY, ORCHESTRATE_PROMPT_TEXT } from "../src/cli/arcs-orchestrate.js";
 import {
   CAVEMAN_PREAMBLE,
   ORCHESTRATE_CAVEMAN_PROMPT_TEXT,
 } from "../src/cli/arcs-orchestrate-caveman.js";
 import { writeOpencodeAgent } from "../src/cli/instructions.js";
+import {
+  JEV_JUDGMENT_BLOCK,
+  JEV_JUDGMENT_BLOCK_TERSE,
+} from "../src/cli/orchestrator-shared-blocks.js";
 import { withTempHomeDir } from "./helpers/temp-home-dir.js";
 
 describe("writeOpencodeAgent — agent key order", () => {
@@ -191,8 +195,9 @@ describe("Caveman narration overlay behavior", () => {
   });
 
   it("composes the canonical control flow without replacing or rewriting it", () => {
-    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toBe(CAVEMAN_PREAMBLE + ORCHESTRATE_PROMPT_TEXT);
-    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.endsWith(ORCHESTRATE_PROMPT_TEXT)).toBe(true);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toContain(ORCHESTRATE_PROMPT_BODY);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.endsWith(JEV_JUDGMENT_BLOCK_TERSE)).toBe(true);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).not.toContain(JEV_JUDGMENT_BLOCK);
   });
 
   it("preserves current safety requirements exactly", () => {
