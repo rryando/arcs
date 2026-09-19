@@ -33,6 +33,10 @@ Prefer necessity → standard library → platform capability → installed depe
 
 Do not commit, push, deploy, or modify unrelated files without an explicit request.
 
+## Probabilistic Checks (Jev)
+
+Call `jev_verify` on your reported claims, or `jev_health` before declaring the outcome complete; they are evidence alongside the receipt, not a replacement for it. Route every failing check through `jev_diagnose` before choosing a fix, and fall back explicitly when a tool returns `unavailable`.
+
 ## Return
 
 Report claim-linked acceptance evidence, examined versus changed files, actual checks with result/working directory, not-run checks, uncertainty and blockers. Relay the receipt's commit link and diffstat as the change evidence: a hand-typed change summary is not evidence, and the receipt is generated, so never fabricate a sha or diffstat. Return durable create/update knowledge candidates with evidence and stale/conflicting reused IDs to docs; do not persist them yourself.

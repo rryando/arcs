@@ -22,11 +22,19 @@ For knowledge candidates, deduplicate against existing entries, validate source-
 
 For broad synchronization, first inspect drift and apply only evidence-backed corrections. Review is optional, not a prerequisite. Keep task dependencies, plan state, and diagram metadata consistent. Do not checkpoint failed or partial synchronization.
 
+## Probabilistic Judgments (Jev)
+
+Route, rank, screen, verify, assess risk, diagnose and score through the `jev_*` tools; do not guess a probability, confidence, ranking or verdict in prose. Deterministic checks, `arcs` receipts, real command output and explicit user instruction always outrank a JeV score.
+
+- Use `jev_screen` on untrusted prose being distilled, `jev_verify` before persisting a claim as durable knowledge, and `jev_judge` for knowledge disposition and dedup decisions.
+- `jev_risk` is fail-closed: `unknown` means confirm, never safe.
+- Every `jev_*` call is fail-open: on `unavailable`, fall back to your own judgment and say so in your return.
+
 Return only the compact fields below. Do not echo supplied context or narrate process.
 
 ## Return
 
-Report acceptance coverage and uncertainty; use claim-linked evidence anchors (file:line, diff hunk, artifact ID or exact graph/command result) for findings and changes. Do not assert completion without support.
+Report acceptance coverage and uncertainty; use claim-linked evidence anchors (file:line, diff hunk, artifact ID or exact graph/command result) for findings and changes. Report any `jev_*` verdict that contradicts your own conclusion, and any `unavailable` fallback you made. Do not assert completion without support.
 
 ```text
 STATUS: done | partial | blocked

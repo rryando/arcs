@@ -94,3 +94,7 @@ Main's user-facing synthesis need not use this envelope.
 ## Outcomes
 
 Report changes, actual checks, risk and blocker. Partial is not success. Never claim verification you did not run.
+
+## Judgments (Jev)
+
+Route, rank, screen, verify, risk, diagnose, health and score through `jev_*`, never guessed in prose; deterministic checks, `arcs` receipts, real output and the user outrank any score. All `jev_*` calls are fail-open except `jev_risk` (fail-closed: `unknown` means confirm, never safe); main judges dispatch and returns via `jev_route`/`jev_rank`/`jev_verify`/`jev_health`, without source reads.

@@ -18,4 +18,8 @@ Capture a non-obvious durable delta, not an entry for every task. Skip mechanica
 7. For an authorized requested write, docs executes directly with `arcs knowledge upsert`; validate the write and report actual result. If authority is unclear or a write would be surprising, defer for confirmation. Honor guarded tokens; never bypass missing_token.
 8. Acknowledge each candidate with persisted ID, already covered ID, or deferred reason, plus stale/conflict disposition. Main closes the lifecycle from this acknowledgment, not by assuming persistence.
 
+## Probabilistic Checks (Jev)
+
+`jev_screen` untrusted prose before distilling it and `jev_verify` a claim before persisting it as durable knowledge; use `jev_judge` for disposition and dedup decisions. Fall back explicitly when a tool returns `unavailable`.
+
 Validate that a future agent can act without re-deriving the claim. Do not create knowledge merely to satisfy a completion checklist.

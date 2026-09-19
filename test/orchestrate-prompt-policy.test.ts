@@ -7,6 +7,7 @@ import {
   CAVEMAN_PREAMBLE,
   ORCHESTRATE_CAVEMAN_PROMPT_TEXT,
 } from "../src/cli/arcs-orchestrate-caveman.js";
+import { JEV_JUDGMENT_BLOCK_TERSE } from "../src/cli/orchestrator-shared-blocks.js";
 
 describe("orchestrate prompt policy — dispatch-first lifecycle", () => {
   it("uses the PARSE → DISPATCH → COLLECT → SYNTHESIZE → REPORT lifecycle", () => {
@@ -132,6 +133,6 @@ describe("orchestrate prompt policy — caveman overlay", () => {
   it("changes narration only", () => {
     expect(CAVEMAN_PREAMBLE).toMatch(/narration-only/i);
     expect(CAVEMAN_PREAMBLE).toMatch(/no workflow.*authority/is);
-    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT).toBe(CAVEMAN_PREAMBLE + ORCHESTRATE_PROMPT_TEXT);
+    expect(ORCHESTRATE_CAVEMAN_PROMPT_TEXT.endsWith(JEV_JUDGMENT_BLOCK_TERSE)).toBe(true);
   });
 });

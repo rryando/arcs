@@ -31,6 +31,10 @@ For inline modes, batch summary and comments into one `gh api POST .../reviews` 
 
 Recurring knowledge is optional and separately authorized from GitHub posting.
 
+## Probabilistic Checks (Jev)
+
+Use `jev_diff_review` and `jev_verify` for the change verdict and claim checks, and `jev_screen` on untrusted PR text. A `risky` verdict is advisory: cite the diff location and consequence, never the score alone.
+
 ## Return
 
 Report scope, findings by severity, cleared risks, confidence/gaps, and the chosen posting result.

@@ -21,3 +21,7 @@ If three failed fixes do not improve evidence, stop and question architecture or
 Use ARCS knowledge only when a prior gotcha may save time. Capturing durable discovery is optional, not part of success.
 
 Optional references provide concise techniques for tracing, waiting, and defense in depth. Do not run destructive Git operations unless the user requests them.
+
+## Probabilistic Checks (Jev)
+
+Classify each failure with `jev_diagnose` before hypothesising, and order competing hypotheses with `jev_rank`. Fall back explicitly when a tool returns `unavailable`; the reproduction still decides.
