@@ -118,6 +118,57 @@ require shared ancestry. The accurate statement is **zero shared reachable commi
 plus content-identical blobs (blob SHAs are content-addressed). Selective reimplementation
 is recommended for semantic/rebranding reasons, **not** Git impossibility.
 
+### 5.1 Follow-up deep-dive pass (tech-doc → plan, and the diff tools) — second wave
+
+A user-requested second wave re-examined the donor **tech-doc/design-doc → plan lifecycle**
+and the **diff/change-ledger tools**, because the first pass had treated the doc subsystem as
+one undifferentiated P3 blob. Two scoped source-cited deep dives were run
+(`/tmp/arcs-cc-audit-handoff-nhxm7r0n/doc-plan-lifecycle.md`, `…/diff-tools.md`); the
+findings were then re-verified against source and written to
+[deep-dive-doc-to-plan-and-diff-tools.md](./deep-dive-doc-to-plan-and-diff-tools.md), with
+patches to [porting-roadmap.md](./porting-roadmap.md) (PORT-08/09),
+[technical-report.md](./technical-report.md) (T16, D7, D8, §3.4) and [README.md](./README.md).
+
+**Re-verified directly by main (donor `b9c9f63` / target working tree), not taken on trust:**
+
+| Claim | Anchor |
+|---|---|
+| Status transition table (only `accepted` promotable) | donor `src/utils/storage-utils.ts:100-109` |
+| Kinds `tech-doc \| design-doc` | donor `src/utils/storage-utils.ts:69-71` |
+| `TASK_BREAKDOWN_HEADING` + `parseTaskBreakdown` | donor `src/utils/doc-templates.ts:69,526` |
+| `ChangeKind = commit \| pending \| pr \| tombstone` | donor `src/workflow/change-ledger.ts:33` |
+| `reachable` computed on **read** (never stored) | donor `src/workflow/change-ledger.ts:146` |
+| `patchId` recorded but **never used for matching** | donor `src/workflow/change-ledger.ts:240`; `src/utils/git.ts:221` |
+| Pinned revision store `workflow/tdd/<docId>/<hash>.md` | donor `src/workflow/artifact-service.ts:38-43` |
+| Deterministic plan id `tdd-<docId>-<shortHash>` | donor `src/workflow/artifact-service.ts:82-83` |
+| `renderPromotedPlanBody` (Source pointer + Tasks table) | donor `src/workflow/promoted-plan-body.ts:47-76` |
+| doc-health kinds `shallow_doc`/`incomplete_doc`/`unpromoted_doc`/`dangling_doc_plan` | donor `src/cli/commands/utility.ts:510,523,536,555` |
+| Refusal factories (`docNotPromotable`, `docTaskBreakdownEmpty`, `docRefUnresolved`, `invalidDocTransition`, `invalidFileRef`, `tddRevisionNotFound`) | donor `src/utils/errors.ts:84,101,114,126,204,216` |
+| **`doc update` alias collision** with the proposed donor `doc` group | target `src/cli/commands/dependency.ts:190` |
+| `workflow/doc-turn/**` = 3 664 LOC / 12 files (excludable) | donor `wc -l src/workflow/doc-turn/*.ts` |
+
+**Corrections the second wave produced (now reflected in the docs):**
+
+1. **PORT-08's acceptance line was wrong** — "dirty read-only change shows the receipt
+   snapshot" does not exist in the donor (`pending` stores diffstat + untracked *names*;
+   `task changes` never joins a receipt). It is **new work, not a port**.
+2. The donor doc subsystem is **not** one "L blob": the mandatory promote core is a bounded
+   **≈2 700 LOC** slice; `doc-turn/**` (3 664 LOC) and the 168-file console are cleanly excluded.
+3. The ledger was **under-described** (also stores patchId/subject/author/authoredAt/pr/
+   untracked, and computes `reachable` on read).
+4. New findings **T16** (doc-group/`doc update` alias collision), **D7** (ledger
+   read-outside-lock duplicate window), **D8** (untracked directory under-report / null-on-dirty).
+5. `patchId` is **advisory only**; "dangling SHAs handled gracefully" means *reported*, not
+   *resolved*. D4 (donor promote claim race) was re-checked and **stands as written**.
+
+**Acceptance re-check (this wave):** links + anchors across all six `docs/audits/cc-arcs/*.md`
+resolve; `cli-compatibility-matrix.json` parses (95 rows, union 95); `git diff --check` clean;
+`arcs proposal-doc get arcs <id>` → `status:"pending"`, body length 10 196, containing the
+deep-dive reference, the minimal slice and the alias-collision gate. **No source/build/test
+was run in this wave** (documentation-only); the audit baseline is target `a9e7e1b`, while the
+repo was later committed as `271296b` on `feat/jev-judgment-policy`, so the current tree must
+be re-measured before any landing.
+
 ## 6. Git / ancestry observations
 
 - `git rev-list --max-parents=0 HEAD` target → `ca04f0f4…`; donor → `d9b8427c…`.
@@ -152,5 +203,8 @@ These are **not** stable citations; the durable results are the sections above.
 - Donor test/typecheck/lint/build; donor runtime command discovery.
 - Target `build`/`build:web`/prepack; CI/release workflows; Node-20 floor on either repo.
 - Fork doc-turn runner allowlists (reviewer #9) and any live HTTP probe.
+- Second-wave follow-up: no target/donor tests, typecheck, lint or builds were run; the
+  deep-dive pass is documentation-only. Donor console/web projections of the ledger were not
+  read; `src/workflow/doc-turn/*.ts` bodies were not read.
 - No source file was modified; no DAG/knowledge/task/plan/diagram/deploy/Git mutation
   was performed by the documentation owner.

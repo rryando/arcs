@@ -34,7 +34,37 @@ boundary explicitly, and marks partial vs. exhaustive coverage.
 | [cli-compatibility-inventory.md](./cli-compatibility-inventory.md) | Complete 95-row union of target vs donor CLI commands, params deltas, parser/router aliases, batch op namespace |
 | [cli-compatibility-matrix.json](./cli-compatibility-matrix.json) | Machine-readable matrix backing the inventory (same 95 rows + summaries) |
 | [porting-roadmap.md](./porting-roadmap.md) | Phased DRAFT outcome tasks (P0–P4 + deferred/rejected), exact dependency edges, likely paths, scoped verification, rollback, S/M/L estimates (estimates), decision gates |
+| [deep-dive-doc-to-plan-and-diff-tools.md](./deep-dive-doc-to-plan-and-diff-tools.md) | Two-part source-cited deep dive: (A) donor tech-doc/design-doc → plan prompt + lifecycle (status table, pinned revisions, breakdown parser, refusals, ownership split, minimal promote slice) and (B) the diff/change-ledger tools (inventory, stored-vs-re-rendered, port graph, receipt/code-snippet overlap, risks, minimal subset). Corrects earlier P3/PORT-08/PORT-09 material |
 | [verification.md](./verification.md) | Exact observed evidence ledger: commands, exit codes, log contents, timestamps, snapshots |
+
+**Audit baseline vs. current tree.** The audit recorded the target at
+`a9e7e1bddb405aad1d2e9d70420b525f76b3cec1` (a live, 23-dirty-file worktree). The repository
+was later **committed** as `271296bc96c7c608f0e5c2d7be2a83e2fa7fa4f8` on branch
+`feat/jev-judgment-policy` with a clean worktree. The current tree therefore **differs** from
+the audit baseline and **must be re-measured** (gates, dirty state, `file:line` anchors)
+before any roadmap item lands.
+
+### Deep-dive corrections (follow-up)
+
+A later two-part source-cited deep dive
+([deep-dive-doc-to-plan-and-diff-tools.md](./deep-dive-doc-to-plan-and-diff-tools.md)) refines
+the P3/PORT-08/PORT-09 material; where they disagree, the deep dive governs:
+
+- **A minimal slice exists.** The donor `doc` subsystem is **not** one indivisible "L blob":
+  the promote core (`doc-store` + `doc-templates` + `doc-ranges` + `artifact-service` +
+  `promoted-plan-body` + promotion-journal + `docRefs`) is a bounded **≈2 700-LOC** slice; the
+  **3 664-LOC** `workflow/doc-turn/**` runtime and the **168-file** console are cleanly
+  excludable. New dirs `docs/` + `workflow/tdd/` are additive (no data migration).
+- **The `doc` alias collision is real.** Porting the donor `doc` group **shadows ARCS's
+  existing `doc update` alias** (target `src/cli/commands/dependency.ts:190`) and duplicates
+  `proposal-doc promote` semantics — now a formal PORT-09 decision gate, not a footnote.
+- **The PORT-08 acceptance line was wrong.** "a dirty read-only change shows the receipt
+  snapshot" **does not exist in the donor** (`pending` stores diffstat + untracked names and
+  `task changes` never joins a receipt); treat it as new work, not a port.
+
+Later target-side finding **T16** (the `doc`/`doc update` alias collision, Med) and
+donor-side findings **D7/D8** (ledger duplicate window; untracked under-report) were added to
+[technical-report.md](./technical-report.md#5-findings-register-severity--confidence).
 
 ### Evidence provenance and confidence legend
 

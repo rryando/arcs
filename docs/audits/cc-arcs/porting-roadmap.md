@@ -221,14 +221,27 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 
 ### PORT-08 — Additive lightweight changes ledger indexed to receipts
 - **Outcome:** append-only, lock-guarded JSONL ledger storing **diffstat + hunk headers
-  only**. **Only the ledger excludes patch text; receipts retain their current capped
-  snapshot+diffs.** Read-only change records fall back to the receipt snapshot (git cannot
-  reconstruct unsaved work); committed change patches re-render from git **when reachable**;
-  dangling SHAs are handled gracefully. Add `plan changes` and `next --brief` integration.
-  Use **argv subprocess** calls (no copied shell-interpolation helpers). Idempotency/
+  only** — plus a commit's sha/subject/author/authoredAt/patchId (see
+  [deep-dive §B.1](./deep-dive-doc-to-plan-and-diff-tools.md#b1-inventory-donor)).
+  **Only the ledger excludes patch text; receipts retain their current capped
+  snapshot+diffs.** Committed change patches re-render from git **when reachable**;
+  dangling SHAs are **reported** (`reachable:false`), **not resolved** — `patchId` is
+  **advisory only, recorded but never used for matching** (dedup is by `(taskId,sha)`). Add
+  `plan changes` and `next --brief` integration.
+  Use **argv subprocess** calls (no copied shell-interpolation helpers) and **pin
+  `-c diff.noprefix=false -c diff.mnemonicPrefix=false`** plus the target
+  `code-snippet.ts` quote normalization (`normalizeDiffPath`) so `+++ b/<path>` hunk headers
+  cannot silently vanish. Idempotency/
   attribution must **avoid duplicate task credit**: index using the existing `startHead` +
   registered plan-worktree baseline. Knowledge `stub`/`commits` are **optional metadata
   additions only**, preserving `--code`, `--workMode`, `--no-report`.
+- **Risks (from [deep-dive §B.5](./deep-dive-doc-to-plan-and-diff-tools.md#b5-correctness-risks)):**
+  `recordCommits` reads the ledger **outside** the append lock, so concurrent writers can
+  duplicate `(taskId,sha)` lines (reads dedup, but the log grows); `getWorktreeDiffstat`
+  slices `??` names, so a dirty **untracked directory** collapses to one entry and a tree
+  dirty only via mode/submodule change returns **null** (enumerate with
+  `ls-files --others --exclude-standard`); a `pending` entry is superseded by **any** later
+  commit even if that commit does not cover the uncommitted work.
 - **Likely target paths:** new `src/utils/change-ledger.ts`; wire into
   `src/utils/run-report.ts`/`report-store.ts`; new `src/cli/commands/changes.ts` (command
   declaration via `src/cli/commands/index.ts`); `src/cli/commands/plan.ts` (`plan changes`);
@@ -236,8 +249,13 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 - **Donor reference:** `src/workflow/change-ledger.ts`, `src/cli/commands/changes.ts`,
   donor `src/utils/git.ts` helper semantics (re-implemented with argv arrays, not copied).
 - **Depends on:** PORT-07.
-- **Verification:** **NEW** `test/change-ledger.test.ts` (append/lock/dup-credit cases);
-  `npx vitest run test/change-ledger.test.ts test/run-report.test.ts`; acceptance: `arcs task changes <slug> <id> --patch` re-renders committed patches from git and persists no patch body in the ledger, while the receipt retains its capped diff; a dirty read-only change shows the receipt snapshot; `plan changes` rolls up; `next --brief` includes the ledger.
+- **Verification:** **NEW** `test/change-ledger.test.ts` (append/lock/dup-credit cases) and
+  **NEW** `test/git.test.ts` (argv/no-shell + `noprefix` pin);
+  `npx vitest run test/change-ledger.test.ts test/git.test.ts test/run-report.test.ts`; acceptance: `arcs task changes <slug> <id> --patch` re-renders committed patches from git and persists no patch body in the ledger, while the receipt retains its capped diff; a tree dirty via an untracked **directory** yields a `pending` entry with untracked names (not one collapsed entry); `plan changes` rolls up; `next --brief` includes the ledger.
+- **Correction ([X]):** the earlier acceptance clause “a dirty read-only change shows the
+  receipt snapshot” was **wrong** — that view **does not exist in the donor** (`pending`
+  stores diffstat + untracked names and `task changes` never joins a receipt). Treat any
+  receipt-joined ledger view as **new work, not a port**.
 - **Rollback:** disable the new ledger reads/writes and archive the ledger file — **never
   delete a user's ledger**; existing receipt refs remain intact.
 - **Effort:** **M–L (estimate)**.
@@ -246,20 +264,41 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 ## P3 — Opt-in generalized docs, citations, graph edges
 
 ### PORT-09 — Opt-in generalized docs (tech-doc/design-doc) + `doc promote`
-- **Outcome:** donor doc subsystem ported as an **opt-in** capability: lifecycle enums,
-  `doc create/get/list/template/outline/update-body/update-meta/promote/breakdown/delete`,
-  pinned revisions, integrity-gated writes. **Preserve the existing target `doc update` and
+- **Outcome:** donor doc subsystem ported as an **opt-in** capability, **decomposed into a
+  bounded promote core**, not one "L blob" (see
+  [deep-dive §A.11](./deep-dive-doc-to-plan-and-diff-tools.md#a11-minimal-viable-promote-slice-and-the-gap-vs-arcs)).
+  **Portable slice (estimate ≈2 700 LOC):** `doc-store.ts` (`DocMeta` +
+  `planIds`/`revisionHash`/`supersedes`, CRUD, `recordDocPromotion`); the doc slice of
+  `storage-utils.ts` (kinds/statuses/transitions/`DOC_PROMOTABLE_STATUS`/`sanitizeFileRefs`);
+  `doc-templates.ts` + `doc-ranges.ts` (template contract, `parseTaskBreakdown`,
+  `excerptSections`); `artifact-service.ts`
+  (`snapshotTdd`/`promote`/`readPinnedRevision`/`validatePromoteTasks`/`performWrites`);
+  `promoted-plan-body.ts`; the **promotion** half of `journal.ts`; `docRefs` on task-store; a
+  `doc` command group; advisory `doc-health`/`citations` checks; the donor error factories.
+  Lifecycle enums, pinned revisions, integrity-gated writes.
+  **EXCLUDED (cleanly separable):** donor `src/workflow/doc-turn/**` (**3 664 LOC, 12 files**),
+  `web/src/console/authoring/**` (7 files), and the **168-file** `web/src/console`.
+  New dirs `docs/` + `workflow/tdd/` are **additive** (no data migration).
+  **Preserve the existing target `doc update` and
   `proposal-doc` commands and any accepted proposal files** — the new commands are additive
   and must not shadow or migrate them. Migration is additive with opt-in adapters; **do not
   silently move old proposals**. Route writes through the target `writeFilesTransaction` +
   `.store` lock; use the **wider** target `FileRef` (`startLine/endLine`). `writeFilesTransaction`
   alone does **not** supply crash-atomicity or concurrency safety, so add explicit
   pinned-revision and claim/recovery handling.
+- **Risks:** (a) **revision-store growth — no GC**: every body change adds an immutable
+  `workflow/tdd/<docId>/<hash>.md`, unbounded (no collector in the source read);
+  (b) **`snapshotTdd` also writes a `decision` knowledge entry** (donor
+  `src/workflow/artifact-service.ts:107-144`) — a **decision-knowledge coupling** ARCS may
+  drop; (c) concurrency — the non-atomic claim is only **convergent**, not exactly-once
+  (audit D4); (d) file-ref lexical containment (no `realpath`) carries over if donor doc
+  code is reused.
 - **Likely target paths:** new `src/utils/doc-store.ts`, `src/utils/doc-ranges.ts`,
   `src/utils/doc-templates.ts`; new `src/cli/commands/doc.ts` imported via
   `src/cli/commands/index.ts`; storage helpers in `src/utils/storage-utils.ts`; schemas in
   `src/utils/json-schemas.ts`.
 - **Donor reference:** `src/utils/{doc-store,doc-ranges,doc-templates}.ts`,
+  `src/workflow/{artifact-service,promoted-plan-body,journal}.ts`,
   `src/cli/commands/doc.ts`, donor doc/lifecycle enums.
 - **Depends on:** PORT-04, PORT-07.
 - **Verification:** **NEW** `test/doc-store.test.ts`, `test/doc-ranges.test.ts`,
@@ -272,8 +311,16 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 - **Rollback:** feature-flag off the **new opt-in** commands; **keep** `doc update`,
   `proposal-doc`, and accepted proposals untouched. Simple delete is protected/allowed;
   **destructive cascades require explicit approval**.
-- **Effort:** **L (estimate)**.
-- **Decision gate:** **user must approve adding an opt-in docs engine** (largest scope).
+- **Effort:** **L (estimate)** for the full opt-in docs surface; the **promote core alone is
+  M (estimate)** (≈2 700 LOC).
+- **Decision gates (explicit):** (1) **`doc` namespace ALIAS COLLISION** — ARCS already
+  defines `doc update` as an alias for `project update-doc` (target
+  `src/cli/commands/dependency.ts:190`); porting a `doc` group **shadows that alias** — pick a
+  distinct group name (e.g. `tech-doc`) or reconcile. (2) **two `promote` verbs** — ARCS
+  `proposal-doc promote` (rename-only, `src/cli/commands/proposal-doc.ts:407-476`) vs donor
+  `doc promote` (plan+tasks); confusing if both ship. (3) does `tech-doc`/`design-doc`
+  **supersede** or **coexist** with `proposal-doc`? (4) user must approve adding an opt-in
+  docs engine (largest scope).
 
 ### PORT-10 — Graph doc edges
 - **Outcome:** add the `doc` node type + `doc_spawns_plan`/`plan_derives_from_doc`/`task_cites_doc`
@@ -397,8 +444,8 @@ while target gates forbid them; MCP transport reintroduction.
 | T15 help/version | PORT-03 | extend existing help-generator |
 | D1 donor storage | Rejected | keep target primitives |
 | D2 shell interpolation | Rejected (pattern) | use argv subprocess |
-| D3 hunk prefixes | Deferred | donor-side |
-| D4 promotion claim race | Deferred | donor-side; convergence framing |
+| D3 hunk prefixes | PORT-08 | pin `noprefix`/`mnemonicPrefix` + reuse target quote normalization |
+| D4 promotion claim race | Deferred | donor-side; convergence framing (deep-dive §A.8 confirms) |
 | D5 pairing token | Rejected | dead path |
 | D6 license divergence | PORT-15 | pre-copy rights gate |
 

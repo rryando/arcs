@@ -136,10 +136,14 @@ returning a compact envelope. Divergence is concentrated in the **enforcement la
   `src/utils/report-store.ts`; `dirty`/`untracked` describe repo state independently.
   `CodeChunk`s live on knowledge meta and are mined from receipt diffs by `done --learn`.
 - **Donor = "git citation ledger + doc provenance":** append-only
-  `src/workflow/change-ledger.ts` JSONL stores **diffstat + hunk headers, never patch
-  bodies**; tasks carry `baselineCommit`, `sourceFiles`, `docRefs`; promotion journal
+  `src/workflow/change-ledger.ts` JSONL stores, per **commit**, the sha, subject, author,
+  authoredAt, `patchId`, per-file `+/-` and `@@` hunk headers, and, per **pending** entry,
+  worktree diffstat + untracked **names** — **never patch bodies**; `reachable` is computed
+  **on read** (`git merge-base --is-ancestor`, never stored) and `pr` entries come from
+  `gh pr view`; tasks carry `baselineCommit`, `sourceFiles`, `docRefs`; promotion journal
   with `started/committed/failed`; dispatch brief assembles
   GOAL/SCOPE/CONTEXT/VERIFY/STOP; `validate --checks=changes,citations` adds provenance checks.
+  Full inventory in [deep-dive §B](./deep-dive-doc-to-plan-and-diff-tools.md#part-b--diff-tools).
 
 ### 3.5 Web/security [C]
 
@@ -178,8 +182,8 @@ unscored judgment. Roadmap IDs in the Decision column where applicable.
 | Central dry-run refusal predicate | absent [C]; `--dry-run` executes mutations [E] | present (`command-registry.ts`/`index.ts`) [C] | **Port (PORT-01)** |
 | General/group help + `--version` + unknown-cmd suggestion | wrapper-only **minimal static** help (exit 0); internal `dist/index.js --help`/`--version` exit 1; no `-h`/group help [E] | registry-driven help + `--version`/`-v` [C] | **Port (PORT-03)** |
 | `task brief` dispatch contract | absent [C] | present (`task-brief.ts`) [C] | **Port on existing data (PORT-06)** |
-| Additive task changes ledger | absent [C] | present (`change-ledger.ts`) [C] | **Port additive, receipt-indexed (PORT-08)** |
-| Generalized docs (tech-doc/design-doc, `doc promote`) | absent; **existing `doc update` + `proposal-doc` must be preserved** [C] | present (`src/utils/doc-store.ts`, `doc-*`) [C] | **Opt-in only (PORT-09)** |
+| Additive task changes ledger | absent [C] | present (`change-ledger.ts`) [C] | **Port additive, receipt-indexed ([deep-dive §B](./deep-dive-doc-to-plan-and-diff-tools.md#part-b--diff-tools), PORT-08)** |
+| Generalized docs (tech-doc/design-doc, `doc promote`) | absent; **existing `doc update` + `proposal-doc` must be preserved** [C] | present (`src/utils/doc-store.ts`, `doc-*`) [C] | **Opt-in, bounded promote core ([deep-dive §A.11](./deep-dive-doc-to-plan-and-diff-tools.md#a11-minimal-viable-promote-slice-and-the-gap-vs-arcs), PORT-09); decide `doc` alias collision** |
 | Pinned citations / `validate --checks=changes,citations` | absent [C] | present [C] | **Fold into PORT-07/09** |
 | Config `tryReadConfig` + migration-before-validate | `process.exit(1)` [C] | `{ok:false,issues}` + migration [C] | **Port (PORT-05)** |
 | `taskMetaSchema` completeness | under-declares `TaskMeta` [C] | declares most + round-trip test [C] | **Port union + test (PORT-04)** |
@@ -227,6 +231,7 @@ reproduced runtime defects; only **[E]** is.
 | T13 | Low | [C] | `taskMetaSchema` under-declares `TaskMeta` (`planId`, `dependsOn`, `scope`, `acceptance`, `verify`, `skill`, `workMode`, `startHead`, `report`); no consumer on the read path today, but a future validated rebuild would strip fields. | `src/utils/json-schemas.ts` vs `src/utils/task-store.ts` | PORT-04 |
 | T14 | **High** | **[E]** | **`--dry-run` is not inert on the target.** Isolated `ARCS_DATA_DIR`: `done --dry-run` moved a task `in_progress → done`; `remember --dry-run` created knowledge files. Target has no central dry-run refusal; donor refuses via `refusesDryRun`. `batch` static-confirmed. | executed; repro commands in [verification.md](./verification.md); `done.ts`/`remember.ts` (`mutation:true`, no guard) | **PORT-01** |
 | T15 | Low | [E] | Public wrapper help is minimal/static (`scripts/arcs-cli.mjs --help`, exit 0); internal `dist/index.js --help`/`--version` exit 1; no `-h`/group help/`--version`. Donor help is registry-driven. | `scripts/arcs-cli.mjs`; `dist/index.js`; donor `help-generator.ts` | PORT-03 |
+| T16 | Med | [C] | Porting the donor `doc` command group **shadows ARCS's existing `doc update` alias** for `project update-doc`, and the donor `doc promote` (plan+tasks) collides semantically with ARCS `proposal-doc promote` (rename-only). | target `src/cli/commands/dependency.ts:190`; donor `src/cli/commands/doc.ts`; target `src/cli/commands/proposal-doc.ts:407-476` | **PORT-09 decision gate (rename group e.g. `tech-doc`, or reconcile)** |
 
 ### 5.2 Donor-side (context for what **not** to import)
 
@@ -238,6 +243,8 @@ reproduced runtime defects; only **[E]** is.
 | D4 | Low | [C] | Donor promotion claim is **read-check-append across two lock scopes** — **not atomic under concurrent duplicate calls, including async calls within one process**. The intended property is **replay convergence** (re-running `started` converges), **not** demonstrated exactly-once. | donor `src/workflow/artifact-service.ts` `prepare`, `src/workflow/journal.ts` `appendEntry` |
 | D5 | Info | [C] | Donor `pairing-server` token compare is non-constant-time; studio/SSE pairing path is documented-removed and must not be ported. | donor `src/workflow/pairing-server.ts`, `web/src/sse-runner` |
 | D6 | Info | [C] | License **declarations/text differ**: target metadata MIT with **no LICENSE file**; donor ISC text with a Traveloka copyright. The "relicensed" framing is **inferred**. Warrants rights/attribution review, **not** a proven violation. | donor `LICENSE`; target `package.json` |
+| D7 | Low | [C] | Donor `recordCommits` reads the ledger **outside** the append lock (`withLock` wraps only `appendChange`), so concurrent writers duplicate `(taskId,sha)` lines; reads dedup, but the log grows. | donor `src/workflow/change-ledger.ts:213` vs `:83-86` |
+| D8 | Low | [C] | Donor `getWorktreeDiffstat` slices `??` names: an untracked **directory** collapses to one `dir/` entry (no contents), quoted paths keep quotes, and a tree dirty only via mode/submodule change returns **null**. | donor `src/utils/git.ts:245-261` |
 
 ## 6. Determinism: enforced vs. prompt-only
 
