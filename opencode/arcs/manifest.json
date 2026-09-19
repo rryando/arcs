@@ -15,7 +15,7 @@
       "tier": "heavy",
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-implementation", "arcs-test-driven-development", "arcs-systematic-debugging"]
       },
       "source": "prompts/software-engineer.txt",
@@ -36,7 +36,7 @@
       "tier": "heavy",
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-brainstorming"]
       },
       "source": "prompts/tech-architect.txt",
@@ -75,7 +75,7 @@
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
       },
       "source": "prompts/arcs-docs.txt",
@@ -96,7 +96,7 @@
       "tier": "standard",
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-deep-pr-review"]
       },
       "source": "prompts/code-reviewer.txt",
@@ -153,7 +153,7 @@
       "tier": "light",
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": []
       },
       "source": "prompts/graph-explorer.txt",
@@ -175,7 +175,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "thinking": "medium",
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
       },
       "source": "prompts/arcs-orchestrate.txt",
@@ -197,7 +197,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "thinking": "low",
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
       },
       "source": "prompts/arcs-orchestrate-caveman.txt",
@@ -219,7 +219,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "thinking": "low",
-        "extensions": ["pi-mcp-adapter"],
+        "extensions": ["pi-mcp-adapter", "pi-jev"],
         "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
       },
       "source": "prompts/arcs-flash.txt",

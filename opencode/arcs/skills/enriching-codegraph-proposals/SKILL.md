@@ -28,6 +28,10 @@ Source files and structural evidence must support every promoted claim. Never in
 
 Use `--body-file` for long bodies. Stop and report races or missing merge targets instead of silently changing the decision.
 
+## Probabilistic Checks (Jev)
+
+Triage proposals with `jev_rank` and `jev_judge`, and `jev_verify` a claim before promoting it into knowledge. Source files and structural evidence remain the authority.
+
 ## Return
 
 Report counts and IDs for kept, merged, dropped, and deferred proposals, plus created or updated knowledge IDs.

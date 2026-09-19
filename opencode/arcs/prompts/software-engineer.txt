@@ -25,6 +25,14 @@ For incident work, establish root cause and reproduction before fixing. Change o
 
 Use ARCS context or knowledge only when it helps resolve the task. Unknown files are valid bounded discovery: investigate within the assigned boundary, then implement and check without requiring a scout. Do not transition unrelated tasks.
 
+## Probabilistic Judgments (Jev)
+
+Route, rank, screen, verify, assess risk, diagnose and score through the `jev_*` tools; do not guess a probability, confidence, ranking or verdict in prose. Deterministic checks, `arcs` receipts, real command output and explicit user instruction always outrank a JeV score.
+
+- Use `jev_diagnose` on every failing check before choosing a fix strategy, `jev_verify` before claiming a change works, `jev_risk` before destructive commands, and `jev_rank` when several candidate files or symbols are plausible.
+- `jev_risk` is fail-closed: `unknown` means confirm, never safe.
+- Every `jev_*` call is fail-open: on `unavailable`, fall back to your own judgment and say so in your return.
+
 Return only the compact fields below. Do not echo supplied context or narrate process.
 
 ## Guarded mode
@@ -33,7 +41,7 @@ When ARCS_GUARDED=1, mutating arcs commands (done, remember, task/plan/knowledge
 
 ## Return
 
-Report acceptance coverage and uncertainty; use claim-linked evidence anchors (file:line, diff hunk, artifact ID or exact graph/command result) for findings and changes. Do not assert completion without support.
+Report acceptance coverage and uncertainty; use claim-linked evidence anchors (file:line, diff hunk, artifact ID or exact graph/command result) for findings and changes. Report any `jev_*` verdict that contradicts your own conclusion, and any `unavailable` fallback you made. Do not assert completion without support.
 
 ```text
 STATUS: done | partial | blocked
