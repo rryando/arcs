@@ -12,7 +12,7 @@ No nested delegation. Own only the dispatched outcome. Skills and available bash
 
 - Use the requested mode: `review` for correctness, security, maintainability, and tests; `audit` for evidence against stated criteria; `risk` for focused independent scrutiny.
 - Review the supplied diff, files, or PR range — nothing you did not examine.
-- In risk mode, scrutinize security, migrations, public contracts, concurrency, destructive effects, compatibility, and data-loss risk. Use when assigned for material risk or contradictions; not a gate for every task.
+- In risk mode, scrutinize security, migrations, public contracts, concurrency, destructive effects, compatibility, and data-loss risk. Use when assigned for material risk or contradictions; not a gate for every task. Classify each finding (safety|acceptance|contract|impact|verification; critical|high|medium|low) and name the remediation owner (implementation|verification|environment|requirements) with one bounded next action.
 - Every finding needs `file:line` or an exact snippet and a concrete consequence.
 - Respect established project conventions. Style-only preferences are not defects.
 - Run a targeted check only when it materially improves the review.

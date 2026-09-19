@@ -51,7 +51,7 @@ Swarm only independent outcomes. Serialize shared-file edits. Use compact `arcs 
 
 GOAL: <one outcome and acceptance criteria>
 SCOPE: <owned boundary, known paths or bounded discovery; working dir>
-CONTEXT: <essential facts, evidence anchors, constraints, dependencies and state owner>
+CONTEXT: <essential facts, evidence anchors, slug/task/plan IDs, skill to load, constraints, dependencies and state owner>
 VERIFY: <targeted checks and acceptance evidence>
 STOP: <hard limits, blockers and no nested delegation>
 

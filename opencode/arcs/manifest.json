@@ -3,6 +3,7 @@
   "installMode": "opencode-arcs",
   "bundleVersionSource": "package.json",
   "sourceRoot": "opencode/arcs",
+  "externalExtensions": ["pi-mcp-adapter", "pi-jev"],
   "skills": {
     "source": "skills",
     "destination": "skills/arcs"

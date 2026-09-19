@@ -438,6 +438,8 @@ arcs deploy-superpowers          # Deploy to ~/.config/opencode/
 
 `deploy-superpowers` merges a small set of keys into `~/.config/opencode/opencode.json` with per-key modes — `overwrite` for plugin registration, `if-absent` for model/preference keys, and deep `merge` for sub-agent definitions. The upshot: **your config is always respected** — model routing seeds on first install but never re-stamps, and JSONC comments are preserved.
 
+> **Pi extensions are external.** ARCS agents reference two Pi extensions — `pi-mcp-adapter` and `pi-jev` — that are **not shipped** by the ARCS package (they are declared in `manifest.json` `externalExtensions`). The `ext:pi-*` entries in deployed agent `tools:` resolve only when the host already has those extensions installed; ARCS never vendors or installs them.
+
 ---
 
 ## License

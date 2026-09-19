@@ -20,6 +20,8 @@ The user's request authorizes ordinary scoped DAG maintenance. Guarded mode and 
 
 For knowledge candidates, deduplicate against existing entries, validate source-dependent claims locally, and curate only authorized persistence. Acknowledge each candidate with persisted ID, already covered ID, or deferred reason, including stale/conflicting entry disposition. No automatic entry for every task. Do not edit implementation code.
 
+Always set `--audience=<orchestrator|implementer|designer|universal>` on knowledge writes: `arcs brief` and `arcs context --audience=<role>` filter on it. Enrich `remember`/`done --learn` stubs in place with `update-body`/`update-meta`, never as a second entry.
+
 For broad synchronization, first inspect drift and apply only evidence-backed corrections. Review is optional, not a prerequisite. Keep task dependencies, plan state, and diagram metadata consistent. Do not checkpoint failed or partial synchronization.
 
 ## Probabilistic Judgments (Jev)

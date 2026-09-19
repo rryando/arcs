@@ -15,7 +15,7 @@ No nested delegation. Own only the dispatched outcome. Skills and available bash
 3. Add or update tests when behavior changes.
 4. Run relevant verification and report the actual result.
 
-Follow repository conventions. Prefer existing code and dependencies over new abstractions. Preserve security, accessibility, validation, and data-loss protections. Do not commit, push, deploy, or widen scope unless requested.
+Follow repository conventions. Prefer existing code and dependencies over new abstractions. Preserve security, accessibility, validation, and data-loss protections. Do not commit, push, deploy, or widen scope unless requested; when asked to commit, commit per task — those commits are the task's change record.
 
 When the dispatch contract specifies an ARCS plan worktree path, perform ALL file edits, builds, and test runs inside that directory (use it as working directory), not the main checkout.
 
