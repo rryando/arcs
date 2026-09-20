@@ -6,7 +6,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildProjectRetrievalIndex } from "../../retrieval/index-builder.js";
+import { readChanges } from "../../utils/change-ledger.js";
 import { extractOverviewContent } from "../../utils/content-assembly.js";
+import { isGitRepo } from "../../utils/git.js";
 import {
   extractBodyContentLength,
   isBodyShallow,
@@ -20,6 +22,7 @@ import {
   readPlanIndex,
 } from "../../utils/project-memory.js";
 import { resolveProject } from "../../utils/project-resolver.js";
+import { resolveTaskRepoRoot } from "../../utils/task-store.js";
 import { deriveOperatingBrief } from "../../utils/workflow-policy.js";
 import {
   type CLIResult,
@@ -222,7 +225,7 @@ const validateParams = {
   checks: {
     type: "string",
     description:
-      "Comma-separated checks to run (default: all). Valid: all, sourcefiles, status-drift, diagrams, agents-md, knowledge-health",
+      "Comma-separated checks to run (default: all). Valid: all, sourcefiles, status-drift, diagrams, agents-md, knowledge-health, changes",
   },
 } as const satisfies Record<string, ParamDef>;
 
@@ -249,6 +252,7 @@ const VALID_CHECKS = [
   "diagrams",
   "agents-md",
   "knowledge-health",
+  "changes",
 ] as const;
 type CheckName = (typeof VALID_CHECKS)[number];
 
@@ -418,6 +422,48 @@ export async function runValidation(slug: string, checks: Set<CheckName>): Promi
           repair: `Enrich the body of "${entry.id}" — scaffold with: arcs knowledge template --kind=${entry.kind}`,
           safeToAutoRepair: false,
         });
+      }
+    }
+  }
+
+  // Check 6: Change-ledger health — a done task must carry git-derived
+  // evidence, and no recorded commit may have become unreachable (dropped by a
+  // rebase/squash). Both checks are deterministic and offline.
+  if (checks.has("all") || checks.has("changes")) {
+    const allTasks = await listTasks(projectDir);
+    for (const task of allTasks) {
+      totalChecks++;
+      let cwd: string | undefined;
+      try {
+        const repo = await resolveTaskRepoRoot(projectDir, task.planId);
+        if (repo !== "" && isGitRepo(repo)) cwd = repo;
+      } catch {
+        cwd = undefined;
+      }
+      const records = await readChanges(projectDir, {
+        taskId: task.id,
+        ...(cwd !== undefined && { cwd }),
+      });
+      const hasLedger = records.some((r) => r.kind === "commit" || r.kind === "pending");
+      if (task.status === "done" && !hasLedger) {
+        issues.push({
+          severity: "warning",
+          kind: "done_without_ledger",
+          message: `Task "${task.title}" is done but has no recorded change entry`,
+          repair: `Record it with: arcs task record-change ${slug} ${task.id} --range=..HEAD`,
+          safeToAutoRepair: false,
+        });
+      }
+      for (const record of records) {
+        if (record.kind === "commit" && record.reachable === false && record.sha) {
+          issues.push({
+            severity: "warning",
+            kind: "dangling_change_sha",
+            message: `Task "${task.title}" records commit ${record.sha.slice(0, 7)} that HEAD no longer reaches`,
+            repair: `Retract it with: arcs task record-change ${slug} ${task.id} --remove=${record.sha.slice(0, 7)}`,
+            safeToAutoRepair: false,
+          });
+        }
       }
     }
   }

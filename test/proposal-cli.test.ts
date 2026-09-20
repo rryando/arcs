@@ -1158,7 +1158,7 @@ describe("proposal-doc edit", () => {
 });
 
 describe("proposal-doc promote", () => {
-  it("renames to accepted and returns the planCommand with data-dir paths", async () => {
+  it("promotes to accepted and materializes the generated execution-only plan body", async () => {
     await withTempDataDir(async (dataDir) => {
       seedWorkspacelessProject(dataDir);
       seedProposalDoc("promote-me", "# Promote Me\n\nPlan body.\n");
@@ -1170,28 +1170,98 @@ describe("proposal-doc promote", () => {
         id: string;
         title: string;
         docPath: string;
+        planBodyPath: string;
+        planBody: string;
         planCommand: string;
         recovered?: boolean;
       };
       expect(data.id).toBe("promote-me");
       expect(data.title).toBe("Promote Me");
       expect(data.docPath).toBe("proposals/promote-me.accepted.md");
+      expect(data.planBodyPath).toBe("proposals/promote-me.plan.md");
+
+      // DELIBERATE CONTRACT CHANGE (cc-arcs plan-body port): promote now
+      // materializes an ARCS-native, execution-only plan body beside the
+      // accepted doc and points the emitted command at it. It used to point
+      // `--body-file` at the accepted proposal itself, which made the plan body
+      // a copy of the design doc. The generated body carries a `## Source`
+      // pointer back at the accepted proposal instead.
       expect(data.planCommand).toBe(
         `arcs plan create ${SLUG} "Promote Me" --body-file="${resolve(
           getProjectDir(SLUG),
           "proposals",
-          "promote-me.accepted.md",
+          "promote-me.plan.md",
         )}"`,
       );
+      expect(data.planBody.startsWith("# Promote Me\n")).toBe(true);
+      expect(data.planBody).toContain("- Proposal doc: `proposals/promote-me.accepted.md`");
       expect(data.recovered).toBeUndefined();
 
-      // .proposal.md renamed away, .accepted.md present
+      // .proposal.md renamed away, .accepted.md present, generated plan body on disk
       expect(existsSync(join(getProjectDir(SLUG), "proposals", "promote-me.proposal.md"))).toBe(
         false,
       );
       expect(existsSync(join(getProjectDir(SLUG), "proposals", "promote-me.accepted.md"))).toBe(
         true,
       );
+      const onDisk = await readFile(
+        join(getProjectDir(SLUG), "proposals", "promote-me.plan.md"),
+        "utf-8",
+      );
+      expect(onDisk).toBe(data.planBody);
+    });
+  });
+
+  it("renders only a placeholder Tasks note when the proposal has no task list", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+      seedProposalDoc("no-tasks", "# No Tasks\n\nJust design.\n");
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "no-tasks"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { planBody: string };
+      expect(data.planBody).toContain("## Tasks");
+      expect(data.planBody).not.toContain("| # | Task |");
+      expect(data.planBody).toContain("No task list in the proposal");
+    });
+  });
+
+  it("indexes a `## Tasks` list from the proposal as table rows (no task creation)", async () => {
+    await withTempDataDir(async (dataDir) => {
+      seedWorkspacelessProject(dataDir);
+      seedProposalDoc(
+        "tasked-doc",
+        [
+          "# Tasked Doc",
+          "",
+          "## Proposed design",
+          "",
+          "Design prose.",
+          "",
+          "## Tasks",
+          "",
+          "- Add the renderer",
+          "- [ ] Wire promote",
+          "2. Document it",
+          "",
+          "## Impact & risks",
+          "",
+          "- not a task, because it is under a different heading",
+          "",
+        ].join("\n"),
+      );
+
+      const result = await runCommand("proposal-doc promote", [SLUG, "tasked-doc"]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const data = result.data as { planBody: string };
+      expect(data.planBody).toContain("| 1 | Add the renderer (`add-the-renderer`) |");
+      expect(data.planBody).toContain("| 2 | Wire promote (`wire-promote`) |");
+      expect(data.planBody).toContain("| 3 | Document it (`document-it`) |");
+      // A bullet under a non-task heading is not indexed.
+      expect(data.planBody).not.toContain("not a task");
+      // Promote never creates tasks — task creation is a separate writing-plans step.
     });
   });
 
@@ -1210,10 +1280,18 @@ describe("proposal-doc promote", () => {
       const result = await runCommand("proposal-doc promote", [SLUG, "crashed-doc"]);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      const data = result.data as { title: string; recovered: boolean; planCommand: string };
+      const data = result.data as {
+        title: string;
+        recovered: boolean;
+        planCommand: string;
+        planBodyPath: string;
+      };
       expect(data.recovered).toBe(true);
       expect(data.title).toBe("Crashed Doc");
+      expect(data.planBodyPath).toBe("proposals/crashed-doc.plan.md");
       expect(data.planCommand).toContain("--body-file=");
+      // Recovery also materializes the generated plan body from the accepted doc.
+      expect(existsSync(join(getProjectDir(SLUG), "proposals", "crashed-doc.plan.md"))).toBe(true);
     });
   });
 

@@ -3,9 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync } from "node:fs";
+import { recordCommits, recordPending } from "../../utils/change-ledger.js";
 import { type CodeChunk, deriveDiffCodeRanges, readCodeChunk } from "../../utils/code-snippet.js";
 import { attemptDiagramUpdate } from "../../utils/diagram-store.js";
-import { isGitRepo } from "../../utils/git.js";
+import { isGitRepo, listCommits } from "../../utils/git.js";
 import { getDataDir } from "../../utils/paths.js";
 import {
   createKnowledgeEntry,
@@ -309,6 +310,50 @@ async function handleDone(
     }
   }
 
+  // Record the change ledger: the deterministic, git-derived record of what
+  // this task changed. NEVER fails the command — a workspace without git, a
+  // missing baseline, or any recording error degrades to `ledgerSkipped`. The
+  // baseline is the task's EXISTING `startHead` (never a new field).
+  let ledgerRecorded: unknown[] | undefined;
+  let ledgerSkippedEntries: Array<{ sha: string; reason: string }> | undefined;
+  let ledgerSkipped: string | undefined;
+  try {
+    const ledgerRoot = await resolveTaskRepoRoot(projectDir, effectivePlanId);
+    if (ledgerRoot === "" || !isGitRepo(ledgerRoot)) {
+      ledgerSkipped = "no git workspace to record changes in";
+    } else {
+      const recorded: unknown[] = [];
+      const skipped: Array<{ sha: string; reason: string }> = [];
+      if (taskStartHead) {
+        const shas = listCommits(ledgerRoot, `${taskStartHead}..HEAD`);
+        const written = await recordCommits(projectDir, {
+          taskId: completedTask.id,
+          ...(effectivePlanId ? { planId: effectivePlanId } : {}),
+          cwd: ledgerRoot,
+          shas,
+          recordedBy: "done",
+        });
+        recorded.push(...written.recorded);
+        skipped.push(...written.skipped);
+      } else {
+        ledgerSkipped = "task has no startHead baseline; committed range not recorded";
+      }
+      const pending = await recordPending(projectDir, {
+        taskId: completedTask.id,
+        ...(effectivePlanId ? { planId: effectivePlanId } : {}),
+        cwd: ledgerRoot,
+        recordedBy: "done",
+      });
+      if (pending) recorded.push(pending);
+      if (recorded.length > 0) ledgerRecorded = recorded;
+      if (skipped.length > 0) ledgerSkippedEntries = skipped;
+    }
+  } catch (err) {
+    ledgerSkipped = `could not record change ledger: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+  }
+
   // Capture --learn insight if provided
   let learnedEntry: { id: string; title: string; kind: string } | null = null;
   let learnChunks: number | undefined;
@@ -390,6 +435,15 @@ async function handleDone(
       ...(reportSkipped ? { reportSkipped } : {}),
       ...(planReportRef ? { planReport: planReportRef } : {}),
       ...(planReportSkipped ? { planReportSkipped } : {}),
+      ...(ledgerRecorded
+        ? {
+            ledger: {
+              recorded: ledgerRecorded,
+              ...(ledgerSkippedEntries ? { skipped: ledgerSkippedEntries } : {}),
+            },
+          }
+        : {}),
+      ...(ledgerSkipped ? { ledgerSkipped } : {}),
       ...(learnedEntry ? { learned: learnedEntry } : {}),
       ...(learnChunks !== undefined ? { learnedChunks: learnChunks } : {}),
       ...(learnChunksSkipped ? { learnedChunksSkipped: learnChunksSkipped } : {}),
@@ -406,6 +460,15 @@ async function handleDone(
     ...(reportSkipped ? { reportSkipped } : {}),
     ...(planReportRef ? { planReport: planReportRef } : {}),
     ...(planReportSkipped ? { planReportSkipped } : {}),
+    ...(ledgerRecorded
+      ? {
+          ledger: {
+            recorded: ledgerRecorded,
+            ...(ledgerSkippedEntries ? { skipped: ledgerSkippedEntries } : {}),
+          },
+        }
+      : {}),
+    ...(ledgerSkipped ? { ledgerSkipped } : {}),
     ...(learnedEntry ? { learned: learnedEntry } : {}),
     ...(learnChunks !== undefined ? { learnedChunks: learnChunks } : {}),
     ...(learnChunksSkipped ? { learnedChunksSkipped: learnChunksSkipped } : {}),

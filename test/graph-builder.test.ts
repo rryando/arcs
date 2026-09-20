@@ -282,3 +282,93 @@ describe("buildAdjacencyIndex", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ledger-derived edges (task_changed_file)
+
+function writeLedger(dir: string, entries: Array<Record<string, unknown>>): void {
+  const workflowDir = join(dir, "workflow");
+  mkdirSync(workflowDir, { recursive: true });
+  writeFileSync(
+    join(workflowDir, "changes.jsonl"),
+    `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`,
+    "utf-8",
+  );
+}
+
+function ledgerCommit(taskId: string, paths: string[]): Record<string, unknown> {
+  return {
+    taskId,
+    kind: "commit",
+    sha: "a".repeat(40),
+    files: paths.map((path) => ({ path, additions: 1, deletions: 0, hunks: [] })),
+    recordedBy: "done",
+    at: "2024-01-01T00:00:00.000Z",
+  };
+}
+
+describe("buildAdjacencyIndex — task_changed_file (ledger-derived)", () => {
+  it("emits a task_changed_file edge with weight 0.85 for a ledger file", async () => {
+    const projectDir = makeProjectDir();
+    writeTaskIndex(join(projectDir, "tasks"), [TASK_ENTRY("t1")]);
+    writeLedger(projectDir, [ledgerCommit("t1", ["src/changed.ts"])]);
+
+    mockedGetProjectDir.mockReturnValue(projectDir);
+    const graph = await buildAdjacencyIndex("test-slug");
+
+    const edges = graph.edges.get("task:t1") ?? [];
+    const changed = edges.find(
+      (e) => e.target === "file:src/changed.ts" && e.relation === "task_changed_file",
+    );
+    expect(changed?.weight).toBe(0.85);
+    expect(graph.fileIndex.get("src/changed.ts")).toContain("task:t1");
+  });
+
+  it("skips a ledger path already declared in sourceFiles", async () => {
+    const projectDir = makeProjectDir();
+    writeTaskIndex(join(projectDir, "tasks"), [
+      TASK_ENTRY("t1", { sourceFiles: [{ path: "src/declared.ts" }] }),
+    ]);
+    writeLedger(projectDir, [ledgerCommit("t1", ["src/declared.ts"])]);
+
+    mockedGetProjectDir.mockReturnValue(projectDir);
+    const graph = await buildAdjacencyIndex("test-slug");
+
+    const edges = graph.edges.get("task:t1") ?? [];
+    expect(edges.some((e) => e.relation === "task_changed_file")).toBe(false);
+    // Still referenced exactly once, via the declared sourceFiles path.
+    expect(graph.fileIndex.get("src/declared.ts")).toEqual(["task:t1"]);
+  });
+
+  it("pairs a task with knowledge that cites the same ledger-changed file", async () => {
+    const projectDir = makeProjectDir();
+    writeKnowledgeIndex(join(projectDir, "knowledge"), [
+      KNOWLEDGE_ENTRY("k1", { sourceFiles: [{ path: "src/shared.ts" }] }),
+    ]);
+    writeTaskIndex(join(projectDir, "tasks"), [TASK_ENTRY("t1")]);
+    writeLedger(projectDir, [ledgerCommit("t1", ["src/shared.ts"])]);
+
+    mockedGetProjectDir.mockReturnValue(projectDir);
+    const graph = await buildAdjacencyIndex("test-slug");
+
+    const t1Edges = graph.edges.get("task:t1") ?? [];
+    expect(
+      t1Edges.some((e) => e.target === "knowledge:k1" && e.relation === "shares_source_file"),
+    ).toBe(true);
+  });
+
+  it("tracks sourceHashes.changes only when the ledger file exists", async () => {
+    const withLedger = makeProjectDir();
+    writeTaskIndex(join(withLedger, "tasks"), [TASK_ENTRY("t1")]);
+    writeLedger(withLedger, []);
+    mockedGetProjectDir.mockReturnValue(withLedger);
+    const g1 = await buildAdjacencyIndex("test-slug");
+    expect(g1.sourceHashes.changes).toBeGreaterThan(0);
+
+    const withoutLedger = makeProjectDir();
+    writeTaskIndex(join(withoutLedger, "tasks"), [TASK_ENTRY("t1")]);
+    mockedGetProjectDir.mockReturnValue(withoutLedger);
+    const g2 = await buildAdjacencyIndex("test-slug");
+    expect(g2.sourceHashes.changes).toBeUndefined();
+  });
+});

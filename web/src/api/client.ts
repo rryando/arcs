@@ -529,6 +529,17 @@ export interface ProposalDocDetail {
   updatedAt: string;
 }
 
+/** Acceptance of a proposal-doc promotion, returned as HTTP 202: the server no
+ *  longer renames the doc or creates the plan itself. It starts a one-shot `pi`
+ *  run that performs the promotion through the ARCS skills
+ *  (`arcs-writing-proposals` → `arcs-writing-plans`), and the plan + tasks
+ *  appear when that run settles. */
+export interface PromoteProposalDocResult {
+  started: true;
+  runId: string;
+  runtimeType: "pi";
+}
+
 export interface ChangeEvent {
   type: "changed";
   slug: string | null;
@@ -703,8 +714,7 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ content }) },
     ),
   promoteProposalDoc: (slug: string, id: string) =>
-    request<{ promoted: boolean; plan: PlanMeta; docPath: string; recovered?: boolean }>(
-      `/api/p/${slug}/proposal-docs/${id}/promote`,
-      { method: "POST" },
-    ),
+    request<PromoteProposalDocResult>(`/api/p/${slug}/proposal-docs/${id}/promote`, {
+      method: "POST",
+    }),
 };

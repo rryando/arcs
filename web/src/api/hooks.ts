@@ -69,7 +69,7 @@ export function keysForArea(slug: string | null, area: string): readonly (readon
     case "sessions":
       return [...all, qk.project(slug)];
     case "proposals":
-      return [qk.projects, qk.proposals(slug), qk.project(slug)];
+      return [qk.projects, qk.proposals(slug), qk.proposalDocs(slug), qk.project(slug)];
     case "docs":
       return [["doc", slug] as const];
     case "meta":
@@ -335,13 +335,14 @@ export function useSaveProposalDoc(slug: string, id: string) {
   });
 }
 
-/** Promoting turns the doc into a plan: the queue empties, the plan index
- *  grows, and every count that feeds the shell tabs moves with them. */
+/** Promoting now STARTS a one-shot run that performs the promotion through the
+ *  ARCS skills; the plan and its tasks appear when that run settles (the
+ *  server's change events invalidate the plan and proposal-doc queries). The
+ *  mutation resolves with the run acceptance — `{ started, runId,
+ *  runtimeType }` — so the caller surfaces the run instead of expecting a plan
+ *  synchronously. */
 export function usePromoteProposalDoc(slug: string) {
-  const invalidate = useInvalidator();
   return useMutation({
     mutationFn: (id: string) => api.promoteProposalDoc(slug, id),
-    onSuccess: () =>
-      invalidate([qk.proposalDocs(slug), qk.plans(slug), qk.projects, qk.project(slug)]),
   });
 }
