@@ -232,6 +232,7 @@ const planCreateParams = {
   keywords: { type: "string", description: "Comma-separated keywords" },
   body: { type: "string", description: "Inline markdown body content" },
   "body-file": { type: "string", description: "Path to markdown file with plan body" },
+  "body-stdin": { type: "boolean", description: "Read body from stdin" },
 } as const satisfies Record<string, ParamDef>;
 
 defineCommand({
@@ -253,6 +254,7 @@ async function handlePlanCreate(
   const keywordsRaw = params.keywords;
   const bodyInline = params.body;
   const bodyFile = params["body-file"];
+  const bodyStdin = params["body-stdin"];
   const keywords = keywordsRaw ? keywordsRaw.split(",").map((k) => k.trim()) : [];
 
   const result = requireProject(slug);
@@ -275,17 +277,19 @@ async function handlePlanCreate(
         status,
         summary,
         keywords,
-        hasBody: !!(bodyInline || bodyFile),
+        hasBody: !!(bodyInline || bodyFile || bodyStdin),
       },
     });
   }
 
-  // Resolve body content: inline > file > undefined
+  // Resolve body content: inline > file > stdin > undefined
   let content: string | undefined;
   if (bodyInline) {
     content = bodyInline;
   } else if (bodyFile) {
     content = await readFile(bodyFile, "utf-8");
+  } else if (bodyStdin) {
+    content = await readStdin();
   }
 
   try {

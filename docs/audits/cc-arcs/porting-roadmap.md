@@ -32,11 +32,15 @@ PORT-00 ─┬─ PORT-00b worktree policy decision              [depends: PORT-
          ├─ PORT-13  request cap + mermaid hardening       [depends: PORT-00]
          ├─ PORT-14  release safety gates                  [depends: PORT-00]
          ├─ PORT-16  sub-agent prompt SSOT                 [depends: PORT-00]
-         └─ PORT-17  realpath/path-containment policy      [depends: PORT-00]
+         ├─ PORT-17  realpath/path-containment policy      [depends: PORT-00]
+         ├─ PORT-18  filesystem-declared skills            [depends: PORT-00]
+         └─ PORT-19  Pi deploy ownership preflight+revert  [depends: PORT-00]
 
 PORT-04 ─── PORT-06 task brief                             [depends: PORT-04]
-PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
-                                                           [PORT-09: PORT-04, PORT-07; PORT-10: PORT-09]
+PORT-04, PORT-07 ─── PORT-09 opt-in docs ── PORT-10 graph edges
+                                                           [PORT-09: PORT-04, PORT-07;
+                                                            PORT-10(a): PORT-09; PORT-10(b): PORT-08]
+PORT-07 ─── PORT-08 ledger ─── PORT-10(b) task_changed_file edge   [PORT-08: PORT-07]
 ```
 
 ## P0 — Preserve invariants, and gate rights before copying
@@ -184,6 +188,43 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 - **Effort:** **S–M (estimate)**.
 - **Decision gate:** **user must decide** symlink policy (deny all vs allow registered roots).
 
+### PORT-18 — Filesystem-declared skills (bundle surface)
+- **Donor commit:** `264150a` (#52). Only the **`skills` map** of `bundle-runtime.json` moved
+  to a filesystem walk (`src/utils/bundle-skills.ts`); `agents`/`plugin`/`preservedFiles`/
+  `excludePatterns` stay hand-declared (the donor did **not** retire `bundle-runtime.json`).
+- **Outcome:** replace ARCS's ~62-line hand `skills` map in `opencode/arcs/bundle-runtime.json`
+  with a filesystem walk, **keeping `preservedFiles`/`agents`/`plugin`** and promoting
+  `excludePatterns` to an active filter with a glob converter that **throws on unsupported
+  shapes** (never matches nothing). **Retain the lint `{errors:0,warnings:0}` 0/0 gate** as the
+  stray-file guard — a walk-driven lint alone would auto-ship any file dropped into a skill dir.
+- **Likely target paths:** `opencode/arcs/bundle-runtime.json`, `scripts/build-opencode-bundle.mjs`,
+  `scripts/lint-bundle.mjs` (Checks 1/2/3).
+- **Donor reference:** donor `src/utils/bundle-skills.ts`, `scripts/build-opencode-bundle.mjs`.
+- **Depends on:** PORT-00.
+- **Verification:** `npm run build:opencode-bundle && node scripts/lint-bundle.mjs` reports
+  `{errors:0,warnings:0}`; `npx vitest run test/opencode-bundle-build.test.ts test/bundle-lint.test.ts test/opencode-bundle-pruning.test.ts test/opencode-bundle-smoke.test.ts`.
+- **Rollback:** restore the hand `skills` map (git).
+- **Effort:** **M (estimate)**.
+- **Decision gate:** confirm the walk does not weaken the stray-file defense (excludePatterns retained).
+
+### PORT-19 — Pi deploy ownership preflight + tracked settings revert
+- **Donor commit:** `d0ba884` (#82). ARCS's Pi deploy already skips a user-modified extension
+  (`extensionSkipped: "user-modified"`) but has **no** preflight-parse-before-write and **no**
+  tracked revert for its `settings.json` model merge.
+- **Outcome:** (a) parse **all** shared JSON before **any** write and refuse/with-report on a
+  conflict; (b) record and revert exactly the `settings.json` model entries ARCS merged
+  (donor `mergeFragmentTracked`/`revertMergedEntries`, `deploy-pi-bundle.mjs:405-441`);
+  optionally a `preflightPiPackageRoot`-style "refuse to write unless we can prove ownership"
+  (`:379-393`). **Do not** port the extensions catalogue itself (see
+  [deep-dive-ledger-graph-build-commits.md §C.3](./deep-dive-ledger-graph-build-commits.md#c3-pi-extensions-catalogue-7782-c)).
+- **Likely target paths:** `scripts/deploy-pi-bundle.mjs`.
+- **Donor reference:** donor `scripts/deploy-pi-bundle.mjs` (`:355-361`, `:379-393`, `:405-441`).
+- **Depends on:** PORT-00.
+- **Verification:** `DEPLOY_DRY_RUN=false` against a temp `DEPLOY_CONFIG_ROOT`; `npx vitest run test/deploy-pi-bundle.test.ts`.
+- **Rollback:** revert the deploy script.
+- **Effort:** **S–M (estimate)**.
+- **Decision gate:** confirm only-record-and-revert (no new catalogue).
+
 ## P2 — Task brief, evidence ordering, additive changes ledger
 
 ### PORT-06 — `task brief` dispatch contract
@@ -191,15 +232,31 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
   results, receipts, and knowledge — **without** importing the donor docs engine. Add the
   command declaration to the **existing** `src/cli/commands/task.ts` (or a new command file
   imported via `src/cli/commands/index.ts`); do **not** invent manual registry registration.
+- **[X] The donor CONTEXT block IS the docs engine — this is a structural, not cosmetic,
+  dependency.** The donor `briefDoc()` reads `task.docRefs[0].revisionHash`, calls
+  `readPinnedRevision`, and embeds `excerptSections` from the pinned doc into CONTEXT
+  (donor `src/cli/task-brief.ts` renderDispatch). Therefore an ARCS `task brief` **cannot be a
+  like-for-like port until PORT-09**: the ARCS version must assemble CONTEXT from task
+  metadata + `retrieveForTask` knowledge (gotchas first) + predecessors' ledger commits, and
+  **drop** the pinned-section source. This is a material omission in the earlier roadmap text.
+- **[X] `brief` NAMESPACE COLLISION (must not shadow).** ARCS already ships a **project-level**
+  `brief` command (`src/cli/commands/brief.ts` → `renderBrief`, plus `src/cli/brief-renderer.ts`,
+  exposed as T0 `brief` and `next`). The donor's `task brief` / `next --brief` is a
+  **different, task-scoped** brief. The new command must be namespaced under `task` (e.g.
+  `arcs task brief <slug> <id>`) and must **not** shadow or repurpose the existing
+  project-level `brief`/`next` surfaces.
 - **Likely target paths:** `src/cli/commands/task.ts` (or new `src/cli/commands/task-brief.ts`
-  imported via `src/cli/commands/index.ts`), `src/cli/brief-renderer.ts`.
-- **Donor reference:** `src/cli/task-brief.ts`.
+  imported via `src/cli/commands/index.ts`), reusing `src/cli/brief-renderer.ts` patterns.
+- **Donor reference:** `src/cli/task-brief.ts` (GOAL/SCOPE/VERIFY/STOP are portable;
+  CONTEXT's `briefDoc`/pinned-section path is PORT-09-only).
 - **Depends on:** PORT-04.
 - **Verification:** **NEW** `test/task-brief.test.ts` (adapt donor `test/task-brief.test.ts`);
-  `npx vitest run test/task-brief.test.ts test/brief-renderer.test.ts`.
+  `npx vitest run test/task-brief.test.ts test/brief-renderer.test.ts`; the existing
+  project-level `brief`/`next` tests stay green; output is byte-stable for a fixed task.
 - **Rollback:** remove the command declaration.
 - **Effort:** **M (estimate)**.
-- **Decision gate:** confirm no docs-engine dependency is acceptable.
+- **Decision gate:** confirm no docs-engine dependency is acceptable, and that the new
+  task-scoped brief does **not** shadow the project-level `brief`/`next`.
 
 ### PORT-07 — Receipt write-ordering/diagnostics + knowledge-chunk staleness (T6, T8)
 - **Outcome:** make the receipt write path explicit and scoped: **atomic per-file
@@ -220,6 +277,10 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 - **Decision gate:** whether to pursue the optional generation-based crash-atomic protocol (larger).
 
 ### PORT-08 — Additive lightweight changes ledger indexed to receipts
+- **Donor commit:** `f3861a3` (#83) — `src/workflow/change-ledger.ts` (305 L) + `changes.ts`
+  +372, `utility.ts` +141, `task.ts` +87, `status.ts` +31, graph ±57. The **same commit**
+  that adds `task_cites_doc`/`task_changed_file` also adds the ledger they read. See
+  [deep-dive-ledger-graph-build-commits.md Part A](./deep-dive-ledger-graph-build-commits.md#part-a--ledgers-f3861a3-83).
 - **Outcome:** append-only, lock-guarded JSONL ledger storing **diffstat + hunk headers
   only** — plus a commit's sha/subject/author/authoredAt/patchId (see
   [deep-dive §B.1](./deep-dive-doc-to-plan-and-diff-tools.md#b1-inventory-donor)).
@@ -233,8 +294,16 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
   `code-snippet.ts` quote normalization (`normalizeDiffPath`) so `+++ b/<path>` hunk headers
   cannot silently vanish. Idempotency/
   attribution must **avoid duplicate task credit**: index using the existing `startHead` +
-  registered plan-worktree baseline. Knowledge `stub`/`commits` are **optional metadata
-  additions only**, preserving `--code`, `--workMode`, `--no-report`.
+  registered plan-worktree baseline. **[X] Never introduce `baselineCommit`** — the donor's
+  field duplicates the target `startHead`, and two baselines can diverge; the ledger is keyed
+  off `startHead` only (see [deep-dive §A.7](./deep-dive-ledger-graph-build-commits.md#a7-hard-rules-adopted-invariants)).
+  Knowledge `stub`/`commits` are **optional metadata additions only**, preserving `--code`,
+  `--workMode`, `--no-report`.
+- **[X] D7 fix — read the ledger INSIDE the lock.** The donor `recordCommits` reads via
+  `readChanges` **outside** the append lock (`withLock` wraps only `appendChange`), so
+  concurrent writers duplicate `(taskId,sha)` lines (reads dedup, but the log grows). The port
+  must **re-read inside the lock** so duplicate `(taskId,sha)` writes are impossible under
+  concurrency.
 - **Risks (from [deep-dive §B.5](./deep-dive-doc-to-plan-and-diff-tools.md#b5-correctness-risks)):**
   `recordCommits` reads the ledger **outside** the append lock, so concurrent writers can
   duplicate `(taskId,sha)` lines (reads dedup, but the log grows); `getWorktreeDiffstat`
@@ -322,17 +391,35 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
   **supersede** or **coexist** with `proposal-doc`? (4) user must approve adding an opt-in
   docs engine (largest scope).
 
-### PORT-10 — Graph doc edges
-- **Outcome:** add the `doc` node type + `doc_spawns_plan`/`plan_derives_from_doc`/`task_cites_doc`
-  edges and cache invalidation on `docs/index.json`. **Do not add a speculative unused
-  `task_changed_file` union member** — add ledger edges only as a later item gated on PORT-08.
-- **Likely target paths:** `src/retrieval/graph-types.ts`, `src/retrieval/graph-builder.ts`.
+### PORT-10 — Graph doc edges (split: docs-derived vs ledger-derived) [X]
+- **Outcome:** two independent additions, previously conflated into one item:
+  - **(a) Docs-derived — PORT-09-gated.** Add the `doc` node type + `doc_spawns_plan` (0.8)/
+    `plan_derives_from_doc` (1.0)/`task_cites_doc` (1.0) edges and cache invalidation on
+    `docs/index.json` (`sourceHashes.docs`, added only when the file exists). Source:
+    `5124228` (#45) for the `doc` node + doc↔plan edges; `f3861a3` (#83) for `task_cites_doc`
+    (from `task.docRefs`). **Needs PORT-09.**
+  - **(b) Ledger-derived — PORT-08-gated (NOT PORT-09).** Add the `task_changed_file` (0.85)
+    edge + an `EdgeRelation` union member + `sourceHashes.changes` (added **only when the
+    ledger file exists**; otherwise `graph-cache.ts:isValid` treats a missing tracked file as
+    stale and rebuilds every read). Derivation: group `readChanges(projectDir)` into
+    `changedFilesByTask`, **skip paths already declared in `task.sourceFiles`**, and reuse
+    `registerFileRef` so the existing `shares_source_file` pairing picks them up (donor
+    `graph-builder.ts:187-222`). **Needs PORT-08 only** — once the ledger exists the edge is
+    neither speculative nor docs-gated. The earlier "do not add a speculative unused
+    `task_changed_file` union member" instruction is **superseded [X]**: add it with the
+    ledger (PORT-08), independently of PORT-09.
+- **Likely target paths:** `src/retrieval/graph-types.ts` (`NodeType`, `EdgeRelation`,
+  `EDGE_WEIGHTS`), `src/retrieval/graph-builder.ts` (`sourceHashes`, derivation block).
 - **Donor reference:** donor `retrieval/graph-types.ts`, `graph-builder.ts`.
-- **Depends on:** PORT-09.
-- **Verification:** `npx vitest run test/graph-builder.test.ts test/graph-types.test.ts test/graph-cache.test.ts` plus added doc-edge cases; acceptance: rebuild emits `doc:*` nodes and doc edges; cache invalidates when `docs/index.json` changes.
+- **Depends on:** (a) PORT-09; (b) PORT-08.
+- **Verification:** `npx vitest run test/graph-builder.test.ts test/graph-types.test.ts test/graph-cache.test.ts`
+  plus added cases; acceptance: (a) rebuild emits `doc:*` nodes and doc edges and the cache
+  invalidates when `docs/index.json` changes; (b) a recorded ledger commit emits a
+  `task_changed_file` edge and `shares_source_file` then pairs it, and the cache invalidates
+  when the ledger file changes but not when it is absent.
 - **Rollback:** revert graph builder/types.
-- **Effort:** **M (estimate)**.
-- **Decision gate:** confirm doc provenance edges are wanted (open decision).
+- **Decision gate:** confirm doc provenance edges are wanted (open decision); (b) is safe to
+  land independently with the ledger.
 
 ### PORT-11 — Optional cross-project knowledge listing helper
 - **Outcome:** target **already has** cross-project knowledge search
@@ -386,22 +473,48 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 - **Decision gate:** confirm web surface in scope (gate includes `web` typecheck); richer HTML is a **separate** decision (default off).
 
 ### PORT-14 — Release safety gates (auto tag-trigger + postinstall DEFERRED)
-- **Outcome (may adopt):** the release **safety gates** — `tag == package.json version`
-  check and **simulated** publish in tests. Preserve the **manual release as the default**
-  option; **never** perform an actual publish as part of acceptance without separate
-  approval. **Clearly separate and DEFER** auto tag-trigger and any postinstall/global config
-  writes (they remain out of scope absent explicit opt-in). Note: global config/network side
-  effects **cannot** be rolled back by `git revert`.
+- **Outcome (may adopt):** the release **safety gates**, as four explicit ADOPT items:
+  1. **`tag == package.json version` gate** — assert the version about to publish matches the
+     tag (`release.yml:76,89` today; no gate).
+  2. **Idempotent publish** — guard with `npm view "$pkg@$v"` before `npm publish`
+     (donor `release.yml:83-84`); a re-run must not bump again or fail on a duplicate.
+  3. **Idempotent `gh release`** — guard with `gh release view` before `gh release create`
+     (donor `release.yml:93-96`).
+  4. **Release-shape test** — a `set -euo pipefail` + guarded publish/release shape test
+     (donor `test/workflow-policy.test.ts`) asserting the workflow cannot silently swallow
+     an exit code.
+  Preserve the **manual release as the default** option; **never** perform an actual publish
+  as part of acceptance without separate approval. **Clearly separate and DEFER** auto
+  tag-trigger and any postinstall/global config writes (they remain out of scope absent
+  explicit opt-in). Note: global config/network side effects **cannot** be rolled back by
+  `git revert`.
+- **[X] Retired-chain lesson + protected-main hazard.** The donor *had* a multi-hop auto
+  release chain (two-workflow gate `c3ec9df` #28 → one workflow `7a3109c` #29 → tag baseline
+  `a00c672` #31 → history-derived versions `7f0d017` #32 → rename `1536b08` #33 → restored
+  `prepare`/`publish` `24d331f` #37 → one tag-triggered job `939ddfc` #54) and **retired** it:
+  `release-from-main` pushed the bump commit straight to a **protected `main`** (approving
+  review required, no auto-merge, no admin bypass), so five releases landed a tag with no
+  matching main commit, compounded by an `if`-without-`else` exit-code bug. **Rule: never push
+  a version-bump commit to a protected branch from CI — tag a reviewed commit.** **ARCS's own
+  `release.yml:96` does `git push --follow-tags origin HEAD:${{ github.ref_name }}` from CI —
+  the same hazard — and publish (`:89`) is non-idempotent.** ARCS is uniformly Node 24 (do not
+  copy the donor's Node 20 release / Node 22 CI mismatch). See
+  [deep-dive-ledger-graph-build-commits.md §C.4](./deep-dive-ledger-graph-build-commits.md#c4-the-release-chain-lesson-2854-c).
 - **Likely target paths:** `.github/workflows/release.yml`; `package.json` scripts.
-- **Donor reference:** donor `release.yml` (tag gate, idempotent publish). The donor
-  postinstall (`scripts/cc-arcs-postinstall.mjs`) is **reference only — deferred**.
+- **Donor reference:** donor `release.yml` (tag gate, idempotent publish, `gh release`
+  guard, `set -euo pipefail`). The donor postinstall (`scripts/cc-arcs-postinstall.mjs`) is
+  **reference only — deferred**.
 - **Depends on:** PORT-00.
-- **Verification:** **NEW** `test/release-workflow.test.ts` simulating tag==version pass/fail
-  and an idempotent-publish **simulation** (no network); `git diff --check`.
+- **Verification:** **NEW** `test/release-workflow.test.ts` simulating tag==version pass/fail,
+  an idempotent-publish **simulation** (no network), and a `gh release` guard, plus a
+  release-shape assertion (`set -euo pipefail`, guarded steps); `git diff --check`.
+  ARCS's `test/workflow-policy.test.ts` tests **domain policy, not release shape** — the new
+  test is separate.
 - **Rollback:** revert workflow/scripts (no runtime impact).
 - **Effort:** **S–M (estimate)**.
 - **Decision gate:** **actual publish and any global-install/postinstall write require
-  explicit, separate approval.**
+  explicit, separate approval.** Resolve the protected-main hazard (tag a reviewed commit vs.
+  keep pushing to `main`) as a distinct decision.
 
 ## Deferred / rejected (with rationale — no silent omissions)
 
@@ -417,11 +530,26 @@ PORT-04, PORT-07 ─── PORT-09 opt-in docs ─── PORT-10 graph doc edges
 - **T9** (code-chunk redaction) — policy decision inside PORT-17; chunk weighting suggests hint, not authoritative.
 - **T11** (pid reuse on cancel) — low, loopback; needs restart-cycle design, not a quick port.
 - **D3** (donor hunk-prefix parsing), **D4** (donor promotion claim race), **D5** (donor pairing token) — donor-side; not imported.
+- **`bundle/` directory rename** (`264150a` #52) — cosmetic; the donor's own message shows text
+  search misses split-path references (`bundle-installer.ts`), so ARCS's equivalent risk in
+  `scripts/deploy-*.mjs`/`src/cli/bundle-installer.ts` is real churn for no behavior gain.
+- **Owner-nested skill dirs** (`a18c0bd` #60) — ARCS has a single skill owner; collision/
+  ownership checks only pay off with ≥2 owners.
+- **Auto tag-triggered release** (`939ddfc` #54) — external side effect, not git-revertible;
+  conflicts with ARCS's deliberate manual publish.
 
 **Rejected:** donor storage layer (plain `writeFile`); narrower schemas; raw direct storage
 writes; donor shell-interpolation git helpers (D2); donor non-constant-time token compare +
 dead studio/SSE pairing path (D5); corporate provider defaults; revival of retired roles
-while target gates forbid them; MCP transport reintroduction.
+while target gates forbid them; MCP transport reintroduction; **the Pi extensions catalogue,
+its `build-pi-extensions-bundle.mjs` snapshot (source is a maintainer's live `~/.pi/agent`,
+CI-unreproducible) and its vendored host-internal forks** (`5017322` #77); **uncommitting the
+prompt mirrors** (`9c7df6d` #47 — ARCS's `test/prompt-parity.test.ts` is strictly stronger);
+**pushing a version-bump commit to a protected `main` from CI** (the donor #37 failure; ARCS
+`release.yml:96` currently does this — see PORT-14); donor Node 20-vs-22 CI/release mismatch
+and `@traveloka` restricted publish; donor `baselineCommit` (duplicates `startHead`); donor
+`FileRef` shape; `gh pr view` as a hard ledger dependency; donor console graph shell
+(`b4e3507` #75).
 
 ## Traceability: findings → roadmap
 
@@ -448,6 +576,10 @@ while target gates forbid them; MCP transport reintroduction.
 | D4 promotion claim race | Deferred | donor-side; convergence framing (deep-dive §A.8 confirms) |
 | D5 pairing token | Rejected | dead path |
 | D6 license divergence | PORT-15 | pre-copy rights gate |
+| D7 ledger read-outside-lock | PORT-08 | re-read inside the lock [X] |
+| donor retired release chain | PORT-14 | never push bump commit to protected main |
+| donor filesystem skills walk | PORT-18 | keep excludePatterns + 0/0 lint gate |
+| donor Pi ownership/revert discipline | PORT-19 | preflight + tracked settings revert |
 
 ## Integration hard gates (all items)
 

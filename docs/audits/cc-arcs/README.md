@@ -35,6 +35,7 @@ boundary explicitly, and marks partial vs. exhaustive coverage.
 | [cli-compatibility-matrix.json](./cli-compatibility-matrix.json) | Machine-readable matrix backing the inventory (same 95 rows + summaries) |
 | [porting-roadmap.md](./porting-roadmap.md) | Phased DRAFT outcome tasks (P0–P4 + deferred/rejected), exact dependency edges, likely paths, scoped verification, rollback, S/M/L estimates (estimates), decision gates |
 | [deep-dive-doc-to-plan-and-diff-tools.md](./deep-dive-doc-to-plan-and-diff-tools.md) | Two-part source-cited deep dive: (A) donor tech-doc/design-doc → plan prompt + lifecycle (status table, pinned revisions, breakdown parser, refusals, ownership split, minimal promote slice) and (B) the diff/change-ledger tools (inventory, stored-vs-re-rendered, port graph, receipt/code-snippet overlap, risks, minimal subset). Corrects earlier P3/PORT-08/PORT-09 material |
+| [deep-dive-ledger-graph-build-commits.md](./deep-dive-ledger-graph-build-commits.md) | Commit-level deep dive in three parts: (A) the LEDGER commit `f3861a3` (#83) — data model, lifecycle hooks, `validate --checks=changes`, ARCS receipt/chunk comparison, hard rules; (B) the GRAPH commits `5124228` (#45) + `f3861a3` — `doc`/`task_cites_doc`/`task_changed_file` nodes+edges, derivation, cache invalidation, gating; (C) BUILD/RELEASE (`264150a`…`98cf022`, the retired release chain) — bundle layout, prompt mirrors, Pi catalogue, release lesson, postinstall. ADOPT/ADAPT/DEFER/REJECT per item. Corrects §3.6/§4 and the porting roadmap |
 | [verification.md](./verification.md) | Exact observed evidence ledger: commands, exit codes, log contents, timestamps, snapshots |
 
 **Audit baseline vs. current tree.** The audit recorded the target at
@@ -65,6 +66,32 @@ the P3/PORT-08/PORT-09 material; where they disagree, the deep dive governs:
 Later target-side finding **T16** (the `doc`/`doc update` alias collision, Med) and
 donor-side findings **D7/D8** (ledger duplicate window; untracked under-report) were added to
 [technical-report.md](./technical-report.md#5-findings-register-severity--confidence).
+
+### Commit-level follow-up (ledger, graph, build/release)
+
+A third source-cited pass assessed the ledger, graph and build/release **commits** and is
+recorded in [deep-dive-ledger-graph-build-commits.md](./deep-dive-ledger-graph-build-commits.md);
+where it disagrees, it governs and the earlier text is patched with an **[X]** correction:
+
+- **`task_changed_file` is ledger-gated (PORT-08), not docs-gated (PORT-09)** — the §4 matrix
+  row was split, and roadmap [PORT-10](./porting-roadmap.md#port-10--graph-doc-edges-split-docs-derived-vs-ledger-derived-x)
+  now distinguishes docs-derived edges (`doc`, `plan_derives_from_doc`, `doc_spawns_plan`,
+  `task_cites_doc`) from the ledger-derived `task_changed_file` + `sourceHashes.changes`.
+- **Never introduce `baselineCommit`** — the ledger (`f3861a3`, #83) is keyed off ARCS
+  `startHead`; D7 is closed by re-reading inside the append lock; the donor shell git helpers
+  and `gh pr view` are rejected.
+- **The `bundle/` contents are authored, not generated** — `git ls-files bundle/cc-arcs/agents`
+  = 0; the catalogue declares **17** ids / 16 vendored dirs.
+- **The donor retired its release chain** (#37 → #54) because it pushed a bump commit to a
+  **protected `main`**; ARCS's `release.yml:96` carries the same hazard, and publish is
+  non-idempotent with no `tag == version` gate (roadmap [PORT-14](./porting-roadmap.md#port-14--release-safety-gates-auto-tag-trigger--postinstall-deferred)).
+- **`task brief` CONTEXT is the docs engine, and `brief` collides** with ARCS's existing
+  project-level `brief`/`next` (roadmap [PORT-06](./porting-roadmap.md#port-06--task-brief-dispatch-contract)).
+- **New ADOPT items:** filesystem-declared skills
+  ([PORT-18](./porting-roadmap.md#port-18--filesystem-declared-skills-bundle-surface)) and Pi
+  deploy ownership preflight + tracked settings revert
+  ([PORT-19](./porting-roadmap.md#port-19--pi-deploy-ownership-preflight--tracked-settings-revert));
+  migrate-before-validate/`tryReadConfig` stays [PORT-05](./porting-roadmap.md#port-05--tryreadconfig--migration-before-validate).
 
 ### Evidence provenance and confidence legend
 
@@ -204,6 +231,32 @@ dependency-honest DAG, evidence-linked knowledge/receipts, and `ARCS_GUARDED`.
 12. **Jev tools.** Every `jev_*` invocation returned `unavailable (no_api_key)`;
     not every worker invoked them. No probabilistic verdict exists, so all
     severity/confidence labels here are manual and source-backed.
+13. **[X] `bundle/` contents are authored, not generated (commit-level deep dive).**
+    `technical-report.md:166` called `files`→`bundle/` "209 tracked **generated** files".
+    `git ls-files bundle` = 209, but `git ls-files bundle/cc-arcs/agents` = **0** (the prompt
+    mirrors are gitignored); the 209 are authored inputs and the bundle is the source of
+    truth. Corrected in [§3.6](./technical-report.md#36-releasebuild-c).
+14. **[X] Pi extensions catalogue is 17 declared ids, 16 vendored dirs.**
+    `src/cli/pi-extensions.ts` declares 17 ids; `pi-mcp-adapter` vendors nothing.
+    Corrected in [§3.3](./technical-report.md#33-donor-delegation-chain-c).
+15. **[X] `task_changed_file` is ledger-gated (PORT-08), not docs-gated (PORT-09).**
+    The §4 matrix row "Graph doc edges" conflated the docs-derived edges with the
+    ledger-derived edge; split in [§4](./technical-report.md#4-feature--decision-matrix) and
+    [PORT-10](./porting-roadmap.md#port-10--graph-doc-edges-split-docs-derived-vs-ledger-derived-x).
+16. **[X] Release claims are static-only; the retired chain matters.** No build/release/
+    `npm pack` was ever executed; the donor **retired** its multi-hop release chain at #37/#54
+    because it pushed a bump commit to a **protected `main`** — the same hazard in ARCS's own
+    `release.yml:96`. Recorded in [§3.6](./technical-report.md#36-releasebuild-c) and
+    [PORT-14](./porting-roadmap.md#port-14--release-safety-gates-auto-tag-trigger--postinstall-deferred).
+17. **[X] `task brief` CONTEXT is the docs engine and `brief` collides.** The donor CONTEXT
+    block is structurally the docs engine (`docRefs` + pinned sections), so an ARCS brief
+    cannot be a like-for-like port until PORT-09; and ARCS already ships a project-level
+    `brief`/`next` the new task-scoped brief must not shadow. Recorded in
+    [PORT-06](./porting-roadmap.md#port-06--task-brief-dispatch-contract).
+18. **[X] Never introduce `baselineCommit`; D7 read-inside-lock.** The ledger is keyed off
+    ARCS `startHead`, and `recordCommits` must re-read inside the append lock to prevent
+    duplicate `(taskId,sha)` lines under concurrency. Recorded in
+    [PORT-08](./porting-roadmap.md#port-08--additive-lightweight-changes-ledger-indexed-to-receipts).
 
 ## Non-goals
 

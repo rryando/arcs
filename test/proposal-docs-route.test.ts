@@ -8,7 +8,6 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { getProjectDir } from "../src/utils/paths.js";
-import { createPlan, readPlanIndex } from "../src/utils/plan-store.js";
 import { startWebServer, type WebServerHandle } from "../src/web-server/index.js";
 import { currentWebToken } from "../src/web-server/web-token.js";
 import { withTempDataDir } from "./helpers/temp-data-dir.js";
@@ -271,130 +270,6 @@ describe("PUT /api/p/:slug/proposal-docs/:id", () => {
       const put = await request(base, "PUT", `/api/p/${SLUG}/proposal-docs/alpha-plan`, {});
       expect(put.status).toBe(400);
       expect(put.envelope.code).toBe("INVALID_BODY");
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/p/:slug/proposal-docs/:id/promote
-// ---------------------------------------------------------------------------
-
-describe("POST /api/p/:slug/proposal-docs/:id/promote", () => {
-  it("renames the doc, creates the plan, and returns the plan payload", async () => {
-    await withRouteCtx(async ({ base, projectDir, proposalsDir }) => {
-      seedDoc(proposalsDir, "alpha-plan.proposal.md", DOC_BODY);
-
-      const { status, envelope } = await request(
-        base,
-        "POST",
-        `/api/p/${SLUG}/proposal-docs/alpha-plan/promote`,
-      );
-      expect(status).toBe(200);
-      const data = envelope.data as {
-        promoted: boolean;
-        plan: { id: string; title: string; status: string; file: string };
-        docPath: string;
-      };
-      expect(data.promoted).toBe(true);
-      expect(data.docPath).toBe("proposals/alpha-plan.accepted.md");
-      expect(data.plan).toMatchObject({ id: "big-redesign", title: "Big Redesign" });
-
-      // The rename landed and the plan is readable via the plan index.
-      const bodyOnDisk = await readFile(join(proposalsDir, "alpha-plan.accepted.md"), "utf-8");
-      expect(bodyOnDisk).toBe(DOC_BODY);
-      const { plans } = await readPlanIndex(projectDir);
-      expect(plans).toHaveLength(1);
-      expect(plans[0]).toMatchObject({ id: "big-redesign", title: "Big Redesign" });
-    });
-  });
-
-  it("recovers promotion from the accepted doc when no plan exists yet", async () => {
-    await withRouteCtx(async ({ base, projectDir, proposalsDir }) => {
-      seedDoc(proposalsDir, "alpha-plan.accepted.md", DOC_BODY);
-
-      const { status, envelope } = await request(
-        base,
-        "POST",
-        `/api/p/${SLUG}/proposal-docs/alpha-plan/promote`,
-      );
-      expect(status).toBe(200);
-      const data = envelope.data as {
-        promoted: boolean;
-        recovered?: boolean;
-        plan: { id: string };
-      };
-      expect(data.promoted).toBe(true);
-      expect(data.recovered).toBe(true);
-      expect(data.plan.id).toBe("big-redesign");
-
-      const { plans } = await readPlanIndex(projectDir);
-      expect(plans.map((p) => p.id)).toEqual(["big-redesign"]);
-    });
-  });
-
-  it("409-conflicts when the derived plan already exists", async () => {
-    await withRouteCtx(async ({ base, projectDir, proposalsDir }) => {
-      seedDoc(proposalsDir, "alpha-plan.proposal.md", DOC_BODY);
-      // The plan the promote would derive, already in the store.
-      await createPlan(projectDir, {
-        id: "big-redesign",
-        title: "Big Redesign",
-        status: "proposed",
-        keywords: [],
-      });
-
-      const { status, envelope } = await request(
-        base,
-        "POST",
-        `/api/p/${SLUG}/proposal-docs/alpha-plan/promote`,
-      );
-      // PLAN_CONFLICT is in CONFLICT_CODES, so it maps to HTTP 409.
-      expect(status).toBe(409);
-      expect(envelope.code).toBe("PLAN_CONFLICT");
-
-      // The doc must remain pending — no rename happened.
-      const pending = await readFile(join(proposalsDir, "alpha-plan.proposal.md"), "utf-8");
-      expect(pending).toBe(DOC_BODY);
-    });
-  });
-
-  it("rolls the rename back when plan creation fails", async () => {
-    await withRouteCtx(async ({ base, projectDir, proposalsDir }) => {
-      seedDoc(proposalsDir, "alpha-plan.proposal.md", DOC_BODY);
-      // Sabotage plan creation without breaking the plan index: the plan's
-      // body path is a directory, so createPlan's transaction fails on the
-      // body write — after the route has already renamed the doc.
-      const plansDir = join(projectDir, "plans");
-      mkdirSync(join(plansDir, "big-redesign.md"), { recursive: true });
-
-      const { status, envelope } = await request(
-        base,
-        "POST",
-        `/api/p/${SLUG}/proposal-docs/alpha-plan/promote`,
-      );
-      expect(status).toBe(500);
-      expect(envelope.ok).toBe(false);
-
-      // The rename was rolled back: the doc is pending again and the
-      // aborted accepted copy is gone.
-      const pending = await readFile(join(proposalsDir, "alpha-plan.proposal.md"), "utf-8");
-      expect(pending).toBe(DOC_BODY);
-      const accepted = await readFile(join(proposalsDir, "alpha-plan.accepted.md"), "utf-8").catch(
-        () => null,
-      );
-      expect(accepted).toBeNull();
-    });
-  });
-
-  it("404s when neither pending nor accepted exists", async () => {
-    await withRouteCtx(async ({ base }) => {
-      const { status, envelope } = await request(
-        base,
-        "POST",
-        `/api/p/${SLUG}/proposal-docs/missing-doc/promote`,
-      );
-      expect(status).toBe(404);
-      expect(envelope.code).toBe("ENTITY_NOT_FOUND");
     });
   });
 });

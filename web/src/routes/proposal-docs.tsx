@@ -5,15 +5,18 @@
  * CLI/skill-driven; accepted docs are reached through the same detail route.
  */
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ProposalDoc } from "../api/client";
 import {
+  qk,
   usePromoteProposalDoc,
   useProposalDoc,
   useProposalDocs,
   useSaveProposalDoc,
 } from "../api/hooks";
+import { useRunStream } from "../api/sse";
 import { Badge, statusColor } from "../components/Badge";
 import { type Column, DataTable } from "../components/DataTable";
 import { ConfirmDialog } from "../components/Dialog";
@@ -140,11 +143,25 @@ export function ProposalDocDetail() {
   const { data, isLoading, error } = useProposalDoc(slug, id);
   const saveDoc = useSaveProposalDoc(slug, id);
   const promoteDoc = usePromoteProposalDoc(slug);
+  const queryClient = useQueryClient();
   const { push } = useToaster();
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [promoteOpen, setPromoteOpen] = useState(false);
+  /** The run a promote started, tailed only to learn when it settles. */
+  const [promoteRunId, setPromoteRunId] = useState<string | null>(null);
+  const promoteRun = useRunStream(slug, promoteRunId);
+
+  // The promotion is no longer synchronous: the server starts a `pi` run that
+  // renames the doc and builds the plan + tasks. When that run settles its
+  // writes are on disk, so refetch the surfaces that name them.
+  useEffect(() => {
+    if (promoteRunId === null || promoteRun.status !== "ended") return;
+    void queryClient.invalidateQueries({ queryKey: qk.proposalDocs(slug) });
+    void queryClient.invalidateQueries({ queryKey: qk.plans(slug) });
+    setPromoteRunId(null);
+  }, [promoteRunId, promoteRun.status, queryClient, slug]);
 
   const startEdit = () => {
     if (!data) return;
@@ -165,9 +182,14 @@ export function ProposalDocDetail() {
   const promote = () => {
     promoteDoc.mutate(id, {
       onSuccess: (result) => {
-        push("success", `promoted to plan “${result.plan.title}”`);
+        // No plan exists yet — a run was started to produce it. Name the run
+        // and refresh once it settles instead of navigating to a plan.
+        push(
+          "success",
+          `promotion run started (${result.runId.slice(0, 8)}) — the plan appears when it finishes`,
+        );
         setPromoteOpen(false);
-        navigate({ to: "/p/$slug/plans/$id", params: { slug, id: result.plan.normalizedId } });
+        setPromoteRunId(result.runId);
       },
       onError: (err) => {
         push("error", err instanceof Error ? err.message : String(err));
@@ -286,8 +308,9 @@ export function ProposalDocDetail() {
           title="promote proposal doc"
           message={
             <span>
-              promote <span className="font-bold text-term-fg">“{data.title}”</span> to a plan? the
-              doc moves to proposals/ as accepted and its body becomes the plan content.
+              promote <span className="font-bold text-term-fg">“{data.title}”</span> to a plan? a pi
+              run will accept the doc, create the plan and its tasks, then validate — this page
+              refreshes when it finishes.
             </span>
           }
           confirmLabel="promote"
