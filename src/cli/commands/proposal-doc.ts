@@ -7,6 +7,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { type PlanBodyTask, renderPlanBody } from "../../utils/plan-body.js";
 import { readPlanIndex } from "../../utils/plan-store.js";
 import { resolveProject } from "../../utils/project-resolver.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
@@ -39,6 +40,15 @@ function proposalDocAcceptedPath(projectDir: string, id: string): string {
   return resolve(proposalDocsDir(projectDir), `${id}.accepted.md`);
 }
 
+/**
+ * The generated, execution-only plan body materialized by `promote`. Kept
+ * beside the doc (same data-dir plane) so `plan create --body-file` can read
+ * it and the `## Source` pointer resolves, without touching the design doc.
+ */
+function proposalDocPlanBodyPath(projectDir: string, id: string): string {
+  return resolve(proposalDocsDir(projectDir), `${id}.plan.md`);
+}
+
 /** List all `.proposal.md` file ids (directory scan; the queue's codegraph.json is ignored). */
 function listProposalIds(projectDir: string): string[] {
   const dir = proposalDocsDir(projectDir);
@@ -53,6 +63,36 @@ function listProposalIds(projectDir: string): string[] {
 function deriveTitle(body: string, fallbackId: string): string {
   const titleLine = body.split("\n").find((l) => l.startsWith("# "));
   return titleLine ? titleLine.replace(/^#\s+/, "").trim() : fallbackId;
+}
+
+/**
+ * Read the proposal's optional task list into table rows. Deliberately minimal:
+ * ARCS has no donor breakdown parser (no `refs:`/`docs`, no parenthetical
+ * directives), so this only lifts list-item titles out of a `## Tasks` or
+ * `## Task Breakdown` section and derives each id with the same
+ * `normalizeIdentifier` rule `plan`/`task create` use. It never creates tasks.
+ */
+function extractProposalTasks(body: string): PlanBodyTask[] {
+  const tasks: PlanBodyTask[] = [];
+  let inTasksSection = false;
+
+  for (const line of body.split("\n")) {
+    const heading = /^##\s+(.+?)\s*$/.exec(line);
+    if (heading) {
+      inTasksSection = /^(tasks|task breakdown)$/i.test(heading[1] ?? "");
+      continue;
+    }
+    if (!inTasksSection) continue;
+
+    const item = /^\s*(?:[-*+]|\d+\.)\s+(.*\S)\s*$/.exec(line);
+    if (!item) continue;
+    // Drop a leading GitHub checkbox marker, keep the rest of the title verbatim.
+    const title = (item[1] ?? "").replace(/^\[[ xX]\]\s*/, "").trim();
+    if (!title) continue;
+    tasks.push({ taskId: normalizeIdentifier(title), title });
+  }
+
+  return tasks;
 }
 
 const PROPOSAL_TEMPLATE = (title: string): string => `# ${title}
@@ -445,7 +485,14 @@ async function handleProposalDocPromote(
 
   // Read the proposal body and infer a title from the first heading
   const title = deriveTitle(body, id);
-  const sourcePath = recovered ? acceptedPath : filePath;
+
+  // Materialize the ARCS-native plan body (execution-only: a `## Source` pointer
+  // at the accepted proposal + a task-list table). Task creation itself is a
+  // separate `writing-plans` step; ARCS has no breakdown parser or pinned
+  // revisions to invent task metadata from.
+  const tasks = extractProposalTasks(body);
+  const planBody = renderPlanBody({ title, slug, proposalId: id, tasks });
+  const planBodyPath = proposalDocPlanBodyPath(projectDir, id);
 
   if (flags.dryRun) {
     return success({
@@ -454,24 +501,32 @@ async function handleProposalDocPromote(
       wouldPromote: {
         id,
         title,
-        planAction: `arcs plan create ${slug} "${title}" --body-file="${sourcePath}"`,
+        planAction: `arcs plan create ${slug} "${title}" --body-file="${planBodyPath}"`,
         docAction: "rename .proposal.md -> .accepted.md",
+        taskCount: tasks.length,
       },
     });
   }
 
   if (!recovered) {
     // Rename .proposal.md → .accepted.md so the content survives for plan creation.
-    // The skill orchestrator calls `arcs plan create --body-file=<accepted-path>` next.
+    // The skill orchestrator calls `arcs plan create --body-file=<plan-body-path>` next.
     await rename(filePath, acceptedPath);
   }
+
+  // Write the generated body after the rename so its `## Source` pointer
+  // (`proposals/<id>.accepted.md`) already resolves. The accepted design doc is
+  // never overwritten — the plan body lives in its own file.
+  await writeFile(planBodyPath, planBody, "utf-8");
 
   return success({
     slug,
     id,
     title,
     docPath: `proposals/${id}.accepted.md`,
-    planCommand: `arcs plan create ${slug} "${title}" --body-file="${acceptedPath}"`,
+    planBodyPath: `proposals/${id}.plan.md`,
+    planBody,
+    planCommand: `arcs plan create ${slug} "${title}" --body-file="${planBodyPath}"`,
     ...(recovered && { recovered: true }),
   });
 }

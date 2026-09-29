@@ -406,3 +406,61 @@ export function renderAskContext(slug: string, context: AskContext | undefined):
     `The user is viewing the ${label} view of project \`${field(slug, FIELD_WIDTHS.slug)}\`${target}. Treat it as the subject of the request unless the message says otherwise.`,
   ].join("\n\n");
 }
+
+// ---------------------------------------------------------------------------
+// Proposal-doc promotion prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Input for the promote-run prompt: the project slug, the proposal doc id and
+ * the workspace directory the run executes in. All three are injected through
+ * `field` like every other variable slot, so a crafted id or path cannot forge
+ * a delimiter. Deterministic: no clock, no counter, no ambient state.
+ */
+export interface PromoteDocPromptInput {
+  slug: string;
+  docId: string;
+  workspacePath: string;
+}
+
+const PROMOTE_HEADING = "## TASK: PROMOTE A PROPOSAL DOC INTO AN ARCS PLAN";
+
+/**
+ * The prompt one promote run drives its agent with: perform the whole
+ * promotion — rename, plan, tasks, validation — through the ARCS CLI and the
+ * ARCS skills, rather than leaving the server to rename a file and mint a plan
+ * itself. The skills own the promote → plan + tasks handoff, so the prompt names
+ * them explicitly and reports the generated ids the server cannot know.
+ */
+export function renderPromoteDocPrompt(input: PromoteDocPromptInput): string {
+  const slug = field(input.slug, FIELD_WIDTHS.slug);
+  const id = field(input.docId, FIELD_WIDTHS.slug);
+  const workspace = field(input.workspacePath, FIELD_WIDTHS.workspaceRoot);
+  return [
+    PROMOTE_HEADING,
+    [
+      `Project: \`${slug}\``,
+      `Proposal doc id: \`${id}\``,
+      `Workspace (the run's working directory): \`${workspace}\``,
+    ].join("\n"),
+    [
+      `Promote proposal doc \`${id}\` of project \`${slug}\` into an ARCS plan and its tasks.`,
+      "Perform every step through the ARCS CLI and the ARCS skills below; never hand-edit " +
+        "files in the ARCS data dir or the workspace.",
+    ].join("\n"),
+    [
+      "1. Load the skills `arcs-writing-proposals` (it owns the promote → plan + tasks " +
+        "handoff) and `arcs-writing-plans`.",
+      `2. Run \`arcs proposal-doc promote ${slug} ${id}\`. This renames the pending doc to ` +
+        `\`proposals/${id}.accepted.md\` and materializes the generated plan body at ` +
+        `\`proposals/${id}.plan.md\`.`,
+      "3. Following `arcs-writing-plans`, create the plan from that generated body and add " +
+        "outcome-sized tasks with real `dependsOn` edges — do not mirror proposal sections " +
+        "one-to-one.",
+      `4. Run \`arcs validate ${slug}\` and fix anything it reports.`,
+      "5. Report the resulting plan id and the ids of the tasks you created.",
+    ].join("\n"),
+    "Keep the plan and task text faithful to the accepted proposal; do not redesign it or " +
+      "start implementation.",
+  ].join("\n\n");
+}

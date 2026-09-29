@@ -90,7 +90,9 @@ Not exhaustively covered (partial only, or header-level):
   both web frontends. Some of these were read at high-risk paths by other scoped
   agents (`setup-*`/`pi-*`, `console-read.ts`, both frontends partially).
 - Not run: donor test suite (no deps), either `build`/`build:web`/prepack, CI/release
-  workflows, Node-20 runtime floor, any live HTTP probe.
+  workflows, Node-20 runtime floor, any live HTTP probe. **[X] In particular no release
+  workflow and no `npm pack`/`prepack` was ever executed**, so every release/build claim in
+  §3.6 and §7 is static-only [C].
 
 ## 3. Architecture maps
 
@@ -126,7 +128,10 @@ returning a compact envelope. Divergence is concentrated in the **enforcement la
 - Registry SSOT `src/cli/agents.ts` `AGENT_REGISTRY` → `AGENT_TIER_MAP` → manifest/deploy/picker.
 - **9** active sub-agents incl. roles target retired.
 - Runtime: a **vendored hardened `pi-subagents` fork** plus a subagent-tool extension
-  and a **16-entry Pi extensions catalogue** with state file + revert.
+  and a Pi extensions catalogue that declares **17** ids with state file + revert. **[X]**
+  (the earlier "16-entry" figure was wrong — `src/cli/pi-extensions.ts` declares 17 ids;
+  only **16** vendored dirs exist on disk because `pi-mcp-adapter` vendors nothing. See
+  [deep-dive-ledger-graph-build-commits.md §Corrections](./deep-dive-ledger-graph-build-commits.md#corrections-produced-by-this-pass).)
 
 ### 3.4 Reporting / evidence model [C]
 
@@ -163,10 +168,31 @@ returning a compact envelope. Divergence is concentrated in the **enforcement la
   separate workspace `@arcs/web`; CI single job, Node hard-pinned 24, gates
   `typecheck → lint → build:opencode-bundle → test → lint-bundle`; manual
   `workflow_dispatch` release; **no postinstall**; **no LICENSE file**.
-- Donor: single package with root devDeps; `files` includes `bundle/` (209 tracked
-  generated files) and `web/dist/`; CI matrix `node-version: [22]`; tag-triggered
-  release with `tag == package.json version` gate, idempotent publish, `gh release`;
-  global-install-guarded `scripts/cc-arcs-postinstall.mjs`; migration for retired runtimes.
+- Donor: single package with root devDeps; `files` includes `bundle/` (**209 tracked files
+  — AUTHORED inputs, NOT generated output [X]**) and `web/dist/`; CI matrix
+  `node-version: [22]`; tag-triggered release with `tag == package.json version` gate,
+  idempotent publish, `gh release`; global-install-guarded `scripts/cc-arcs-postinstall.mjs`;
+  migration for retired runtimes.
+- **[X] The donor bundle is the source of truth, not generated output.** `git ls-files bundle`
+  = 209, but `git ls-files bundle/cc-arcs/agents` = **0**: the generated prompt mirrors are
+  gitignored (`bundle/cc-arcs/agents/*/*.md`), and the 209 tracked files are authored inputs
+  (62 skill files, 140 pi-extension files, presets, manifest). The earlier "209 tracked
+  *generated* files" inverted the donor's design. See
+  [deep-dive-ledger-graph-build-commits.md §C.1](./deep-dive-ledger-graph-build-commits.md#c1-bundle-layout--did-the-donor-retire-bundle-runtimejson-c).
+- **[X] Retired-release-chain lesson (donor #28→#54).** The donor *had* a multi-hop
+  auto release chain and **retired** it (`939ddfc` #54): `24d331f` (#37) restored a two-workflow
+  design because `release-from-main` pushed the version-bump commit straight to a **protected
+  `main`** (requires an approving review, no auto-merge, no admin bypass), so five releases
+  landed a tag with no matching main commit. Rules: never push a version-bump commit to a
+  protected branch from CI (tag a reviewed commit); use `set -euo pipefail`, not an `if`
+  without `else`; make publish/`gh release` idempotent. **ARCS's own `release.yml:96` does
+  `git push --follow-tags origin HEAD:${{ github.ref_name }}` from CI — the same protected-main
+  hazard — and its publish (`:89`) is non-idempotent with no `tag == version` gate.** See
+  [deep-dive-ledger-graph-build-commits.md §C.4](./deep-dive-ledger-graph-build-commits.md#c4-the-release-chain-lesson-2854-c).
+- **[X] Release/build claims are static-only.** The audit never executed any build, release
+  workflow or `npm pack`; the donor has no `node_modules`/`dist`. Every §3.6 and §7 release
+  claim is **[C]** static code-reading, and the #47 "`files[]` whitelisting beats `.gitignore`"
+  claim (which only `npm pack --dry-run` can verify) was repeated without that verification.
 
 ## 4. Feature / decision matrix
 
@@ -193,7 +219,8 @@ unscored judgment. Roadmap IDs in the Decision column where applicable.
 | Retrieval core (bm25/graph/toposort/…) | = donor (identical) [C] | = target | **No action** |
 | Retrieval `index-builder` | ahead (chunks field, sourceSignature) [C] | older | **Keep target** |
 | Cross-project knowledge search | **already present** (`src/retrieval/cross-project-search.ts`) [C] | adds listing helper (`listKnowledgeAcrossProjects`/`CrossProjectKnowledgeEntry`) [C] | **Already-present; optional ADAPT helper only if demand (PORT-11)** |
-| Graph doc edges | absent [C] | present [C] | **Port doc edges with PORT-09; ledger edges only with PORT-08** |
+| Graph doc node + `task_cites_doc` + doc↔plan edges | absent [C] | present [C] | **Port docs-gated edges with PORT-09 [X]** |
+| Graph `task_changed_file` edge | absent [C] | present [C] | **Ledger-gated (PORT-08) [X]; pure ledger-derived, NOT docs-gated** |
 | codegraph ingestion + anchors | ahead [C] | behind [C] | **Keep target; add realpath containment policy (PORT-17)** |
 | Knowledge `stub`/`commits` fields | absent [C] | present [C] | **Optional additive (metadata-only) — PORT-08** |
 | Runner permission scoping | allow-all + post-hoc diff gate [C] | least-privilege flags [C] | **Opt-in mode only (PORT-12)** |

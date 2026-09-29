@@ -20,6 +20,7 @@ import "./remember.js";
 import "./done.js";
 import "./report.js";
 import "./status.js";
+import "./changes.js";
 import "./proposal.js";
 import "./proposal-doc.js";
 import "./web.js";

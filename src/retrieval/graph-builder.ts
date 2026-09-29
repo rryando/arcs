@@ -4,6 +4,7 @@
 
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { readChanges } from "../utils/change-ledger.js";
 import { getProjectDir } from "../utils/paths.js";
 import { listTasks, readKnowledgeIndex, readPlanIndex } from "../utils/project-memory.js";
 import type { AdjacencyIndex, GraphEdge, GraphNode } from "./graph-types.js";
@@ -126,6 +127,23 @@ export async function buildAdjacencyIndex(slug: string): Promise<AdjacencyIndex>
     // graceful
   }
 
+  // The change ledger: files each task ACTUALLY touched per git. Read once and
+  // grouped, so a project with no ledger costs one missing-file read. Both
+  // `commit` and `pending` entries contribute — a task that closed with
+  // uncommitted work still touched those files.
+  const changedFilesByTask = new Map<string, Set<string>>();
+  try {
+    for (const change of await readChanges(projectDir)) {
+      if (change.kind !== "commit" && change.kind !== "pending") continue;
+      const set = changedFilesByTask.get(change.taskId) ?? new Set<string>();
+      for (const file of change.files ?? []) set.add(file.path);
+      for (const path of change.untracked ?? []) set.add(path);
+      changedFilesByTask.set(change.taskId, set);
+    }
+  } catch {
+    // graceful
+  }
+
   for (const task of taskEntries) {
     const nodeId = `task:${task.id}`;
     addNode(nodes, { id: nodeId, type: "task", title: task.title });
@@ -155,6 +173,18 @@ export async function buildAdjacencyIndex(slug: string): Promise<AdjacencyIndex>
           weight: EDGE_WEIGHTS.knowledge_touches_file,
         });
       }
+    }
+    // Files the ledger says the task changed, skipping ones it already declares.
+    const declared = new Set((task.sourceFiles ?? []).map((sf) => sf.path));
+    for (const path of changedFilesByTask.get(task.id) ?? []) {
+      if (declared.has(path)) continue;
+      registerFileRef(nodeId, path);
+      addEdge(edges, {
+        source: nodeId,
+        target: `file:${path}`,
+        relation: "task_changed_file",
+        weight: EDGE_WEIGHTS.task_changed_file,
+      });
     }
     if (task.dependsOn) {
       for (const depId of task.dependsOn) {
@@ -229,6 +259,11 @@ export async function buildAdjacencyIndex(slug: string): Promise<AdjacencyIndex>
     plans: await getMtime(join(projectDir, "plans", "index.json")),
     tasks: await getMtime(join(projectDir, "tasks", "index.json")),
   };
+  // Only tracked once it exists: the cache treats a missing tracked file as
+  // stale, and a project with no ledger yet must not rebuild on every read.
+  // `appendChange` invalidates the cache explicitly, which covers creation.
+  const changesMtime = await getMtime(join(projectDir, "workflow", "changes.jsonl"));
+  if (changesMtime > 0) sourceHashes.changes = changesMtime;
 
   return {
     nodes,

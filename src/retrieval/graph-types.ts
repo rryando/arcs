@@ -11,7 +11,8 @@ export type EdgeRelation =
   | "plan_contains_task"
   | "shares_keywords"
   | "project_depends_on"
-  | "task_blocks_task";
+  | "task_blocks_task"
+  | "task_changed_file";
 
 export interface GraphNode {
   id: string;
@@ -53,6 +54,10 @@ export const EDGE_WEIGHTS: Record<EdgeRelation, number> = {
   task_blocks_task: 0.95,
   shares_source_file: 0.9,
   knowledge_touches_file: 0.85,
+  // Ledger-derived: a file a task ACTUALLY changed per git. Weighted like a
+  // declared `sourceFiles` reference so the existing `shares_source_file`
+  // pairing puts the task next to the knowledge that cites the same file.
+  task_changed_file: 0.85,
   plan_contains_task: 0.8,
   shares_keywords: 0.5,
   project_depends_on: 0.3,

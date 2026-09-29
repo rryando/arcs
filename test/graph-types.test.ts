@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EDGE_WEIGHTS } from "../src/retrieval/graph-types.js";
 
 describe("graph-types", () => {
-  it("EDGE_WEIGHTS has exactly 7 entries", () => {
-    expect(Object.keys(EDGE_WEIGHTS)).toHaveLength(7);
+  it("EDGE_WEIGHTS has exactly 8 entries", () => {
+    expect(Object.keys(EDGE_WEIGHTS)).toHaveLength(8);
   });
 
   it("all EDGE_WEIGHTS values are between 0 (exclusive) and 1 (inclusive)", () => {

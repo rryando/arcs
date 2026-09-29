@@ -17,7 +17,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-implementation", "arcs-test-driven-development", "arcs-systematic-debugging"]
+        "skills": ["arcs-implementation", "arcs-cli-primer", "arcs-test-driven-development", "arcs-systematic-debugging"]
       },
       "source": "prompts/software-engineer.txt",
       "destination": "prompts/software-engineer.txt",
@@ -38,7 +38,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-brainstorming"]
+        "skills": ["arcs-brainstorming", "arcs-cli-primer"]
       },
       "source": "prompts/tech-architect.txt",
       "destination": "prompts/tech-architect.txt",
@@ -77,7 +77,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+        "skills": ["arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram", "arcs-cli-primer"]
       },
       "source": "prompts/arcs-docs.txt",
       "destination": "prompts/arcs-docs.txt",
@@ -98,7 +98,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-deep-pr-review"]
+        "skills": ["arcs-deep-pr-review", "arcs-cli-primer"]
       },
       "source": "prompts/code-reviewer.txt",
       "destination": "prompts/code-reviewer.txt",
@@ -155,7 +155,7 @@
       "modes": ["opencode", "claudecode", "pi"],
       "pi": {
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": []
+        "skills": ["arcs-cli-primer"]
       },
       "source": "prompts/graph-explorer.txt",
       "destination": "prompts/graph-explorer.txt",
@@ -177,7 +177,7 @@
       "pi": {
         "thinking": "medium",
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram", "arcs-cli-primer"]
       },
       "source": "prompts/arcs-orchestrate.txt",
       "destination": "prompts/arcs-orchestrate.txt",
@@ -199,7 +199,7 @@
       "pi": {
         "thinking": "low",
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram", "arcs-cli-primer"]
       },
       "source": "prompts/arcs-orchestrate-caveman.txt",
       "destination": "prompts/arcs-orchestrate-caveman.txt",
@@ -221,7 +221,7 @@
       "pi": {
         "thinking": "low",
         "extensions": ["pi-mcp-adapter", "pi-jev"],
-        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram"]
+        "skills": ["arcs-brainstorming", "arcs-writing-plans", "arcs-writing-knowledge", "arcs-to-diagram", "arcs-cli-primer"]
       },
       "source": "prompts/arcs-flash.txt",
       "destination": "prompts/arcs-flash.txt",

@@ -10,15 +10,17 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { Hono } from "hono";
 import { z } from "zod";
 import { DagError } from "../../utils/errors.js";
-import { withLock } from "../../utils/file-lock.js";
-import { createPlan, readPlanIndex } from "../../utils/plan-store.js";
+import { readPlanIndex } from "../../utils/plan-store.js";
 import { normalizeIdentifier } from "../../utils/slug.js";
+import { renderPromoteDocPrompt } from "../ask-prompt.js";
+import { startOneShotRun } from "../one-shot-run.js";
 import { parseBody, requireProjectDir, respond } from "../respond.js";
+import { getRunDriver } from "../run-driver.js";
 import { writeTextLocked } from "../storage.js";
 
 export const proposalDocsRoute = new Hono();
@@ -28,7 +30,6 @@ export const proposalDocsRoute = new Hono();
 // ---------------------------------------------------------------------------
 
 const PROPOSALS_DIR = "proposals";
-const PROMOTE_LOCK = ".proposal-doc-promotion";
 
 function proposalDocsDir(projectDir: string): string {
   return resolve(projectDir, PROPOSALS_DIR);
@@ -214,37 +215,45 @@ proposalDocsRoute.put("/api/p/:slug/proposal-docs/:id", async (c) =>
 );
 
 // ---------------------------------------------------------------------------
-// POST /api/p/:slug/proposal-docs/:id/promote — rename + plan creation
+// POST /api/p/:slug/proposal-docs/:id/promote — start a promotion run
 // ---------------------------------------------------------------------------
 
+/**
+ * Promotion is now performed by a one-shot `pi` run, not by the server. The
+ * route keeps only the FAST, DETERMINISTIC preflight the client needs for honest
+ * refusals; the rename, plan creation, task breakdown and validation all happen
+ * inside the run through the ARCS skills (`arcs-writing-proposals`,
+ * `arcs-writing-plans`).
+ *
+ * Preflight, with the refusal shapes preserved from the direct-implementation
+ * era:
+ *  - the doc must exist as `.proposal.md` or `.accepted.md` (ENTITY_NOT_FOUND);
+ *  - the plan its title derives must not already exist (PLAN_CONFLICT).
+ *
+ * The one-live-run gate is the shared starter's: a second promote (or an
+ * overlapping ask) is refused with RUN_IN_PROGRESS by the run store's atomic
+ * claim, so the retired rename lock had nothing left to serialize and is gone.
+ */
 proposalDocsRoute.post("/api/p/:slug/proposal-docs/:id/promote", async (c) =>
-  respond(c, async () => {
-    const projectDir = requireProjectDir(c.req.param("slug"));
-    const id = c.req.param("id");
-    assertDocId(id);
+  respond(
+    c,
+    async () => {
+      const slug = c.req.param("slug");
+      const projectDir = requireProjectDir(slug);
+      const id = c.req.param("id");
+      assertDocId(id);
 
-    return withLock(join(projectDir, PROMOTE_LOCK), async () => {
       const pendingPath = proposalDocPendingPath(projectDir, id);
       const acceptedPath = proposalDocAcceptedPath(projectDir, id);
 
       let body: string;
-      let recovered = false;
       if (existsSync(pendingPath)) {
         body = await readFile(pendingPath, "utf-8");
       } else if (existsSync(acceptedPath)) {
-        // Crash recovery: the rename completed but plan creation never did.
-        // Re-run from the accepted body unless its plan already exists.
-        const acceptedBody = await readFile(acceptedPath, "utf-8");
-        const derivedPlanId = normalizeIdentifier(deriveTitle(acceptedBody, id));
-        const { plans } = await readPlanIndex(projectDir);
-        if (plans.some((p) => p.id === derivedPlanId)) {
-          throw new DagError(
-            "PLAN_CONFLICT",
-            `Plan "${derivedPlanId}" already exists; proposal doc "${id}" is already promoted.`,
-          );
-        }
-        body = acceptedBody;
-        recovered = true;
+        // Crash-recovery re-promote: the doc is already accepted (a prior run
+        // renamed it but never finished the plan). Let this run finish the job
+        // unless the derived plan already exists.
+        body = await readFile(acceptedPath, "utf-8");
       } else {
         throw new DagError(
           "ENTITY_NOT_FOUND",
@@ -252,43 +261,33 @@ proposalDocsRoute.post("/api/p/:slug/proposal-docs/:id/promote", async (c) =>
         );
       }
 
-      const title = deriveTitle(body, id);
-      const planId = normalizeIdentifier(title);
-
-      if (!recovered) {
-        // Conflict-check BEFORE the rename so a collision leaves nothing to
-        // roll back; createPlan re-checks under its own lock either way.
-        const { plans } = await readPlanIndex(projectDir);
-        if (plans.some((p) => p.id === planId)) {
-          throw new DagError(
-            "PLAN_CONFLICT",
-            `Plan "${planId}" already exists; promoting "${id}" would collide with it.`,
-          );
-        }
-        await rename(pendingPath, acceptedPath);
+      // The plan id the run will derive from the doc's first heading — the same
+      // rule `arcs proposal-doc promote` and `arcs plan create` use.
+      const planId = normalizeIdentifier(deriveTitle(body, id));
+      const { plans } = await readPlanIndex(projectDir);
+      if (plans.some((p) => p.id === planId)) {
+        throw new DagError(
+          "PLAN_CONFLICT",
+          `Plan "${planId}" already exists; proposal doc "${id}" is already promoted.`,
+        );
       }
 
-      try {
-        const plan = await createPlan(projectDir, {
-          id: planId,
-          title,
-          status: "proposed",
-          keywords: [],
-          content: body,
-        });
-        return {
-          promoted: true,
-          plan,
-          docPath: `proposals/${id}.accepted.md`,
-          ...(recovered && { recovered: true }),
-        };
-      } catch (error) {
-        // Plan creation failed: roll the rename back so the doc stays pending.
-        if (!recovered) {
-          await rename(acceptedPath, pendingPath).catch(() => {});
-        }
-        throw error;
+      const driver = getRunDriver("pi");
+      if (driver === undefined) {
+        throw new DagError("UNKNOWN_RUNNER", `no one-shot driver is registered for runtime "pi"`);
       }
-    });
-  }),
+
+      const started = await startOneShotRun({
+        projectDir,
+        slug,
+        driver,
+        buildPrompt: (workspaceDir) =>
+          renderPromoteDocPrompt({ slug, docId: id, workspacePath: workspaceDir }),
+        writeTargetKey: `promote:${slug}`,
+      });
+
+      return { started: true as const, runId: started.runId, runtimeType: "pi" as const };
+    },
+    202,
+  ),
 );

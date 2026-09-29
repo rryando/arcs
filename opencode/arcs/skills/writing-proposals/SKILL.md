@@ -36,8 +36,9 @@ migration):
 - `arcs proposal-doc list <slug>` — list pending proposals (both `.proposal.md` files)
 - `arcs proposal-doc get <slug> <id>` — view body text of a proposal (pending or accepted)
 - `arcs proposal-doc edit <slug> <id> --body="..."` — replace body text
-- `arcs proposal-doc promote <slug> <id>` — rename to `.accepted.md` and emit the
-  `arcs plan create` command to run next
+- `arcs proposal-doc promote <slug> <id>` — rename to `.accepted.md`, materialize
+  `proposals/<id>.plan.md`, and emit the `arcs plan create` command that consumes
+  that generated body
 
 ## Stage 1 — Proposal Doc Loop
 
@@ -69,11 +70,14 @@ Rules:
 
 Only after explicit approval — use the promote result:
 
-1. Run `arcs proposal-doc promote <slug> <id>` to rename `.proposal.md` →
-   `.accepted.md` and get the `arcs plan create` command to run next.
-2. Load `writing-plans` and create the plan plus outcome-sized tasks with real
-   `dependsOn` edges. Task granularity follows `writing-plans`; do not mirror
-   proposal sections one-to-one.
+1. Run `arcs proposal-doc promote <slug> <id>`. This renames `.proposal.md` →
+   `.accepted.md`, writes the generated execution-only body to
+   `proposals/<id>.plan.md`, and returns a plan command pointing at that body.
+2. Load `writing-plans` and run the returned `arcs plan create` command, then
+   create the plan's outcome-sized tasks with real `dependsOn` edges. The
+   generated body is a source-linked index; it does not create tasks. Task
+   granularity follows `writing-plans`; do not mirror proposal sections
+   one-to-one.
 3. Preserve the approved proposal reference; do not invent a commit task without explicit Git authorization.
 4. Generate/validate the companion diagram per `writing-plans`.
 5. Hand execution to the normal agent loop (`arcs next` → work → `arcs done`),
