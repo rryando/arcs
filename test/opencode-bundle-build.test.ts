@@ -356,6 +356,13 @@ describe("opencode bundle runtime manifest", () => {
 
     expect(runtimeManifest).toEqual({
       skills: {
+        "arcs-cli-primer": ["SKILL.md", "command-reference.md", "lifecycle.md"],
+        "explore-dag": ["SKILL.md"],
+        orchestrate: ["SKILL.md"],
+        "quick-dev": ["SKILL.md"],
+        "requesting-code-review": ["SKILL.md", "code-reviewer.md"],
+        "the-ladder": ["SKILL.md"],
+        "update-docs": ["SKILL.md"],
         brainstorming: [
           "SKILL.md",
           "visual-companion.md",
